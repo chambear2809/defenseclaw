@@ -15,6 +15,14 @@ certmanager:
 operator:
   enabled: true
 
+instrumentation:
+  # The isovalent-demo Instrumentation CR already exists and is managed outside
+  # this release; collector upgrades should not take ownership of it.
+  enabled: false
+
+obi:
+  enabled: true
+
 secret:
   create: false
   name: splunk-otel-collector
@@ -291,6 +299,9 @@ agent:
             - signalfx/host_metadata
             - signalfx/host_metadata_secondary
         metrics/histograms:
+          receivers:
+            - receiver_creator
+            - otlp
           exporters:
             - signalfx/histograms
             - signalfx/histograms_secondary
