@@ -24,6 +24,41 @@ the evidence in Splunk, Agent Control, and Galileo.
 | Governance scenarios should be repeatable. | Galileo stores prompt, dataset, and experiment evidence for the same scenarios. |
 | Executives need a summarized view, not raw telemetry. | The optional Cisco Cloud Control tokenomics BFF packages token and governance signals without exposing credentials. |
 
+## Enhanced Demo Tracks
+
+The strongest executive story is:
+
+```text
+DefenseClaw turns Galileo Agent Control into an enforceable runtime control
+plane, with Splunk proving what happened.
+```
+
+Use these tracks to tailor the demo to the audience and available time.
+
+| Track | What to show | Executive takeaway |
+| --- | --- | --- |
+| Live policy change, no redeploy | Run the same dangerous tool request before and after an Agent Control policy update. Show `agent_control.action=deny`, `raw_action=block`, and `decision_evidence`. | Central policy can change agent behavior without rebuilding or redeploying every agent. |
+| Decision evidence timeline | Follow one request across DefenseClaw, Agent Control, Splunk, and Galileo. | Governance decisions are explainable, traceable, and audit-ready. |
+| Task-scoped identity | Give an agent a read-only task token. Allow `kubectl get pods`; deny `kubectl delete pods`. | Agent autonomy can be limited to the exact task, scope, and resources assigned. |
+| Runtime catalog awareness | Compare the same command against a sandbox resource and a sensitive resource. | Policy can account for business context, not just command text. |
+| PII response protection | Return tool output containing email, phone, SSN, salary, or address fields and show masked output/evidence. | DefenseClaw protects both inputs and outputs, including data returned by tools. |
+| Tokenomics plus governance | Show OpenClaw token, cost, and duration metrics beside the runtime decision evidence. | Leaders can connect agent cost, behavior, and risk in one narrative. |
+| Incident replay | Replay Galileo datasets for dangerous tools, prompt injection, PII, ambiguous admin intent, and grounded cluster review. | Governance scenarios are repeatable and measurable, not one-off demos. |
+| Human approval escalation | Route a sensitive operation to approval instead of hard-blocking everything. | The system supports controlled autonomy, not just binary allow or deny. |
+
+For a crisp executive flow, use this sequence:
+
+1. The agent attempts a risky Kubernetes action.
+2. Galileo Agent Control evaluates the action at runtime.
+3. DefenseClaw returns the matched control and decision evidence.
+4. Splunk shows durable operational evidence for the same event.
+5. Galileo shows the trace or experiment context for repeatability.
+6. The Cisco Cloud Control tokenomics view summarizes usage, cost, and risk.
+
+Avoid making the demo about raw telemetry fields first. Start with the business
+problem: agents can act faster than humans can review, so runtime controls need
+to be centralized, enforceable, and provable.
+
 ## Who Should Use Which Script
 
 | Audience | Best script | Goal |
