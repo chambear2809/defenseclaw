@@ -816,6 +816,65 @@ func TestLoad_GalileoEnvAliases(t *testing.T) {
 	}
 }
 
+func TestLoad_GalileoExporterFanout(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("DEFENSECLAW_HOME", tmpDir)
+
+	configFile := filepath.Join(tmpDir, DefaultConfigName)
+	data := []byte(`otel:
+  galileo:
+    enabled: true
+    endpoint: https://api.galileo.ai/otel/v1/traces
+    api_key_env: GALILEO_API_KEY
+    project_id: primary-project
+    log_stream_id: primary-stream
+    exporters:
+      - name: demo-v2
+        enabled: true
+        endpoint: https://api.demo-v2.galileocloud.io/otel/v1/traces
+        api_key_env: GALILEO_DEMO_V2_API_KEY
+        project_id: demo-project
+        log_stream_id: demo-stream
+      - name: disabled
+        enabled: false
+        endpoint: https://example.invalid/otel/v1/traces
+        api_key_env: UNUSED_KEY
+        project_id: disabled-project
+        log_stream_id: disabled-stream
+`)
+	if err := os.WriteFile(configFile, data, 0o600); err != nil {
+		t.Fatalf("WriteFile(%s) error: %v", configFile, err)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	exporters := cfg.OTel.Galileo.ExporterConfigs()
+	if len(exporters) != 2 {
+		t.Fatalf("got %d enabled Galileo exporters, want 2", len(exporters))
+	}
+	if exporters[0].EffectiveName() != "galileo" {
+		t.Fatalf("primary exporter name=%q want galileo", exporters[0].EffectiveName())
+	}
+	if exporters[0].ProjectID != "primary-project" || exporters[0].LogStreamID != "primary-stream" {
+		t.Fatalf("primary routing=%q/%q", exporters[0].ProjectID, exporters[0].LogStreamID)
+	}
+	if exporters[1].EffectiveName() != "demo-v2" {
+		t.Fatalf("secondary exporter name=%q want demo-v2", exporters[1].EffectiveName())
+	}
+	if exporters[1].Endpoint != "https://api.demo-v2.galileocloud.io/otel/v1/traces" {
+		t.Fatalf("secondary endpoint=%q", exporters[1].Endpoint)
+	}
+	if exporters[1].EffectiveAPIKeyEnv() != "GALILEO_DEMO_V2_API_KEY" {
+		t.Fatalf("secondary api key env=%q", exporters[1].EffectiveAPIKeyEnv())
+	}
+	if exporters[1].ProjectID != "demo-project" || exporters[1].LogStreamID != "demo-stream" {
+		t.Fatalf("secondary routing=%q/%q", exporters[1].ProjectID, exporters[1].LogStreamID)
+	}
+}
+
 func TestOTelConfig_PerSignalOverride(t *testing.T) {
 	cfg := OTelConfig{
 		Endpoint: "global:4317",

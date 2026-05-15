@@ -26,6 +26,8 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+
 	"github.com/defenseclaw/defenseclaw/internal/redaction"
 	"github.com/defenseclaw/defenseclaw/internal/scanner"
 	"github.com/defenseclaw/defenseclaw/internal/telemetry"
@@ -41,6 +43,13 @@ import (
 // flipping the switch — the header is an escape hatch, not a mode.
 const revealHeader = "X-DefenseClaw-Reveal-PII"
 
+const (
+	enterpriseOpsWorkflowHeader    = "X-DefenseClaw-Workflow-ID"
+	enterpriseOpsStepHeader        = "X-DefenseClaw-Step-ID"
+	enterpriseOpsPhaseHeader       = "X-DefenseClaw-Phase"
+	enterpriseOpsActionClassHeader = "X-DefenseClaw-Action-Class"
+)
+
 // wantsReveal reports whether the caller has opted into raw PII in
 // the HTTP response. Returning true causes the handler to:
 //   - emit DetailedFindings with their original Evidence strings,
@@ -54,6 +63,29 @@ const revealHeader = "X-DefenseClaw-Reveal-PII"
 // this flag.
 func wantsReveal(r *http.Request) bool {
 	return r.Header.Get(revealHeader) == "1"
+}
+
+func inspectSpanAttributes(r *http.Request, verdict *ToolInspectVerdict) []attribute.KeyValue {
+	attrs := make([]attribute.KeyValue, 0, 8)
+	if verdict != nil {
+		attrs = append(attrs,
+			attribute.String("defenseclaw.inspect.verdict.raw_action", verdict.RawAction),
+			attribute.String("defenseclaw.inspect.verdict.final_action", verdict.Action),
+			attribute.String("defenseclaw.inspect.verdict.severity", verdict.Severity),
+			attribute.Bool("defenseclaw.inspect.verdict.would_block", verdict.WouldBlock),
+		)
+	}
+	for header, attrName := range map[string]string{
+		enterpriseOpsWorkflowHeader:    "defenseclaw.demo.workflow_id",
+		enterpriseOpsStepHeader:        "defenseclaw.demo.step_id",
+		enterpriseOpsPhaseHeader:       "defenseclaw.demo.phase",
+		enterpriseOpsActionClassHeader: "defenseclaw.demo.action_class",
+	} {
+		if value := strings.TrimSpace(r.Header.Get(header)); value != "" {
+			attrs = append(attrs, attribute.String(attrName, value))
+		}
+	}
+	return attrs
 }
 
 // ToolInspectRequest is the payload for POST /api/v1/inspect/tool.
@@ -417,16 +449,16 @@ func (a *APIServer) handleInspectTool(w http.ResponseWriter, r *http.Request) {
 	if a.otel != nil {
 		elapsedMs := float64(elapsed.Milliseconds())
 		tool := a.connectorName() + ":" + req.Tool
-		a.otel.RecordInspectEvaluation(context.Background(), tool, verdict.Action, verdict.Severity)
-		a.otel.RecordInspectLatency(context.Background(), tool, elapsedMs)
-		a.otel.RecordGuardrailEvaluation(context.Background(), a.connectorName()+":policy-rules", verdict.Action)
-		a.otel.RecordGuardrailLatency(context.Background(), a.connectorName()+":policy-rules", elapsedMs)
+		a.otel.RecordInspectEvaluation(r.Context(), tool, verdict.Action, verdict.Severity)
+		a.otel.RecordInspectLatency(r.Context(), tool, elapsedMs)
+		a.otel.RecordGuardrailEvaluation(r.Context(), a.connectorName()+":policy-rules", verdict.Action)
+		a.otel.RecordGuardrailLatency(r.Context(), a.connectorName()+":policy-rules", elapsedMs)
 		// Inspect span is emitted for its side effect on the span
-		// exporter — trace_id is now pulled from r.Context() by
-		// LogActionCtx (the gateway CorrelationMiddleware seeded
-		// the same trace id into both).
-		_ = a.otel.EmitInspectSpan(context.Background(), req.Tool, verdict.Action, verdict.Severity, elapsedMs,
-			agentControlSpanAttributes(verdict.AgentControl)...)
+		// exporter. Use r.Context() so HTTP request trace context,
+		// audit correlation, and Galileo OTLP export stay aligned.
+		attrs := inspectSpanAttributes(r, verdict)
+		attrs = append(attrs, agentControlSpanAttributes(verdict.AgentControl)...)
+		_ = a.otel.EmitInspectSpan(r.Context(), req.Tool, verdict.Action, verdict.Severity, elapsedMs, attrs...)
 	}
 
 	requestID := RequestIDFromContext(r.Context())

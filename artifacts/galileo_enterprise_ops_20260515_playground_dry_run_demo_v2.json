@@ -1,0 +1,26 @@
+{
+  "dry_run": true,
+  "plan": {
+    "datasets": [
+      {
+        "id": "4d89a5d8-1e7f-421d-b742-cadb6e000c68",
+        "metrics": [
+          "context_adherence",
+          "tool_selection_quality",
+          "agent_flow",
+          "instruction_adherence",
+          "tool_errors",
+          "prompt_injection",
+          "action_advancement",
+          "action_completion"
+        ],
+        "name": "defenseclaw-enterprise-ops-thousandeyes",
+        "rows": 16
+      }
+    ],
+    "model_alias": "gpt-4.1-nano",
+    "project_id": "ef0960e1-8744-4019-9faa-103b13f94e0d",
+    "prompt": "defenseclaw-runtime-governance",
+    "prompt_id": "096341e8-05c8-4c8f-9e39-12155a61a8ad"
+  }
+}

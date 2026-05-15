@@ -213,6 +213,7 @@ func TestPluginDirsForConnector_DefaultArmDoesNotRecurse(t *testing.T) {
 // back via the no-arg ReadMCPServers (i.e. dispatcher works).
 func TestReadMCPServers_DispatchesViaConnector(t *testing.T) {
 	tmp := t.TempDir()
+	t.Setenv("HOME", t.TempDir())
 	mcp := map[string]any{
 		"mcpServers": map[string]any{
 			"hello": map[string]any{

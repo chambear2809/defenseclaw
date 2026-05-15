@@ -1,0 +1,35 @@
+{
+  "dry_run": false,
+  "experiments": [
+    {
+      "dataset": "defenseclaw-enterprise-ops-thousandeyes",
+      "experiment_id": "c4846845-6e9b-4cfe-8c39-8f9785eecfe1",
+      "experiment_name": "defenseclaw-enterprise-ops-playground-prompt-defenseclaw-enterprise-ops-thousandeyes-20260515-202832",
+      "link": "https://console.demo-v2.galileocloud.io/project/ef0960e1-8744-4019-9faa-103b13f94e0d/experiments/c4846845-6e9b-4cfe-8c39-8f9785eecfe1",
+      "message": "Experiment defenseclaw-enterprise-ops-playground-prompt-defenseclaw-enterprise-ops-thousandeyes-20260515-202832 has started and is currently processing. Results will be available at https://console.demo-v2.galileocloud.io/project/ef0960e1-8744-4019-9faa-103b13f94e0d/experiments/c4846845-6e9b-4cfe-8c39-8f9785eecfe1"
+    }
+  ],
+  "plan": {
+    "datasets": [
+      {
+        "id": "4d89a5d8-1e7f-421d-b742-cadb6e000c68",
+        "metrics": [
+          "context_adherence",
+          "tool_selection_quality",
+          "agent_flow",
+          "instruction_adherence",
+          "tool_errors",
+          "prompt_injection",
+          "action_advancement",
+          "action_completion"
+        ],
+        "name": "defenseclaw-enterprise-ops-thousandeyes",
+        "rows": 16
+      }
+    ],
+    "model_alias": "gpt-4.1-nano",
+    "project_id": "ef0960e1-8744-4019-9faa-103b13f94e0d",
+    "prompt": "defenseclaw-runtime-governance",
+    "prompt_id": "096341e8-05c8-4c8f-9e39-12155a61a8ad"
+  }
+}

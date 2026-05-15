@@ -1,0 +1,76 @@
+{
+  "dry_run": false,
+  "experiments": [
+    {
+      "dataset": "defenseclaw-enterprise-ops-thousandeyes",
+      "experiment_id": "f74208cd-462a-4f56-b1e4-51f1cda991d7",
+      "experiment_name": "defenseclaw-runtime-evidence-defenseclaw-enterprise-ops-thousandeyes-20260514-055415",
+      "link": "https://app.galileo.ai/project/0ba7b20d-8262-44c4-b230-547a0cd74b2b/experiments/f74208cd-462a-4f56-b1e4-51f1cda991d7",
+      "message": "Experiment defenseclaw-runtime-evidence-defenseclaw-enterprise-ops-thousandeyes-20260514-055415 has completed and results are available at https://app.galileo.ai/project/0ba7b20d-8262-44c4-b230-547a0cd74b2b/experiments/f74208cd-462a-4f56-b1e4-51f1cda991d7"
+    }
+  ],
+  "plan": {
+    "datasets": [
+      {
+        "id": "a706d5bf-e96d-447a-a461-1f3648331b27",
+        "metrics": [
+          {
+            "enum_attr": "context_adherence_luna",
+            "family": "luna",
+            "name": "context_adherence"
+          },
+          {
+            "enum_attr": "tool_selection_quality_luna",
+            "family": "luna",
+            "name": "tool_selection_quality"
+          },
+          {
+            "enum_attr": "agent_flow",
+            "family": "standard",
+            "name": "agent_flow"
+          },
+          {
+            "enum_attr": "instruction_adherence",
+            "family": "standard",
+            "name": "instruction_adherence"
+          },
+          {
+            "enum_attr": "tool_error_rate_luna",
+            "family": "luna",
+            "name": "tool_errors"
+          },
+          {
+            "enum_attr": "prompt_injection_luna",
+            "family": "luna",
+            "name": "prompt_injection"
+          },
+          {
+            "enum_attr": "action_advancement_luna",
+            "family": "luna",
+            "name": "action_advancement"
+          },
+          {
+            "enum_attr": "action_completion_luna",
+            "family": "luna",
+            "name": "action_completion"
+          },
+          {
+            "enum_attr": "correctness",
+            "family": "standard",
+            "name": "correctness"
+          },
+          {
+            "enum_attr": "output_pii_gpt",
+            "family": "standard",
+            "name": "output_pii"
+          }
+        ],
+        "name": "defenseclaw-enterprise-ops-thousandeyes",
+        "rows": 15
+      }
+    ],
+    "metric_family": "luna",
+    "project_id": "0ba7b20d-8262-44c4-b230-547a0cd74b2b",
+    "runner": "local-function"
+  }
+}

@@ -136,7 +136,7 @@ When explaining this to new audiences, keep the split simple:
 | EKS cluster | `isovalent-demo` |
 | Runtime namespace | `defenesclaw` |
 | Optional Cisco Cloud Control namespace | `defenseclaw` |
-| Validated gateway image | `637423309390.dkr.ecr.us-east-1.amazonaws.com/defenseclaw:0.5.0-aims-upstream-20260513021048-5603bd8` |
+| Validated gateway image | `637423309390.dkr.ecr.us-east-1.amazonaws.com/defenseclaw:0.5.0-response-jsoncap-20260513202348-69eb02f-dirty` |
 | Galileo project | `clus-demo` |
 | Galileo project ID | `0ba7b20d-8262-44c4-b230-547a0cd74b2b` |
 | Galileo log stream ID | `82b893bd-fa1f-411e-81e8-e12ca66692ad` |
@@ -309,11 +309,11 @@ Useful dashboards to open:
 Galileo is the repeatable evidence layer. Do this after the live Splunk and
 Galileo Agent Control flow.
 
-1. Open project `clus-demo`.
-2. Show prompt `defenseclaw-runtime-governance`.
-3. Point out selected version `2`.
+1. Open project `defenseclaw-enterprise-ops-20260515`.
+2. Open the saved enterprise Playground.
+3. Show prompt `defenseclaw-runtime-governance`.
 4. Show the prompt variables: `user_prompt`, `cluster_context`, `agent_name`, `guardrail_mode`.
-5. Show the six datasets.
+5. Show the DefenseClaw datasets, including `defenseclaw-enterprise-ops-thousandeyes`.
 6. Open completed runtime-evidence experiments.
 7. Use `defenseclaw-dangerous-tool-pre-tool` as the bridge back to the live demo.
 
@@ -445,7 +445,7 @@ Use this for a customer or partner field demo.
 | 4:00-7:00 | Show Splunk Local overview. | Start from the dashboard because it is familiar to operations and security teams. |
 | 7:00-11:00 | Run or replay the live `/api/v1/inspect/tool` bridge. | Show `would_block=true`, `raw_action=block`, `decision_evidence`, and Galileo Agent Control fields. |
 | 11:00-14:00 | Open Galileo Agent Control. | Show that the matched control is a named policy, not an opaque model answer. |
-| 14:00-19:00 | Open Galileo Agent Watch assets. | Show project `clus-demo`, prompt `defenseclaw-runtime-governance`, and six datasets. |
+| 14:00-19:00 | Open Galileo Agent Watch assets. | Show the saved enterprise Playground, prompt `defenseclaw-runtime-governance`, and the DefenseClaw datasets. |
 | 19:00-22:00 | Review completed runtime-evidence experiment. | Anchor on `defenseclaw-dangerous-tool-pre-tool`. |
 | 22:00-24:00 | Optional Cisco Cloud Control tokenomics summary. | Position it as executive packaging, not the primary evidence source. |
 | 24:00-25:00 | Recap ownership split. | Galileo Agent Control decides, Splunk investigates, Galileo validates, Cisco Cloud Control summarizes. |

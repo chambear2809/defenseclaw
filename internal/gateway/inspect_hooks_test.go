@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -227,6 +228,29 @@ func TestInspectToolResponse_SensitiveOutput(t *testing.T) {
 
 	if verdict.Action == "allow" && len(verdict.Findings) == 0 {
 		t.Error("expected findings for leaked secrets in tool output")
+	}
+}
+
+func TestInspectToolResponse_ResponseProtectionByteCapPreservesJSON(t *testing.T) {
+	t.Setenv("DEFENSECLAW_RESPONSE_PROTECTION_ENABLE", "1")
+	t.Setenv("DEFENSECLAW_RESPONSE_PROTECTION_FIELDS", "email")
+	t.Setenv("DEFENSECLAW_RESPONSE_PROTECTION_MAX_BYTES", "48")
+
+	api := testAPIServerWithConfig(t, "action")
+	_, verdict := postInspectToolResponse(t, api,
+		`{"tool":"db.query","output":{"records":[{"email":"a@example.com","note":"`+strings.Repeat("x", 200)+`"}]},"exit_code":0}`)
+
+	if verdict.ResponseProtection == nil {
+		t.Fatal("response protection evidence missing")
+	}
+	if !verdict.ResponseProtection.Truncated {
+		t.Fatalf("expected response protection truncation, got %+v", verdict.ResponseProtection)
+	}
+	if len(verdict.ProtectedOutput) > 48 {
+		t.Fatalf("protected_output length = %d, want <= 48: %s", len(verdict.ProtectedOutput), verdict.ProtectedOutput)
+	}
+	if !json.Valid(verdict.ProtectedOutput) {
+		t.Fatalf("protected_output is invalid JSON: %s", verdict.ProtectedOutput)
 	}
 }
 

@@ -1,0 +1,78 @@
+{
+  "datasets": [
+    {
+      "id": "894bfeea-274c-4639-9d21-e7bb1d53f48b",
+      "name": "defenseclaw-ambiguous-admin-intent",
+      "rows": 3,
+      "source": "datasets/galileo/defenseclaw-ambiguous-admin-intent.jsonl",
+      "status": "updated"
+    },
+    {
+      "id": "4a60a2a7-55eb-42c1-96cf-b9bf7e6710a4",
+      "name": "defenseclaw-dangerous-tool-pre-tool",
+      "rows": 4,
+      "source": "datasets/galileo/defenseclaw-dangerous-tool-pre-tool.jsonl",
+      "status": "updated"
+    },
+    {
+      "id": "4d89a5d8-1e7f-421d-b742-cadb6e000c68",
+      "name": "defenseclaw-enterprise-ops-thousandeyes",
+      "rows": 16,
+      "source": "datasets/galileo/defenseclaw-enterprise-ops-thousandeyes.jsonl",
+      "status": "updated"
+    },
+    {
+      "id": "82505136-42a9-4eab-932b-2e7903ee23fa",
+      "name": "defenseclaw-grounded-cluster-review",
+      "rows": 3,
+      "source": "datasets/galileo/defenseclaw-grounded-cluster-review.jsonl",
+      "status": "updated"
+    },
+    {
+      "id": "18716fff-2c83-40e8-9c72-43520e63e3a4",
+      "name": "defenseclaw-pii-post-llm",
+      "rows": 3,
+      "source": "datasets/galileo/defenseclaw-pii-post-llm.jsonl",
+      "status": "updated"
+    },
+    {
+      "id": "9ebcc5f7-a133-4da6-a762-9cafcaa22711",
+      "name": "defenseclaw-prompt-injection-pre-llm",
+      "rows": 3,
+      "source": "datasets/galileo/defenseclaw-prompt-injection-pre-llm.jsonl",
+      "status": "updated"
+    },
+    {
+      "id": "ed48fe0e-a27e-4011-a461-aa6cc4022101",
+      "name": "defenseclaw-safe-ops",
+      "rows": 3,
+      "source": "datasets/galileo/defenseclaw-safe-ops.jsonl",
+      "status": "updated"
+    }
+  ],
+  "log_stream": {
+    "id": "7d3fa020-621d-4164-aa4a-96b600663c92",
+    "name": "defenseclaw-enterprise-ops-20260515",
+    "project_id": "ef0960e1-8744-4019-9faa-103b13f94e0d",
+    "status": "exists"
+  },
+  "project": {
+    "id": "ef0960e1-8744-4019-9faa-103b13f94e0d",
+    "name": "defenseclaw-enterprise-ops-20260515",
+    "status": "exists"
+  },
+  "prompts": [
+    {
+      "id": "096341e8-05c8-4c8f-9e39-12155a61a8ad",
+      "name": "defenseclaw-runtime-governance",
+      "source": "prompts/galileo/defenseclaw-runtime-governance.md",
+      "status": "exists"
+    },
+    {
+      "id": "ce2a5908-bc6c-45e0-89e7-cd498d6ed870",
+      "name": "defenseclaw-enterprise-ops-agent-flow",
+      "source": "prompts/galileo/enterprise-ops-agent-flow.md",
+      "status": "exists"
+    }
+  ]
+}

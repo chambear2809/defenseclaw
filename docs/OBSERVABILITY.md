@@ -88,8 +88,8 @@ metrics + traces, configurable via `otel:` in the config file or the
 standard `OTEL_*` environment variables. The primary exporter stays
 vendor-neutral; operators who need a Splunk access token put it in
 `otel.headers` or `OTEL_EXPORTER_OTLP_HEADERS`. Optional fan-out
-exporters, such as `otel.galileo`, add destination-specific trace export
-without replacing the primary OTLP pipeline.
+exporters, such as `otel.galileo` and `otel.galileo.exporters[]`, add
+destination-specific trace export without replacing the primary OTLP pipeline.
 
 ---
 

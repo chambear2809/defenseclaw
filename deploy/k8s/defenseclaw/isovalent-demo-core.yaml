@@ -97,6 +97,8 @@ data:
     plugin_dir: /home/node/.defenseclaw/plugins
     policy_dir: /opt/defenseclaw/policies
     environment: defenseclaw
+    notifications:
+      enabled: false
     claw:
       mode: openclaw
       home_dir: /home/node/.openclaw
@@ -161,6 +163,13 @@ data:
         api_key_env: GALILEO_API_KEY
         project_id: 0ba7b20d-8262-44c4-b230-547a0cd74b2b
         log_stream_id: 82b893bd-fa1f-411e-81e8-e12ca66692ad
+        exporters:
+          - name: demo-v2
+            enabled: true
+            endpoint: https://api.demo-v2.galileocloud.io/otel/v1/traces
+            api_key_env: GALILEO_DEMO_V2_API_KEY
+            project_id: ef0960e1-8744-4019-9faa-103b13f94e0d
+            log_stream_id: 7d3fa020-621d-4164-aa4a-96b600663c92
     audit_sinks:
       - name: splunk-hec-splunk-local
         kind: splunk_hec
@@ -191,6 +200,8 @@ metadata:
   namespace: defenesclaw
 data:
   config.yaml: |
+    notifications:
+      enabled: false
     gateway:
       host: openclaw.defenesclaw.svc.cluster.local
       port: 18789
@@ -305,7 +316,7 @@ spec:
         fsGroupChangePolicy: OnRootMismatch
       containers:
         - name: defenseclaw
-          image: 637423309390.dkr.ecr.us-east-1.amazonaws.com/defenseclaw:0.5.0-aims-upstream-20260513021048-5603bd8
+          image: 637423309390.dkr.ecr.us-east-1.amazonaws.com/defenseclaw:0.5.0-response-jsoncap-20260513202348-69eb02f-dirty
           imagePullPolicy: IfNotPresent
           env:
             - name: HOME

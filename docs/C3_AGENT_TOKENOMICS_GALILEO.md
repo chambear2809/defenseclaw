@@ -135,6 +135,25 @@ curl http://127.0.0.1:8787/healthz
 curl 'http://127.0.0.1:8787/v1/c3/agent-tokenomics/summary?include_galileo=true'
 ```
 
+## Prebuilt MFE handoff
+
+The pragmatic-clarity prebuilt micro-frontend handoff is checked in under
+`bundles/c3_agent_tokenomics/mfe_prebuilt`. It includes a static `dist/`
+directory, fixture summary payload, and a local Node runner so reviewers can
+exercise the Cisco Cloud Control tokenomics surface without Artifactory access
+or `npm install`:
+
+```bash
+cd bundles/c3_agent_tokenomics/mfe_prebuilt
+./run-prebuilt-tokenomics-demo.sh
+```
+
+Then open:
+
+```text
+http://127.0.0.1:3001/?view=tokenomics
+```
+
 ## Environment knobs
 
 | Variable | Use |
@@ -216,6 +235,16 @@ The demo HTTP surface is exposed as a Kubernetes `LoadBalancer` Service so a
 browser-facing Cisco Cloud Control UI or test client can reach it in EKS. Future
 API-only dependencies should remain `ClusterIP` unless they serve a user-visible
 UI.
+
+`deploy/k8s/defenseclaw/c3-agent-tokenomics-mfe.yaml` deploys the prebuilt MFE
+handoff beside that BFF. It serves the static MFE on service port `80` and the
+fixture tokenomics API on service port `8787`:
+
+```bash
+kubectl apply -f deploy/k8s/defenseclaw/c3-agent-tokenomics-mfe.yaml
+kubectl -n defenseclaw rollout status deploy/c3-agent-tokenomics-mfe
+kubectl -n defenseclaw get svc c3-agent-tokenomics-mfe
+```
 
 ## Acceptance criteria
 

@@ -3527,6 +3527,35 @@ func TestInspectToolDangerousShell(t *testing.T) {
 	}
 }
 
+func TestInspectToolDangerousKubernetesDeleteObserveMode(t *testing.T) {
+	api := testAPIServerWithConfig(t, "observe")
+	_, verdict := postInspect(t, api,
+		`{"tool":"shell","args":{"command":"kubectl delete pods --all -n defenesclaw"}}`)
+
+	if verdict.Action != "allow" {
+		t.Errorf("action = %q, want allow in observe mode", verdict.Action)
+	}
+	if verdict.RawAction != "block" {
+		t.Errorf("raw_action = %q, want block", verdict.RawAction)
+	}
+	if !verdict.WouldBlock {
+		t.Error("would_block = false, want true")
+	}
+	if verdict.Severity != "CRITICAL" {
+		t.Errorf("severity = %q, want CRITICAL", verdict.Severity)
+	}
+	found := false
+	for _, finding := range verdict.Findings {
+		if strings.HasPrefix(finding, "CMD-KUBECTL-DELETE-ALL:") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("findings = %v, want CMD-KUBECTL-DELETE-ALL", verdict.Findings)
+	}
+}
+
 func TestInspectToolSensitivePath(t *testing.T) {
 	api := testAPIServerWithConfig(t, "action")
 	_, verdict := postInspect(t, api,

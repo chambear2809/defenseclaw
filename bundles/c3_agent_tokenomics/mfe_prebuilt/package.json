@@ -1,0 +1,40 @@
+{
+  "name": "my-mfe",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "build": "webpack --mode production",
+    "build:sandbox": "node scripts/build-sandbox.js",
+    "serve:tokenomics-fixture": "node scripts/serve-tokenomics-fixture.js",
+    "start": "webpack serve --mode development",
+    "test": "node scripts/test-o11y-request-construction.js && node scripts/test-sandbox-build.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "@ciscodesignsystems/cds-magnetic-theme-web": "^1.9.4",
+    "@ciscodesignsystems/cds-react-button": "^1.9.4",
+    "@ciscodesignsystems/cds-react-card": "^1.9.4",
+    "@ciscodesignsystems/cds-react-select": "^1.9.4",
+    "@ciscodesignsystems/cds-react-table": "^1.9.4",
+    "@ciscodesignsystems/cds-react-tag": "^1.9.4",
+    "@ciscodesignsystems/cds-react-theme-provider": "^1.9.4",
+    "css-loader": "^7.1.4",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "style-loader": "^4.0.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.29.0",
+    "@babel/preset-env": "^7.29.5",
+    "@babel/preset-react": "^7.28.5",
+    "babel-loader": "^10.1.1",
+    "html-webpack-plugin": "^5.6.7",
+    "webpack": "^5.106.2",
+    "webpack-cli": "^7.0.2",
+    "webpack-dev-server": "^5.2.3"
+  }
+}

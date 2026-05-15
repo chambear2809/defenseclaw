@@ -1,0 +1,234 @@
+{
+  "schema_version": "c3.agent_tokenomics.v1",
+  "source": "splunk_o11y_signalflow",
+  "generated_at": "2026-05-09T17:49:17.353609Z",
+  "debug": {
+    "fixture_backed": true,
+    "internal_only": true
+  },
+  "summary": {
+    "active_agents": 3,
+    "cached_tokens": 820,
+    "input_tokens": 29650,
+    "output_tokens": 9350,
+    "reasoning_tokens": 3210,
+    "request_count": 21,
+    "session_count": 5,
+    "tool_tokens": 2120,
+    "total_tokens": 45150,
+    "trace_count": 5,
+    "cost": {
+      "total": 1.4,
+      "input": 0.7,
+      "output": 0.7,
+      "currency": "USD",
+      "pricing_status": "priced"
+    }
+  },
+  "token_mix": [
+    {
+      "token_type": "input",
+      "tokens": 29650,
+      "percentage": 65.67
+    },
+    {
+      "token_type": "output",
+      "tokens": 9350,
+      "percentage": 20.71
+    },
+    {
+      "token_type": "cached",
+      "tokens": 820,
+      "percentage": 1.82
+    },
+    {
+      "token_type": "reasoning",
+      "tokens": 3210,
+      "percentage": 7.11
+    },
+    {
+      "token_type": "tool",
+      "tokens": 2120,
+      "percentage": 4.7
+    }
+  ],
+  "top_agents": [
+    {
+      "agent_name": "incident-triage-agent",
+      "connector": "langgraph,mcp",
+      "requests": 12,
+      "service_name": "sre-demo-app",
+      "sessions": 3,
+      "tokens": 23860,
+      "trace_ids": [
+        "trace-a",
+        "trace-b",
+        "trace-e"
+      ]
+    },
+    {
+      "agent_name": "travel-planner-agent",
+      "connector": "autogen",
+      "requests": 5,
+      "service_name": "travel-planner-demo",
+      "sessions": 1,
+      "tokens": 12910,
+      "trace_ids": [
+        "trace-c"
+      ]
+    },
+    {
+      "agent_name": "policy-analysis-agent",
+      "connector": "defenseclaw",
+      "requests": 4,
+      "service_name": "agent-watch-demo",
+      "sessions": 1,
+      "tokens": 8380,
+      "trace_ids": [
+        "trace-d"
+      ]
+    }
+  ],
+  "top_models": [
+    {
+      "model": "gpt-4o-mini",
+      "provider": "openai",
+      "requests": 12,
+      "sessions": 3,
+      "tokens": 23860,
+      "trace_ids": [
+        "trace-a",
+        "trace-b",
+        "trace-e"
+      ]
+    },
+    {
+      "model": "claude-sonnet-4-5",
+      "provider": "anthropic",
+      "requests": 5,
+      "sessions": 1,
+      "tokens": 12910,
+      "trace_ids": [
+        "trace-c"
+      ]
+    },
+    {
+      "model": "gpt-4.1-mini",
+      "provider": "openai",
+      "requests": 4,
+      "sessions": 1,
+      "tokens": 8380,
+      "trace_ids": [
+        "trace-d"
+      ]
+    }
+  ],
+  "runtime_governance_cards": [
+    {
+      "title": "Active Agents",
+      "subtitle": "Agents reporting token telemetry",
+      "value": 3
+    },
+    {
+      "title": "Top Models",
+      "subtitle": "Models driving token volume",
+      "value": 3
+    },
+    {
+      "title": "Estimated Spend",
+      "subtitle": "Token usage cost proxy",
+      "value": 1.4
+    },
+    {
+      "title": "Token Mix",
+      "subtitle": "Input, output, cache, reasoning, and tool tokens",
+      "value": 5
+    }
+  ],
+  "runtime_governance_evidence": [
+    {
+      "action": "delete prod deployment",
+      "agent_name": "incident-triage-agent",
+      "control_id": "ctrl-1001",
+      "decision": "deny",
+      "deep_link": "https://tokenomics.example.invalid/project/demo/log-streams/agent-watch-runtime-controls-smoke/traces/trace-a",
+      "evidence_ref": "span-tool-1",
+      "join_key": "trace_id",
+      "policy_id": "agent-control.destructive-action",
+      "reason": "High token usage detail captured",
+      "session_id": "sess-001",
+      "severity": "CRITICAL",
+      "target": "terminal",
+      "trace_id": "trace-a"
+    },
+    {
+      "action": "summarize traveler passport details",
+      "agent_name": "travel-planner-agent",
+      "control_id": "ctrl-1002",
+      "decision": "human_review",
+      "deep_link": "https://tokenomics.example.invalid/project/demo/log-streams/agent-watch-runtime-controls-smoke/traces/trace-c",
+      "evidence_ref": "span-tool-4",
+      "join_key": "trace_id",
+      "policy_id": "agent-control.sensitive-data-review",
+      "reason": "Detailed token usage needs owner review",
+      "session_id": "sess-003",
+      "severity": "HIGH",
+      "target": "crm-profile",
+      "trace_id": "trace-c"
+    },
+    {
+      "action": "large-context request to expensive-model",
+      "agent_name": "policy-analysis-agent",
+      "control_id": "ctrl-1003",
+      "decision": "steer",
+      "deep_link": "https://tokenomics.example.invalid/project/demo/log-streams/agent-watch-runtime-controls-smoke/traces/trace-d",
+      "evidence_ref": "span-agent-2",
+      "join_key": "trace_id",
+      "policy_id": "agent-control.tokenomics-steering",
+      "reason": "Model and context optimization opportunity",
+      "session_id": "sess-004",
+      "severity": "MEDIUM",
+      "target": "model_router",
+      "trace_id": "trace-d"
+    },
+    {
+      "action": "read untrusted external url",
+      "agent_name": "policy-analysis-agent",
+      "control_id": "ctrl-1004",
+      "decision": "warn",
+      "deep_link": "https://tokenomics.example.invalid/project/demo/log-streams/agent-watch-runtime-controls-smoke/traces/trace-d",
+      "evidence_ref": "span-tool-7",
+      "join_key": "trace_id",
+      "policy_id": "agent-control.untrusted-input-warning",
+      "reason": "Connector activity included in token totals",
+      "session_id": "sess-004",
+      "severity": "MEDIUM",
+      "target": "web-fetch",
+      "trace_id": "trace-d"
+    }
+  ],
+  "recommendations": [
+    {
+      "title": "Review top token consumer: incident-triage-agent",
+      "why": "This agent accounts for 23860 tokens in the selected window.",
+      "action": "Open the related O11y Agent detail view and inspect trace/session outliers before applying budget caps."
+    },
+    {
+      "title": "Low cache utilization",
+      "why": "Cached tokens are below 10% of total usage.",
+      "action": "Evaluate prompt prefix reuse, semantic caching, or model gateway caching for repeated workflows."
+    },
+    {
+      "title": "Review top token consumers",
+      "why": "A small number of agents account for most token usage in this window.",
+      "action": "Review the simple details table and inspect the top agent rows before applying budget caps."
+    }
+  ],
+  "tokenomics_detail": {
+    "active_agents": 3,
+    "top_models": 3,
+    "estimated_spend": 1.4,
+    "token_mix_segments": 5,
+    "trace_count": 5
+  }
+}

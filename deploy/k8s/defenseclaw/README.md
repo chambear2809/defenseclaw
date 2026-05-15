@@ -60,6 +60,7 @@ aws eks update-kubeconfig --region us-east-1 --name isovalent-demo
 
 kubectl apply -f deploy/k8s/defenseclaw/isovalent-demo-core.yaml
 kubectl apply -f deploy/k8s/defenseclaw/c3-agent-tokenomics-demo.yaml
+kubectl apply -f deploy/k8s/defenseclaw/c3-agent-tokenomics-mfe.yaml
 
 helm repo add splunk-otel-collector-chart https://signalfx.github.io/splunk-otel-collector-chart
 helm repo update
@@ -80,6 +81,7 @@ kubectl -n defenesclaw rollout status deploy/defenseclaw
 kubectl -n defenesclaw rollout status deploy/openclaw
 kubectl -n defenesclaw rollout status deploy/splunk-local
 kubectl -n defenseclaw rollout status deploy/c3-agent-tokenomics-demo
+kubectl -n defenseclaw rollout status deploy/c3-agent-tokenomics-mfe
 helm -n otel-splunk status splunk-otel-collector
 ```
 
@@ -98,6 +100,7 @@ flow.
 | Agent Control | Active runtime controls and matched policy | `kubectl -n defenesclaw get svc agent-control-ui` |
 | Splunk Local | Searchable audit, verdict, gateway, and OTel evidence | `kubectl -n defenesclaw get svc splunk-local-ui` |
 | Galileo | Prompt, datasets, and completed runtime-evidence experiments | `https://app.galileo.ai/project/0ba7b20d-8262-44c4-b230-547a0cd74b2b` |
+| Cisco Cloud Control tokenomics MFE | Prebuilt executive tokenomics UI and fixture API | `kubectl -n defenseclaw get svc c3-agent-tokenomics-mfe` |
 
 ### Galileo Object Inventory
 

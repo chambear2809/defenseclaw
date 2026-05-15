@@ -73,7 +73,7 @@ High-risk deployments should pair DefenseClaw with human review, least-privilege
 | [Splunk App](docs/SPLUNK_APP.md) | Local Splunk app dashboards and investigation flow |
 | [DefenseClaw Demo Package](docs/DEFENSECLAW_DEMO_PACKAGE.md) | Full demo package with 5, 25, 45, and 60 minute scripts |
 | [Galileo DefenseClaw Demo Datasets](docs/GALILEO_DEFENSECLAW_DATASETS.md) | Agent Watch prompt, datasets, Playground recipe, and runtime-evidence experiments |
-| [Cisco Cloud Control Tokenomics + Galileo](docs/C3_AGENT_TOKENOMICS_GALILEO.md) | Demo BFF for Cisco Cloud Control tokenomics; Agent Watch Galileo assets are documented separately |
+| [Cisco Cloud Control Tokenomics + Galileo](docs/C3_AGENT_TOKENOMICS_GALILEO.md) | Demo BFF and prebuilt MFE handoff for Cisco Cloud Control tokenomics; Agent Watch Galileo assets are documented separately |
 | [TUI](docs/TUI.md) | Terminal dashboard panels and navigation |
 | [Config Files](docs/CONFIG_FILES.md) | Config locations, environment variables, and policy files |
 | [Registries](docs/REGISTRIES.md) | External skill / MCP catalog ingestion (clawhub, smithery, skills.sh, http, git, file) |

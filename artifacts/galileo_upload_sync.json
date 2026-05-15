@@ -1,0 +1,69 @@
+{
+  "datasets": [
+    {
+      "id": "6a404e8b-5952-44d8-aa4c-7362b319ecca",
+      "name": "defenseclaw-ambiguous-admin-intent",
+      "rows": 3,
+      "source": "datasets/galileo/defenseclaw-ambiguous-admin-intent.jsonl",
+      "status": "updated"
+    },
+    {
+      "id": "fa039b81-a70a-41cd-aacd-4e3c5e2488fe",
+      "name": "defenseclaw-dangerous-tool-pre-tool",
+      "rows": 4,
+      "source": "datasets/galileo/defenseclaw-dangerous-tool-pre-tool.jsonl",
+      "status": "updated"
+    },
+    {
+      "id": "a706d5bf-e96d-447a-a461-1f3648331b27",
+      "name": "defenseclaw-enterprise-ops-thousandeyes",
+      "rows": 15,
+      "source": "datasets/galileo/defenseclaw-enterprise-ops-thousandeyes.jsonl",
+      "status": "updated"
+    },
+    {
+      "id": "c750e742-59d6-47e0-bc99-c8721386e9eb",
+      "name": "defenseclaw-grounded-cluster-review",
+      "rows": 3,
+      "source": "datasets/galileo/defenseclaw-grounded-cluster-review.jsonl",
+      "status": "updated"
+    },
+    {
+      "id": "810e5961-5bef-4615-8280-180238b6f1ac",
+      "name": "defenseclaw-pii-post-llm",
+      "rows": 3,
+      "source": "datasets/galileo/defenseclaw-pii-post-llm.jsonl",
+      "status": "updated"
+    },
+    {
+      "id": "8633dc49-c9f0-4179-b7be-a9c371910eba",
+      "name": "defenseclaw-prompt-injection-pre-llm",
+      "rows": 3,
+      "source": "datasets/galileo/defenseclaw-prompt-injection-pre-llm.jsonl",
+      "status": "updated"
+    },
+    {
+      "id": "1cb6a564-91f8-4c4a-a4b8-9ee9e44e5fdb",
+      "name": "defenseclaw-safe-ops",
+      "rows": 3,
+      "source": "datasets/galileo/defenseclaw-safe-ops.jsonl",
+      "status": "updated"
+    }
+  ],
+  "prompts": [
+    {
+      "id": "1a327ae4-264d-4036-80f6-f8a424158a91",
+      "name": "defenseclaw-runtime-governance",
+      "source": "prompts/galileo/defenseclaw-runtime-governance.md",
+      "status": "updated",
+      "version": 3,
+      "version_id": "45463b63-7f60-44fe-9820-cf7afe58014e"
+    },
+    {
+      "id": "1fa72636-932c-4242-be81-7db0c1503b7e",
+      "name": "defenseclaw-enterprise-ops-agent-flow",
+      "source": "prompts/galileo/enterprise-ops-agent-flow.md",
+      "status": "created"
+    }
+  ]
+}

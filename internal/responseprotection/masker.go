@@ -95,7 +95,13 @@ func (m *Masker) Mask(body []byte, agentID string) Result {
 		}
 		result.FieldsMasked = sortedKeys(masked)
 		if m.cfg.MaxBytes > 0 && len(body) > m.cfg.MaxBytes {
-			body = body[:m.cfg.MaxBytes]
+			body = truncateJSONToLimit(parsed, m.cfg.MaxBytes)
+			if len(body) > 0 {
+				var capped any
+				if err := json.Unmarshal(body, &capped); err == nil {
+					result.RowsReturned = countRows(capped)
+				}
+			}
 			result.Truncated = true
 		}
 		result.Body = body
@@ -154,6 +160,146 @@ func (m *Masker) truncateRows(v any) (any, int, bool) {
 		}
 	}
 	return v, countRows(v), false
+}
+
+func truncateJSONToLimit(v any, max int) []byte {
+	if max <= 0 {
+		body, _ := json.Marshal(v)
+		return body
+	}
+	if body, err := json.Marshal(v); err == nil && len(body) <= max {
+		return body
+	}
+	body := truncateJSONValue(v, max)
+	if len(body) <= max && json.Valid(body) {
+		return body
+	}
+	return fallbackJSON(v, max)
+}
+
+func truncateJSONValue(v any, max int) []byte {
+	switch x := v.(type) {
+	case map[string]any:
+		return truncateJSONObject(x, max)
+	case []any:
+		return truncateJSONArray(x, max)
+	case string:
+		return truncateJSONString(x, max)
+	default:
+		if body, err := json.Marshal(x); err == nil && len(body) <= max {
+			return body
+		}
+		return fallbackJSON(v, max)
+	}
+}
+
+func truncateJSONObject(x map[string]any, max int) []byte {
+	if max < len("{}") {
+		return fallbackJSON(x, max)
+	}
+	kept := map[string]any{}
+	best := []byte("{}")
+	keys := make([]string, 0, len(x))
+	for key := range x {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		candidate := cloneMap(kept)
+		candidate[key] = x[key]
+		if body, err := json.Marshal(candidate); err == nil && len(body) <= max {
+			kept = candidate
+			best = body
+			continue
+		}
+
+		candidate = cloneMap(kept)
+		candidate[key] = json.RawMessage(truncateJSONValue(x[key], max))
+		if body, err := json.Marshal(candidate); err == nil && len(body) <= max {
+			kept = candidate
+			best = body
+			continue
+		}
+	}
+	return best
+}
+
+func truncateJSONArray(x []any, max int) []byte {
+	if max < len("[]") {
+		return fallbackJSON(x, max)
+	}
+	kept := make([]any, 0, len(x))
+	best := []byte("[]")
+	for _, item := range x {
+		candidate := append(append([]any(nil), kept...), item)
+		if body, err := json.Marshal(candidate); err == nil && len(body) <= max {
+			kept = candidate
+			best = body
+			continue
+		}
+
+		candidate = append(append([]any(nil), kept...), json.RawMessage(truncateJSONValue(item, max)))
+		if body, err := json.Marshal(candidate); err == nil && len(body) <= max {
+			return body
+		}
+		return best
+	}
+	return best
+}
+
+func truncateJSONString(s string, max int) []byte {
+	if max < len(`""`) {
+		return fallbackJSON(s, max)
+	}
+	runes := []rune(s)
+	best := []byte(`""`)
+	lo, hi := 0, len(runes)
+	for lo <= hi {
+		mid := lo + (hi-lo)/2
+		body, _ := json.Marshal(string(runes[:mid]))
+		if len(body) <= max {
+			best = body
+			lo = mid + 1
+			continue
+		}
+		hi = mid - 1
+	}
+	return best
+}
+
+func cloneMap(in map[string]any) map[string]any {
+	out := make(map[string]any, len(in)+1)
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
+}
+
+func fallbackJSON(v any, max int) []byte {
+	switch v.(type) {
+	case map[string]any:
+		if max >= len("{}") {
+			return []byte("{}")
+		}
+	case []any:
+		if max >= len("[]") {
+			return []byte("[]")
+		}
+	case string:
+		if max >= len(`""`) {
+			return []byte(`""`)
+		}
+	}
+	if max >= len("null") {
+		return []byte("null")
+	}
+	if max >= len("[]") {
+		return []byte("[]")
+	}
+	if max >= len("0") {
+		return []byte("0")
+	}
+	return nil
 }
 
 func (m *Masker) maskText(body []byte) Result {

@@ -2,6 +2,7 @@ package responseprotection
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -28,9 +29,26 @@ func TestMaskJSONRowsAndCanary(t *testing.T) {
 	}
 }
 
+func TestMaskJSONByteCapPreservesValidJSON(t *testing.T) {
+	m := New(Config{PIIFields: []string{"email"}, MaxBytes: 48})
+	result := m.Mask([]byte(`{"records":[{"email":"a@example.com","note":"`+strings.Repeat("x", 200)+`"}]}`), "agent-a")
+	if !result.Truncated {
+		t.Fatalf("expected byte truncation, got %+v body=%s", result, result.Body)
+	}
+	if len(result.Body) > 48 {
+		t.Fatalf("body length = %d, want <= 48: %s", len(result.Body), result.Body)
+	}
+	if !json.Valid(result.Body) {
+		t.Fatalf("truncated JSON is invalid: %s", result.Body)
+	}
+	if len(result.FieldsMasked) != 1 || result.FieldsMasked[0] != "email" {
+		t.Fatalf("expected masked email, got %+v", result.FieldsMasked)
+	}
+}
+
 func TestMaskTextAndByteCap(t *testing.T) {
 	m := New(Config{PIIFields: []string{"email"}, MaxBytes: 24})
-	result := m.Mask([]byte(`{"email":"a@example.com","note":"long long long"}`), "agent-a")
+	result := m.Mask([]byte(`prefix "email":"a@example.com" note long long long`), "agent-a")
 	if !result.Truncated || len(result.Body) != 24 {
 		t.Fatalf("expected byte truncation, got %+v", result)
 	}

@@ -18,9 +18,13 @@ import os
 from pathlib import Path
 from typing import Any
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MANIFEST = REPO_ROOT / "playgrounds" / "galileo" / "defenseclaw-runtime-governance.playground.json"
+
+from run_galileo_runtime_evidence_experiment import (  # noqa: E402
+    SESSION_ONLY_EXPERIMENT_METRICS,
+    _resolve_galileo_metrics,
+)
 
 
 def _load_manifest(path: Path) -> dict[str, Any]:
@@ -29,6 +33,23 @@ def _load_manifest(path: Path) -> dict[str, Any]:
     if not isinstance(manifest.get("datasets"), list):
         raise ValueError(f"{path}: datasets must be a list")
     return manifest
+
+
+def _patch_galileo_permission_enum() -> None:
+    """Tolerate newer Galileo permission actions with older generated SDKs."""
+    try:
+        from galileo.resources.models.permission import AnnotationQueueAction
+    except ImportError:
+        return
+
+    if getattr(AnnotationQueueAction, "_defenseclaw_unknown_patch", False):
+        return
+
+    def _missing_(cls, _value):
+        return cls.UPDATE
+
+    AnnotationQueueAction._missing_ = classmethod(_missing_)
+    AnnotationQueueAction._defenseclaw_unknown_patch = True
 
 
 def _select_datasets(manifest: dict[str, Any], names: list[str], include_all: bool) -> list[dict[str, Any]]:
@@ -74,6 +95,7 @@ def _run_experiment(
     model_alias: str,
     experiment_prefix: str,
 ) -> dict[str, Any]:
+    _patch_galileo_permission_enum()
     from galileo.datasets import get_dataset
     from galileo.experiments import run_experiment
     from galileo.prompts import get_prompt
@@ -88,12 +110,15 @@ def _run_experiment(
 
     settings = dict(manifest["model"]["settings"])
     settings["model_alias"] = model_alias
+    metric_names = [
+        str(metric) for metric in dataset_cfg["default_metrics"] if str(metric) not in SESSION_ONLY_EXPERIMENT_METRICS
+    ]
     result = run_experiment(
         _experiment_name(experiment_prefix, dataset_cfg["name"]),
         dataset=dataset,
         prompt_template=prompt,
         prompt_settings=settings,
-        metrics=dataset_cfg["default_metrics"],
+        metrics=_resolve_galileo_metrics(metric_names, "standard"),
         project_id=project_id,
         experiment_tags={
             "demo": "defenseclaw-runtime-governance",
@@ -117,7 +142,11 @@ def main() -> int:
     parser.add_argument("--all", action="store_true", help="Run every dataset in the playground recipe.")
     parser.add_argument("--model-alias", default=None)
     parser.add_argument("--experiment-prefix", default="defenseclaw-playground")
-    parser.add_argument("--execute", action="store_true", help="Actually start Galileo experiments. Defaults to dry-run.")
+    parser.add_argument(
+        "--execute",
+        action="store_true",
+        help="Actually start Galileo experiments. Defaults to dry-run.",
+    )
     args = parser.parse_args()
 
     manifest = _load_manifest(args.manifest)

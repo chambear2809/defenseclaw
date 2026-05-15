@@ -34,6 +34,7 @@ from defenseclaw.commands.cmd_audit import audit
 from defenseclaw.commands.cmd_c3_tokenomics import c3_tokenomics
 from defenseclaw.commands.cmd_codeguard import codeguard
 from defenseclaw.commands.cmd_config import config_cmd
+from defenseclaw.commands.cmd_demo import demo
 from defenseclaw.commands.cmd_doctor import doctor
 from defenseclaw.commands.cmd_guardrail import guardrail
 from defenseclaw.commands.cmd_init import init_cmd
@@ -57,7 +58,7 @@ from defenseclaw.commands.cmd_version import version_cmd
 from defenseclaw.context import AppContext
 
 SKIP_LOAD_COMMANDS = {
-    "agent", "c3-tokenomics", "init", "migrations", "quickstart", "sandbox", "tui",
+    "agent", "c3-tokenomics", "demo", "init", "migrations", "quickstart", "sandbox", "tui",
     "uninstall", "reset", "version",
 }
 
@@ -162,6 +163,7 @@ cli.add_command(alerts)
 cli.add_command(audit)
 cli.add_command(codeguard)
 cli.add_command(c3_tokenomics)
+cli.add_command(demo)
 cli.add_command(tool)
 cli.add_command(tui)
 cli.add_command(doctor)

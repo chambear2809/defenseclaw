@@ -593,11 +593,18 @@ otel:
     scheduled_delay_ms: 5000
     max_queue_size: 2048
   galileo:
-    enabled: false                                      # add a second trace exporter to Galileo
+    enabled: false                                      # add a Galileo trace exporter
     endpoint: "https://api.galileo.ai/otel/v1/traces"
     api_key_env: "GALILEO_API_KEY"
     project_id: ""                                      # or project name via project
     log_stream_id: ""                                   # or log stream name via log_stream
+    exporters:                                          # optional additional Galileo fan-out targets
+      - name: demo-v2
+        enabled: true
+        endpoint: "https://api.demo-v2.galileocloud.io/otel/v1/traces"
+        api_key_env: "GALILEO_DEMO_V2_API_KEY"
+        project_id: "ef0960e1-8744-4019-9faa-103b13f94e0d"
+        log_stream_id: "7d3fa020-621d-4164-aa4a-96b600663c92"
   resource:
     attributes:                                         # additional resource attrs
       deployment.environment: "production"
@@ -616,6 +623,12 @@ otel:
 | `DEFENSECLAW_GALILEO_API_KEY_ENV` | Env var name holding the Galileo API key, default `GALILEO_API_KEY` |
 | `DEFENSECLAW_GALILEO_PROJECT_ID` / `GALILEO_PROJECT_ID` | Galileo project routing ID |
 | `DEFENSECLAW_GALILEO_LOG_STREAM_ID` / `GALILEO_LOG_STREAM_ID` | Galileo log stream routing ID |
+
+To send the same trace spans to more than one Galileo tenant, keep the primary
+`otel.galileo` fields for the existing tenant and add each additional tenant
+under `otel.galileo.exporters`. Each exporter has independent `endpoint`,
+`api_key_env`, project, and log-stream routing fields; secrets stay in
+environment variables or Kubernetes Secrets, not in `config.yaml`.
 
 ### Go Config Struct
 
@@ -650,6 +663,21 @@ type OTelConfig struct {
     Resource struct {
         Attributes map[string]string `mapstructure:"attributes" yaml:"attributes"`
     } `mapstructure:"resource" yaml:"resource"`
+    Galileo struct {
+        Enabled     bool   `mapstructure:"enabled"       yaml:"enabled"`
+        Endpoint    string `mapstructure:"endpoint"      yaml:"endpoint"`
+        APIKeyEnv   string `mapstructure:"api_key_env"   yaml:"api_key_env"`
+        ProjectID   string `mapstructure:"project_id"    yaml:"project_id"`
+        LogStreamID string `mapstructure:"log_stream_id" yaml:"log_stream_id"`
+        Exporters   []struct {
+            Name        string `mapstructure:"name"          yaml:"name"`
+            Enabled     bool   `mapstructure:"enabled"       yaml:"enabled"`
+            Endpoint    string `mapstructure:"endpoint"      yaml:"endpoint"`
+            APIKeyEnv   string `mapstructure:"api_key_env"   yaml:"api_key_env"`
+            ProjectID   string `mapstructure:"project_id"    yaml:"project_id"`
+            LogStreamID string `mapstructure:"log_stream_id" yaml:"log_stream_id"`
+        } `mapstructure:"exporters" yaml:"exporters"`
+    } `mapstructure:"galileo" yaml:"galileo"`
 }
 ```
 

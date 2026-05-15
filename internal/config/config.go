@@ -626,6 +626,18 @@ type OTelResourceConfig struct {
 }
 
 type OTelGalileoConfig struct {
+	Enabled     bool                        `mapstructure:"enabled"       yaml:"enabled"`
+	Endpoint    string                      `mapstructure:"endpoint"      yaml:"endpoint"`
+	APIKeyEnv   string                      `mapstructure:"api_key_env"   yaml:"api_key_env"`
+	Project     string                      `mapstructure:"project"       yaml:"project"`
+	ProjectID   string                      `mapstructure:"project_id"    yaml:"project_id"`
+	LogStream   string                      `mapstructure:"log_stream"    yaml:"log_stream"`
+	LogStreamID string                      `mapstructure:"log_stream_id" yaml:"log_stream_id"`
+	Exporters   []OTelGalileoExporterConfig `mapstructure:"exporters"     yaml:"exporters"`
+}
+
+type OTelGalileoExporterConfig struct {
+	Name        string `mapstructure:"name"          yaml:"name"`
 	Enabled     bool   `mapstructure:"enabled"       yaml:"enabled"`
 	Endpoint    string `mapstructure:"endpoint"      yaml:"endpoint"`
 	APIKeyEnv   string `mapstructure:"api_key_env"   yaml:"api_key_env"`
@@ -643,6 +655,46 @@ func (c OTelGalileoConfig) EffectiveAPIKeyEnv() string {
 }
 
 func (c OTelGalileoConfig) ResolvedAPIKey() string {
+	return strings.TrimSpace(os.Getenv(c.EffectiveAPIKeyEnv()))
+}
+
+func (c OTelGalileoConfig) ExporterConfigs() []OTelGalileoExporterConfig {
+	var out []OTelGalileoExporterConfig
+	if c.Enabled {
+		out = append(out, OTelGalileoExporterConfig{
+			Name:        "galileo",
+			Enabled:     true,
+			Endpoint:    c.Endpoint,
+			APIKeyEnv:   c.APIKeyEnv,
+			Project:     c.Project,
+			ProjectID:   c.ProjectID,
+			LogStream:   c.LogStream,
+			LogStreamID: c.LogStreamID,
+		})
+	}
+	for _, exporter := range c.Exporters {
+		if exporter.Enabled {
+			out = append(out, exporter)
+		}
+	}
+	return out
+}
+
+func (c OTelGalileoExporterConfig) EffectiveName() string {
+	if name := strings.TrimSpace(c.Name); name != "" {
+		return name
+	}
+	return "galileo"
+}
+
+func (c OTelGalileoExporterConfig) EffectiveAPIKeyEnv() string {
+	if env := strings.TrimSpace(c.APIKeyEnv); env != "" {
+		return env
+	}
+	return "GALILEO_API_KEY"
+}
+
+func (c OTelGalileoExporterConfig) ResolvedAPIKey() string {
 	return strings.TrimSpace(os.Getenv(c.EffectiveAPIKeyEnv()))
 }
 

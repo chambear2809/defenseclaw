@@ -294,8 +294,8 @@ func newTracerProvider(ctx context.Context, cfg config.OTelConfig, res *resource
 		sdktrace.WithSpanProcessor(newBatchSpanProcessor(exporter, cfg.Batch)),
 	}
 
-	if cfg.Galileo.Enabled {
-		galileoExporter, err := newGalileoTraceExporter(ctx, cfg.Galileo)
+	for _, galileoCfg := range cfg.Galileo.ExporterConfigs() {
+		galileoExporter, err := newGalileoTraceExporter(ctx, galileoCfg)
 		if err != nil {
 			return nil, err
 		}
@@ -375,7 +375,7 @@ func newBatchSpanProcessor(exporter sdktrace.SpanExporter, cfg config.OTelBatchC
 	)
 }
 
-func newGalileoTraceExporter(ctx context.Context, cfg config.OTelGalileoConfig) (sdktrace.SpanExporter, error) {
+func newGalileoTraceExporter(ctx context.Context, cfg config.OTelGalileoExporterConfig) (sdktrace.SpanExporter, error) {
 	headers, err := galileoTraceHeaders(cfg)
 	if err != nil {
 		return nil, err
@@ -387,14 +387,14 @@ func newGalileoTraceExporter(ctx context.Context, cfg config.OTelGalileoConfig) 
 	return newHTTPTraceExporter(ctx, endpoint, "", config.OTelTLSConfig{}, headers)
 }
 
-func galileoTraceHeaders(cfg config.OTelGalileoConfig) (map[string]string, error) {
+func galileoTraceHeaders(cfg config.OTelGalileoExporterConfig) (map[string]string, error) {
 	if !cfg.Enabled {
 		return nil, nil
 	}
 
 	apiKey := cfg.ResolvedAPIKey()
 	if apiKey == "" {
-		return nil, fmt.Errorf("galileo: %s is empty", cfg.EffectiveAPIKeyEnv())
+		return nil, fmt.Errorf("galileo %s: %s is empty", cfg.EffectiveName(), cfg.EffectiveAPIKeyEnv())
 	}
 
 	headers := map[string]string{
@@ -405,7 +405,7 @@ func galileoTraceHeaders(cfg config.OTelGalileoConfig) (map[string]string, error
 	} else if project := strings.TrimSpace(cfg.Project); project != "" {
 		headers["project"] = project
 	} else {
-		return nil, fmt.Errorf("galileo: project or project_id is required")
+		return nil, fmt.Errorf("galileo %s: project or project_id is required", cfg.EffectiveName())
 	}
 
 	if logStreamID := strings.TrimSpace(cfg.LogStreamID); logStreamID != "" {
@@ -413,7 +413,7 @@ func galileoTraceHeaders(cfg config.OTelGalileoConfig) (map[string]string, error
 	} else if logStream := strings.TrimSpace(cfg.LogStream); logStream != "" {
 		headers["logstream"] = logStream
 	} else {
-		return nil, fmt.Errorf("galileo: log_stream or log_stream_id is required")
+		return nil, fmt.Errorf("galileo %s: log_stream or log_stream_id is required", cfg.EffectiveName())
 	}
 
 	return headers, nil

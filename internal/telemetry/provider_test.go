@@ -233,7 +233,7 @@ func TestStartLLMSpan_MirrorsResourceJoinKeysOntoSpan(t *testing.T) {
 func TestGalileoTraceHeaders_UsesAPIKeyAndRoutingIDs(t *testing.T) {
 	t.Setenv("TEST_GALILEO_API_KEY", "test-galileo-key")
 
-	headers, err := galileoTraceHeaders(config.OTelGalileoConfig{
+	headers, err := galileoTraceHeaders(config.OTelGalileoExporterConfig{
 		Enabled:     true,
 		APIKeyEnv:   "TEST_GALILEO_API_KEY",
 		Project:     "project-name",
@@ -263,19 +263,19 @@ func TestGalileoTraceHeaders_UsesAPIKeyAndRoutingIDs(t *testing.T) {
 }
 
 func TestGalileoTraceHeaders_ValidatesRequiredConfig(t *testing.T) {
-	if _, err := galileoTraceHeaders(config.OTelGalileoConfig{Enabled: true}); err == nil {
+	if _, err := galileoTraceHeaders(config.OTelGalileoExporterConfig{Enabled: true}); err == nil {
 		t.Fatal("expected missing API key error")
 	}
 
 	t.Setenv("TEST_GALILEO_API_KEY", "test-galileo-key")
-	if _, err := galileoTraceHeaders(config.OTelGalileoConfig{
+	if _, err := galileoTraceHeaders(config.OTelGalileoExporterConfig{
 		Enabled:   true,
 		APIKeyEnv: "TEST_GALILEO_API_KEY",
 		LogStream: "logs",
 	}); err == nil {
 		t.Fatal("expected missing project error")
 	}
-	if _, err := galileoTraceHeaders(config.OTelGalileoConfig{
+	if _, err := galileoTraceHeaders(config.OTelGalileoExporterConfig{
 		Enabled:   true,
 		APIKeyEnv: "TEST_GALILEO_API_KEY",
 		Project:   "project",

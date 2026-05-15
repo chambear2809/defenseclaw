@@ -197,6 +197,9 @@ func TestCommandRules_TruePositives(t *testing.T) {
 		{"python -c execution", `python3 -c "import os; os.system('id')"`, "CMD-PYTHON-C"},
 		{"rm -rf /", `rm -rf /`, "CMD-RM-RF"},
 		{"rm -rf / with flags", `rm -rf --no-preserve-root /`, "CMD-RM-RF"},
+		{"kubectl delete all pods", `kubectl delete pods --all -n defenesclaw`, "CMD-KUBECTL-DELETE-ALL"},
+		{"kubectl delete runtime namespace object", `kubectl -n defenesclaw delete deployment defenseclaw`, "CMD-KUBECTL-DELETE-ALL"},
+		{"kubectl dump secrets json", `kubectl get secrets -n defenesclaw -o json`, "CMD-KUBECTL-SECRET-DUMP"},
 		{"mkfs", `mkfs.ext4 /dev/sda1`, "CMD-MKFS"},
 		{"dd if", `dd if=/dev/zero of=/dev/sda`, "CMD-DD-IF"},
 		{"chmod world writable", `chmod 777 /etc/important`, "CMD-CHMOD-WORLD"},
@@ -319,6 +322,45 @@ func TestCommandRules_RmRfCriticalPathPrecision(t *testing.T) {
 		}
 		if !found {
 			t.Fatalf("expected CMD-RM-RF for critical delete input %q", input)
+		}
+	}
+}
+
+func TestCommandRules_KubectlDestructivePrecision(t *testing.T) {
+	safeCases := []string{
+		`kubectl -n defenesclaw get deploy,svc,pods -o wide`,
+		`kubectl get secret defenseclaw-secrets -o name`,
+		`kubectl -n checkout-demo rollout status deploy/checkout-api`,
+	}
+	for _, input := range safeCases {
+		findings := ScanAllRules(input, "shell")
+		for _, f := range findings {
+			if f.RuleID == "CMD-KUBECTL-DELETE-ALL" || f.RuleID == "CMD-KUBECTL-SECRET-DUMP" {
+				t.Fatalf("unexpected %s for safe kubectl input %q", f.RuleID, input)
+			}
+		}
+	}
+
+	riskyCases := []struct {
+		input  string
+		wantID string
+	}{
+		{`kubectl delete pods --all -n defenesclaw`, "CMD-KUBECTL-DELETE-ALL"},
+		{`kubectl delete namespace checkout-demo`, "CMD-KUBECTL-DELETE-ALL"},
+		{`kubectl get secrets --all-namespaces`, "CMD-KUBECTL-SECRET-DUMP"},
+		{`kubectl get secret defenseclaw-secrets --output yaml`, "CMD-KUBECTL-SECRET-DUMP"},
+	}
+	for _, tc := range riskyCases {
+		findings := ScanAllRules(tc.input, "shell")
+		found := false
+		for _, f := range findings {
+			if f.RuleID == tc.wantID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("expected %s for kubectl input %q; got %v", tc.wantID, tc.input, findingIDs(findings))
 		}
 	}
 }

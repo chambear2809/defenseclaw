@@ -25,6 +25,8 @@ internal/gateway/connector/openclaw_extension/
 bin/
 dist/
 build/
+!bundles/c3_agent_tokenomics/mfe_prebuilt/dist/
+!bundles/c3_agent_tokenomics/mfe_prebuilt/dist/**
 coverage.out
 cover.out
 *.coverprofile

@@ -16,11 +16,11 @@ metadata:
 data:
   TOKENOMICS_DEMO_ALLOW_FIXTURE_FALLBACK: "true"
   O11Y_REALM: "us1"
-  GALILEO_API_BASE: "https://api.galileo.ai"
-  GALILEO_PROJECT: "clus-demo"
-  GALILEO_PROJECT_ID: "0ba7b20d-8262-44c4-b230-547a0cd74b2b"
-  GALILEO_LOG_STREAM: "clus-demo"
-  GALILEO_LOG_STREAM_ID: "82b893bd-fa1f-411e-81e8-e12ca66692ad"
+  GALILEO_API_BASE: "https://api.demo-v2.galileocloud.io"
+  GALILEO_PROJECT: "defenseclaw-enterprise-ops-20260515"
+  GALILEO_PROJECT_ID: "ef0960e1-8744-4019-9faa-103b13f94e0d"
+  GALILEO_LOG_STREAM: "defenseclaw-enterprise-ops-20260515"
+  GALILEO_LOG_STREAM_ID: "7d3fa020-621d-4164-aa4a-96b600663c92"
 ---
 apiVersion: apps/v1
 kind: Deployment

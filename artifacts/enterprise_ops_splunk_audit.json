@@ -1,0 +1,66 @@
+[
+  {
+    "_time": "2026-05-14 04:27:52.731 GMT",
+    "action": "inspect-tool-allow",
+    "target": "shell",
+    "raw_action": "block",
+    "would_block": "true",
+    "policy_severity": "HIGH"
+  },
+  {
+    "_time": "2026-05-14 04:27:52.677 GMT",
+    "action": "inspect-tool-allow",
+    "target": "shell",
+    "raw_action": "alert",
+    "would_block": "false",
+    "policy_severity": "MEDIUM"
+  },
+  {
+    "_time": "2026-05-14 04:27:52.624 GMT",
+    "action": "inspect-tool-allow",
+    "target": "http",
+    "raw_action": "alert",
+    "would_block": "false",
+    "policy_severity": "MEDIUM"
+  },
+  {
+    "_time": "2026-05-14 04:27:52.572 GMT",
+    "action": "inspect-tool-allow",
+    "target": "http",
+    "raw_action": "allow",
+    "would_block": "false",
+    "policy_severity": "NONE"
+  },
+  {
+    "_time": "2026-05-14 04:27:52.501 GMT",
+    "action": "inspect-tool-allow",
+    "target": "shell",
+    "raw_action": "allow",
+    "would_block": "false",
+    "policy_severity": "NONE"
+  },
+  {
+    "_time": "2026-05-14 04:22:45.603 GMT",
+    "action": "inspect-tool-allow",
+    "target": "shell",
+    "raw_action": "block",
+    "would_block": "true",
+    "policy_severity": "HIGH"
+  },
+  {
+    "_time": "2026-05-14 04:22:45.551 GMT",
+    "action": "inspect-tool-allow",
+    "target": "shell",
+    "raw_action": "allow",
+    "would_block": "false",
+    "policy_severity": "NONE"
+  },
+  {
+    "_time": "2026-05-14 04:22:45.495 GMT",
+    "action": "inspect-tool-allow",
+    "target": "http",
+    "raw_action": "allow",
+    "would_block": "false",
+    "policy_severity": "NONE"
+  }
+]
