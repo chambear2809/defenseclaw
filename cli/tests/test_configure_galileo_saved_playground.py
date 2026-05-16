@@ -78,6 +78,9 @@ class ConfigureGalileoSavedPlaygroundTests(unittest.TestCase):
         self.assertIn("action_completion", plan["scorers"]["required"])
         self.assertIn("correctness", plan["scorers"]["optional"])
         self.assertEqual(plan["model_settings"]["model_alias"], "gpt-4.1-nano")
+        self.assertEqual(plan["playground_prompt_id"], configure_playground.SAVED_PLAYGROUND_PROMPT_ID)
+        self.assertIn("{{ user_prompt }}", plan["prompt"]["template"])
+        self.assertEqual(plan["prompt"]["variables"], ["user_prompt", "cluster_context", "agent_name", "guardrail_mode"])
 
     def test_execute_patches_saved_playground_with_latest_dataset_version_and_scorers(self):
         manifest = configure_playground.load_manifest(configure_playground.DEFAULT_MANIFEST)
@@ -87,6 +90,7 @@ class ConfigureGalileoSavedPlaygroundTests(unittest.TestCase):
                 FakeResponse(200, {"versions": [{"version_index": 3}, {"version_index": 5}]}),
                 FakeResponse(200, {"scorers": [scorer(name) for name in [*required, "correctness", "output_pii"]]}),
                 FakeResponse(200, {"id": configure_playground.SAVED_PLAYGROUND_ID, "updated": True}),
+                FakeResponse(200, {"id": configure_playground.SAVED_PLAYGROUND_PROMPT_ID, "template": "set"}),
             ]
         )
 
@@ -99,10 +103,23 @@ class ConfigureGalileoSavedPlaygroundTests(unittest.TestCase):
 
         self.assertTrue(result["ok"], result)
         self.assertEqual(result["plan"]["dataset"]["version_index"], 5)
+        self.assertEqual(
+            result["endpoints"]["playground_prompt"],
+            (
+                f"/projects/{manifest['project']['id']}/playgrounds/"
+                f"{configure_playground.SAVED_PLAYGROUND_ID}/prompts/"
+                f"{configure_playground.SAVED_PLAYGROUND_PROMPT_ID}"
+            ),
+        )
         patch_call = session.calls[2]
         self.assertEqual(patch_call["method"], "PATCH")
-        self.assertTrue(patch_call["url"].endswith(f"/v2/playgrounds/{configure_playground.SAVED_PLAYGROUND_ID}"))
+        self.assertTrue(
+            patch_call["url"].endswith(
+                f"/projects/{manifest['project']['id']}/playgrounds/{configure_playground.SAVED_PLAYGROUND_ID}"
+            )
+        )
         self.assertEqual(patch_call["headers"]["Galileo-API-Key"], "secret-token")
+        self.assertEqual(patch_call["headers"]["Authorization"], "Bearer secret-token")
         patch_payload = patch_call["json"]
         self.assertEqual(patch_payload["dataset"]["version_index"], 5)
         self.assertEqual(
@@ -111,6 +128,11 @@ class ConfigureGalileoSavedPlaygroundTests(unittest.TestCase):
         )
         self.assertEqual(patch_payload["settings"]["temperature"], 0.2)
         self.assertIn("output_pii", {item["metric"] for item in patch_payload["scorers"]})
+        prompt_call = session.calls[3]
+        self.assertEqual(prompt_call["method"], "PATCH")
+        self.assertTrue(prompt_call["url"].endswith(f"/prompts/{configure_playground.SAVED_PLAYGROUND_PROMPT_ID}"))
+        self.assertIn("{{ cluster_context }}", prompt_call["json"]["template"])
+        self.assertEqual(prompt_call["json"]["base_prompt_template_version_id"], manifest["prompt"]["selected_version_id"])
 
     def test_missing_token_can_skip_without_api_call(self):
         args = argparse.Namespace(
@@ -121,6 +143,11 @@ class ConfigureGalileoSavedPlaygroundTests(unittest.TestCase):
             allow_token_missing=True,
             timeout=20.0,
             playground_id=configure_playground.SAVED_PLAYGROUND_ID,
+            playground_prompt_id=configure_playground.SAVED_PLAYGROUND_PROMPT_ID,
+            use_k8s_secret=False,
+            k8s_secret_namespace=configure_playground.DEFAULT_K8S_SECRET_NAMESPACE,
+            k8s_secret_name=configure_playground.DEFAULT_K8S_SECRET_NAME,
+            k8s_secret_key=configure_playground.DEFAULT_K8S_SECRET_KEY,
         )
         with mock.patch.dict(os.environ, {}, clear=True):
             result = configure_playground.run(args)
@@ -162,6 +189,23 @@ class ConfigureGalileoSavedPlaygroundTests(unittest.TestCase):
             )
 
         self.assertEqual(ctx.exception.reason, "provider_quota_unavailable")
+
+    def test_k8s_secret_key_source_decodes_without_printing_secret(self):
+        encoded = "c2VjcmV0LXRva2VuCg=="
+        completed = mock.Mock(stdout=encoded)
+
+        with mock.patch.object(configure_playground.subprocess, "run", return_value=completed) as run:
+            token = configure_playground.read_k8s_galileo_api_key(
+                namespace="defenesclaw",
+                secret_name="defenseclaw-secrets",
+                key="GALILEO_API_KEY",
+                timeout=3,
+            )
+
+        self.assertEqual(token, "secret-token")
+        argv = run.call_args.args[0]
+        self.assertEqual(argv[:5], ["kubectl", "-n", "defenesclaw", "get", "secret"])
+        self.assertNotIn("secret-token", " ".join(argv))
 
 
 if __name__ == "__main__":

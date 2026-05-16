@@ -12,10 +12,12 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import datetime as dt
 import json
 import os
 from pathlib import Path
+import subprocess
 from typing import Any
 
 import requests
@@ -24,7 +26,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MANIFEST = REPO_ROOT / "playgrounds" / "galileo" / "defenseclaw-runtime-governance.playground.json"
 ENTERPRISE_DATASET_NAME = "defenseclaw-enterprise-ops-thousandeyes"
 SAVED_PLAYGROUND_ID = "e969b856-9d5d-48a4-90af-b33e20fe6fab"
+SAVED_PLAYGROUND_PROMPT_ID = "42a0300b-ae09-4b13-9c11-91c89a4fb71b"
 SAVED_PLAYGROUND_NAME = "defenseclaw-enterprise-ops-thousandeyes-playground"
+DEFAULT_K8S_SECRET_NAMESPACE = "defenesclaw"
+DEFAULT_K8S_SECRET_NAME = "defenseclaw-secrets"
+DEFAULT_K8S_SECRET_KEY = "GALILEO_API_KEY"
 OPTIONAL_SCORERS = ("correctness", "output_pii")
 
 
@@ -33,6 +39,10 @@ class ConfigureSkipped(RuntimeError):
         super().__init__(reason)
         self.reason = reason
         self.detail = detail
+
+
+class TokenUnavailable(RuntimeError):
+    pass
 
 
 def _utc_now() -> str:
@@ -79,10 +89,24 @@ def scorer_plan(dataset_cfg: dict[str, Any]) -> dict[str, Any]:
     return {"required": required, "optional": optional}
 
 
+def _repo_relative_path(value: str) -> Path:
+    path = Path(value)
+    return path if path.is_absolute() else REPO_ROOT / path
+
+
+def prompt_template(prompt_cfg: dict[str, Any]) -> str:
+    source = prompt_cfg.get("source")
+    if not isinstance(source, str) or not source.strip():
+        raise ValueError("manifest prompt.source must be set")
+    path = _repo_relative_path(source)
+    return path.read_text(encoding="utf-8")
+
+
 def build_plan(
     manifest: dict[str, Any],
     *,
     playground_id: str = SAVED_PLAYGROUND_ID,
+    playground_prompt_id: str = SAVED_PLAYGROUND_PROMPT_ID,
     dataset_version_index: int | None = None,
     resolved_scorers: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
@@ -95,6 +119,7 @@ def build_plan(
     score_plan = scorer_plan(dataset_cfg)
     return {
         "playground_id": playground_id,
+        "playground_prompt_id": playground_prompt_id,
         "playground_name": SAVED_PLAYGROUND_NAME,
         "project_id": project["id"],
         "api_url": project.get("api_url") or os.environ.get("GALILEO_API_URL") or "https://api.galileo.ai",
@@ -110,6 +135,9 @@ def build_plan(
             "id": prompt["id"],
             "version": prompt.get("selected_version"),
             "version_id": prompt.get("selected_version_id"),
+            "source": prompt.get("source"),
+            "variables": list(prompt.get("variables") or []),
+            "template": prompt_template(prompt),
         },
         "model_settings": settings,
         "scorers": {
@@ -123,6 +151,7 @@ def build_plan(
 def _headers(api_key: str) -> dict[str, str]:
     return {
         "Accept": "application/json",
+        "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
         "Galileo-API-Key": api_key,
         "User-Agent": "defenseclaw-saved-playground-configurator/1",
@@ -182,6 +211,49 @@ def _request_json(
     return payload if isinstance(payload, dict) else {"value": payload}
 
 
+def _request_json_any(
+    session: requests.Session,
+    method: str,
+    api_base: str,
+    paths: list[str] | tuple[str, ...],
+    *,
+    api_key: str,
+    timeout: float,
+    json_body: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], str]:
+    attempts: list[str] = []
+    last_error: Exception | None = None
+    for path in paths:
+        try:
+            return (
+                _request_json(
+                    session,
+                    method,
+                    api_base,
+                    path,
+                    api_key=api_key,
+                    timeout=timeout,
+                    json_body=json_body,
+                ),
+                path,
+            )
+        except requests.HTTPError as exc:
+            response = exc.response
+            status_code = response.status_code if response is not None else None
+            if status_code not in {404, 405}:
+                raise
+            attempts.append(f"{method} {path} -> {status_code}")
+            last_error = exc
+    detail = "; ".join(attempts) if attempts else "no request paths were attempted"
+    raise RuntimeError(f"no Galileo endpoint accepted the request: {detail}") from last_error
+
+
+def _unversioned_and_v2(path: str) -> tuple[str, str]:
+    if path.startswith("/v2/"):
+        return (path[3:], path)
+    return (path, "/v2" + path)
+
+
 def latest_dataset_version_index(
     session: requests.Session,
     *,
@@ -191,11 +263,11 @@ def latest_dataset_version_index(
     timeout: float,
     fallback: int | None = None,
 ) -> int:
-    payload = _request_json(
+    payload, _ = _request_json_any(
         session,
         "POST",
         api_base,
-        f"/v2/datasets/{dataset_id}/versions/query",
+        _unversioned_and_v2(f"/datasets/{dataset_id}/versions/query"),
         api_key=api_key,
         timeout=timeout,
         json_body={"sort": {"name": "version_index", "ascending": True, "sort_type": "column"}},
@@ -236,11 +308,11 @@ def resolve_scorers(
     optional: list[str],
     timeout: float,
 ) -> tuple[list[dict[str, Any]], list[str]]:
-    payload = _request_json(
+    payload, _ = _request_json_any(
         session,
         "POST",
         api_base,
-        "/v2/scorers/list",
+        _unversioned_and_v2("/scorers/list"),
         api_key=api_key,
         timeout=timeout,
         json_body={"filters": [], "sort": {"name": "name", "ascending": True, "sort_type": "column"}},
@@ -304,6 +376,8 @@ def playground_patch_payload(plan: dict[str, Any]) -> dict[str, Any]:
             "id": plan["prompt"]["id"],
             "version": plan["prompt"]["version"],
             "version_id": plan["prompt"]["version_id"],
+            "source": plan["prompt"]["source"],
+            "variables": plan["prompt"]["variables"],
         },
         "settings": plan["model_settings"],
         "scorers": [
@@ -324,16 +398,88 @@ def playground_patch_payload(plan: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def playground_prompt_patch_payload(plan: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "base_prompt_template_version_id": plan["prompt"]["version_id"],
+        "template": plan["prompt"]["template"],
+        "settings": plan["model_settings"],
+        "raw": False,
+    }
+
+
+def _playground_path(project_id: str, playground_id: str) -> tuple[str, str]:
+    return _unversioned_and_v2(f"/projects/{project_id}/playgrounds/{playground_id}")
+
+
+def _legacy_playground_path(playground_id: str) -> tuple[str, str]:
+    return _unversioned_and_v2(f"/playgrounds/{playground_id}")
+
+
+def _playground_prompt_path(project_id: str, playground_id: str, prompt_id: str) -> tuple[str, str]:
+    return _unversioned_and_v2(f"/projects/{project_id}/playgrounds/{playground_id}/prompts/{prompt_id}")
+
+
+def patch_saved_playground(
+    session: requests.Session,
+    *,
+    api_base: str,
+    api_key: str,
+    timeout: float,
+    plan: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any], str]:
+    patch = playground_patch_payload(plan)
+    paths = (
+        *_playground_path(str(plan["project_id"]), str(plan["playground_id"])),
+        *_legacy_playground_path(str(plan["playground_id"])),
+    )
+    updated, path = _request_json_any(
+        session,
+        "PATCH",
+        api_base,
+        paths,
+        api_key=api_key,
+        timeout=timeout,
+        json_body=patch,
+    )
+    return updated, patch, path
+
+
+def patch_saved_playground_prompt(
+    session: requests.Session,
+    *,
+    api_base: str,
+    api_key: str,
+    timeout: float,
+    plan: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any], str]:
+    patch = playground_prompt_patch_payload(plan)
+    updated, path = _request_json_any(
+        session,
+        "PATCH",
+        api_base,
+        _playground_prompt_path(
+            str(plan["project_id"]),
+            str(plan["playground_id"]),
+            str(plan["playground_prompt_id"]),
+        ),
+        api_key=api_key,
+        timeout=timeout,
+        json_body=patch,
+    )
+    return updated, patch, path
+
+
 def execute_saved_playground_config(
     manifest: dict[str, Any],
     *,
     api_key: str,
     timeout: float = 20.0,
     playground_id: str = SAVED_PLAYGROUND_ID,
+    playground_prompt_id: str = SAVED_PLAYGROUND_PROMPT_ID,
     session: requests.Session | None = None,
 ) -> dict[str, Any]:
     session = session or requests.Session()
-    initial_plan = build_plan(manifest, playground_id=playground_id)
+    initial_plan = build_plan(manifest, playground_id=playground_id, playground_prompt_id=playground_prompt_id)
     api_base = str(initial_plan["api_url"])
     dataset_cfg = initial_plan["dataset"]
     score_cfg = initial_plan["scorers"]
@@ -355,18 +501,23 @@ def execute_saved_playground_config(
     plan = build_plan(
         manifest,
         playground_id=playground_id,
+        playground_prompt_id=playground_prompt_id,
         dataset_version_index=version_index,
         resolved_scorers=resolved_scorers,
     )
-    patch = playground_patch_payload(plan)
-    updated = _request_json(
+    updated, patch, playground_endpoint = patch_saved_playground(
         session,
-        "PATCH",
-        api_base,
-        f"/v2/playgrounds/{playground_id}",
+        api_base=api_base,
         api_key=api_key,
         timeout=timeout,
-        json_body=patch,
+        plan=plan,
+    )
+    prompt_updated, prompt_patch, prompt_endpoint = patch_saved_playground_prompt(
+        session,
+        api_base=api_base,
+        api_key=api_key,
+        timeout=timeout,
+        plan=plan,
     )
     return {
         "ok": True,
@@ -376,7 +527,13 @@ def execute_saved_playground_config(
         "playground_id": playground_id,
         "plan": plan,
         "patch": patch,
+        "prompt_patch": prompt_patch,
         "updated": updated,
+        "prompt_updated": prompt_updated,
+        "endpoints": {
+            "playground": playground_endpoint,
+            "playground_prompt": prompt_endpoint,
+        },
         "skipped_optional_scorers": skipped_optional,
     }
 
@@ -404,31 +561,98 @@ def _read_key_file(path: Path | None) -> str | None:
         raise SystemExit(f"failed to read Galileo API key file: {exc}") from exc
 
 
-def _select_api_key(path: Path | None) -> str | None:
-    return _read_key_file(path) or os.environ.get("GALILEO_API_KEY")
+def read_k8s_galileo_api_key(
+    *,
+    namespace: str = DEFAULT_K8S_SECRET_NAMESPACE,
+    secret_name: str = DEFAULT_K8S_SECRET_NAME,
+    key: str = DEFAULT_K8S_SECRET_KEY,
+    timeout: float = 20.0,
+) -> str:
+    jsonpath = "{.data." + key + "}"
+    try:
+        result = subprocess.run(
+            ["kubectl", "-n", namespace, "get", "secret", secret_name, "-o", f"jsonpath={jsonpath}"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        raise TokenUnavailable(
+            f"unable to read Kubernetes secret {namespace}/{secret_name}:{key}; run duo-sso and retry"
+        ) from exc
+    encoded = result.stdout.strip()
+    if not encoded:
+        raise TokenUnavailable(f"Kubernetes secret {namespace}/{secret_name}:{key} is empty")
+    try:
+        return base64.b64decode(encoded).decode("utf-8").strip()
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise TokenUnavailable(f"Kubernetes secret {namespace}/{secret_name}:{key} is not valid base64") from exc
+
+
+def _select_api_key(args: argparse.Namespace) -> tuple[str | None, str | None, str]:
+    file_key = _read_key_file(args.galileo_api_key_file)
+    if file_key:
+        return file_key, "file", ""
+    env_key = os.environ.get("GALILEO_API_KEY")
+    if env_key:
+        return env_key, "env", ""
+    if getattr(args, "use_k8s_secret", False):
+        try:
+            return (
+                read_k8s_galileo_api_key(
+                    namespace=args.k8s_secret_namespace,
+                    secret_name=args.k8s_secret_name,
+                    key=args.k8s_secret_key,
+                    timeout=args.timeout,
+                ),
+                "kubernetes_secret",
+                "",
+            )
+        except TokenUnavailable as exc:
+            return None, None, str(exc)
+    return None, None, ""
 
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
     manifest = load_manifest(args.manifest)
     dry_run = bool(args.dry_run or not args.execute)
     if dry_run:
-        return {"ok": True, "status": "planned", "dry_run": True, "created_at_utc": _utc_now(), "plan": build_plan(manifest)}
+        return {
+            "ok": True,
+            "status": "planned",
+            "dry_run": True,
+            "created_at_utc": _utc_now(),
+            "plan": build_plan(
+                manifest,
+                playground_id=args.playground_id,
+                playground_prompt_id=args.playground_prompt_id,
+            ),
+        }
 
-    api_key = _select_api_key(args.galileo_api_key_file)
+    api_key, api_key_source, token_detail = _select_api_key(args)
     if not api_key:
         if args.allow_token_missing:
-            return skipped_artifact("missing_galileo_api_key")
-        raise SystemExit("GALILEO_API_KEY or --galileo-api-key-file is required when --execute is set")
+            return skipped_artifact("missing_galileo_api_key", detail=token_detail)
+        message = "GALILEO_API_KEY, --galileo-api-key-file, or --use-k8s-secret is required when --execute is set"
+        if token_detail:
+            message = f"{message}: {token_detail}"
+        raise SystemExit(message)
 
     try:
-        return execute_saved_playground_config(
+        result = execute_saved_playground_config(
             manifest,
             api_key=api_key,
             timeout=args.timeout,
             playground_id=args.playground_id,
+            playground_prompt_id=args.playground_prompt_id,
         )
+        result["api_key_source"] = api_key_source
+        return result
     except ConfigureSkipped as exc:
-        return skipped_artifact(exc.reason, detail=exc.detail)
+        artifact = skipped_artifact(exc.reason, detail=exc.detail)
+        artifact["api_key_source"] = api_key_source
+        return artifact
 
 
 def main() -> int:
@@ -438,7 +662,12 @@ def main() -> int:
     mode.add_argument("--execute", action="store_true", help="Patch the saved Playground through the Galileo API.")
     parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
     parser.add_argument("--playground-id", default=SAVED_PLAYGROUND_ID)
+    parser.add_argument("--playground-prompt-id", default=SAVED_PLAYGROUND_PROMPT_ID)
     parser.add_argument("--galileo-api-key-file", type=Path, default=None)
+    parser.add_argument("--use-k8s-secret", action="store_true", help="Read the API key from the live lab Kubernetes secret.")
+    parser.add_argument("--k8s-secret-namespace", default=DEFAULT_K8S_SECRET_NAMESPACE)
+    parser.add_argument("--k8s-secret-name", default=DEFAULT_K8S_SECRET_NAME)
+    parser.add_argument("--k8s-secret-key", default=DEFAULT_K8S_SECRET_KEY)
     parser.add_argument("--allow-token-missing", action="store_true")
     parser.add_argument("--timeout", type=float, default=20.0)
     args = parser.parse_args()

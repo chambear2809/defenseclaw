@@ -441,13 +441,19 @@ https://console.demo-v2.galileocloud.io/project/ef0960e1-8744-4019-9faa-103b13f9
 Dry-run or patch it with:
 
 ```bash
-python3 scripts/configure_galileo_saved_playground.py --dry-run
+./.venv/bin/python scripts/configure_galileo_saved_playground.py --dry-run
 
-python3 scripts/configure_galileo_saved_playground.py \
+duo-sso
+
+./.venv/bin/python scripts/configure_galileo_saved_playground.py \
   --execute \
-  --galileo-api-key-file /path/to/galileo-api-key \
+  --use-k8s-secret \
   --allow-token-missing
 ```
+
+The patch updates the saved Playground and its first Playground prompt row, so
+the editor should show variables from `prompts/galileo/defenseclaw-runtime-governance.md`
+instead of a blank prompt.
 
 The enterprise dataset now has 16 rows. It includes real approval and failure
 branches for existing-test reuse, no online K8s TE agent, denied approval,

@@ -175,19 +175,21 @@ cat playgrounds/galileo/defenseclaw-runtime-governance.playground.json
 Dry-run the saved Playground patch without the Galileo SDK or API token:
 
 ```bash
-python3 scripts/configure_galileo_saved_playground.py --dry-run
+./.venv/bin/python scripts/configure_galileo_saved_playground.py --dry-run
 ```
 
 When tokens are restored, patch the existing saved Playground with the latest
-enterprise dataset version, prompt version, model settings, and scorer configs:
+enterprise dataset version, prompt body, prompt version, model settings, and
+scorer configs. In the live lab, the easy path reads the Galileo key from the
+existing Kubernetes secret after SSO:
 
 ```bash
-python3 -m venv /tmp/defenseclaw-galileo-sdk
-/tmp/defenseclaw-galileo-sdk/bin/python -m pip install --upgrade pip requests
+duo-sso
 
-/tmp/defenseclaw-galileo-sdk/bin/python scripts/configure_galileo_saved_playground.py \
+./.venv/bin/python scripts/configure_galileo_saved_playground.py \
   --execute \
-  --galileo-api-key-file /path/to/galileo-api-key
+  --use-k8s-secret \
+  --allow-token-missing
 ```
 
 Use `--allow-token-missing` during quota/token outages; the command records a
@@ -197,7 +199,8 @@ Console fallback:
 
 1. Open Galileo project `defenseclaw-enterprise-ops-20260515`.
 2. Open saved Playground `defenseclaw-enterprise-ops-thousandeyes-playground`.
-3. Select prompt `defenseclaw-runtime-governance`.
+3. Select prompt `defenseclaw-runtime-governance` and confirm the editor shows
+   the prompt body from `prompts/galileo/defenseclaw-runtime-governance.md`.
 4. Select dataset `defenseclaw-enterprise-ops-thousandeyes`, latest version.
 5. Add the enterprise dataset's `default_metrics`; keep row-level metrics such
    as `correctness` and `output_pii` when the scorer catalog exposes them.
