@@ -196,7 +196,7 @@ class ConfigureGalileoSavedPlaygroundTests(unittest.TestCase):
 
         with mock.patch.object(configure_playground.subprocess, "run", return_value=completed) as run:
             token = configure_playground.read_k8s_galileo_api_key(
-                namespace="defenesclaw",
+                namespace="defenseclaw",
                 secret_name="defenseclaw-secrets",
                 key="GALILEO_API_KEY",
                 timeout=3,
@@ -204,7 +204,7 @@ class ConfigureGalileoSavedPlaygroundTests(unittest.TestCase):
 
         self.assertEqual(token, "secret-token")
         argv = run.call_args.args[0]
-        self.assertEqual(argv[:5], ["kubectl", "-n", "defenesclaw", "get", "secret"])
+        self.assertEqual(argv[:5], ["kubectl", "-n", "defenseclaw", "get", "secret"])
         self.assertNotIn("secret-token", " ".join(argv))
 
 

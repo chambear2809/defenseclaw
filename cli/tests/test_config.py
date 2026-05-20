@@ -39,6 +39,7 @@ from defenseclaw.config import (
     ClawConfig,
     Config,
     GatewayConfig,
+    GatewayWatcherMCPConfig,
     GatewayWatcherPluginConfig,
     GuardrailConfig,
     InspectLLMConfig,
@@ -100,6 +101,16 @@ class TestHelpers(unittest.TestCase):
     def test_validate_deployment_mode_invalid(self):
         with self.assertRaises(ValueError):
             config_mod._validate_deployment_mode("freeform")
+
+    @patch("defenseclaw.config.platform.system", return_value="Darwin")
+    def test_notifications_default_off_on_macos(self, _mock):
+        self.assertFalse(config_mod._default_notifications_enabled())
+        self.assertFalse(config_mod.NotificationsConfig().enabled)
+
+    @patch("defenseclaw.config.platform.system", return_value="Linux")
+    def test_notifications_default_off_on_linux(self, _mock):
+        self.assertFalse(config_mod._default_notifications_enabled())
+        self.assertFalse(config_mod.NotificationsConfig().enabled)
 
 
 class TestPaths(unittest.TestCase):
@@ -267,6 +278,19 @@ class TestMergeFunctions(unittest.TestCase):
 
         gw_no_plugin = _merge_gateway_watcher({"enabled": True})
         self.assertEqual(gw_no_plugin.plugin, GatewayWatcherPluginConfig())
+        self.assertEqual(gw_no_plugin.mcp, GatewayWatcherMCPConfig())
+
+    def test_merge_gateway_watcher_with_mcp(self):
+        gw = _merge_gateway_watcher(
+            {
+                "enabled": True,
+                "mcp": {
+                    "take_action": True,
+                },
+            }
+        )
+        self.assertTrue(gw.enabled)
+        self.assertTrue(gw.mcp.take_action)
 
 
 class TestDefaultConfig(unittest.TestCase):
@@ -284,6 +308,7 @@ class TestDefaultConfig(unittest.TestCase):
         self.assertTrue(cfg.gateway.watcher.enabled)
         self.assertTrue(cfg.gateway.watcher.skill.enabled)
         self.assertFalse(cfg.gateway.watcher.skill.take_action)
+        self.assertFalse(cfg.gateway.watcher.mcp.take_action)
 
     def test_default_skill_scanner_config(self):
         cfg = default_config()

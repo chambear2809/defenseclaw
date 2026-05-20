@@ -43,7 +43,7 @@ Install the Galileo SDK in a temporary environment, then upload the datasets and
 python3 -m venv /tmp/defenseclaw-galileo-upload
 /tmp/defenseclaw-galileo-upload/bin/python -m pip install --upgrade pip galileo
 
-GALILEO_API_KEY="$(kubectl -n defenesclaw get secret defenseclaw-secrets -o jsonpath='{.data.GALILEO_API_KEY}' | base64 --decode)" \
+GALILEO_API_KEY="$(kubectl -n defenseclaw get secret defenseclaw-secrets -o jsonpath='{.data.GALILEO_API_KEY}' | base64 --decode)" \
 GALILEO_CONSOLE_URL="https://console.demo-v2.galileocloud.io" \
 GALILEO_API_URL="https://api.demo-v2.galileocloud.io" \
 /tmp/defenseclaw-galileo-upload/bin/python scripts/upload_galileo_demo_datasets.py \
@@ -75,7 +75,7 @@ Log stream ID: `7d3fa020-621d-4164-aa4a-96b600663c92`
 | `defenseclaw-dangerous-tool-pre-tool` | `4a60a2a7-55eb-42c1-96cf-b9bf7e6710a4` | Maps to `deny-dangerous-shell-pre-tool`; best bridge to `/api/v1/inspect/tool`. |
 | `defenseclaw-pii-post-llm` | `18716fff-2c83-40e8-9c72-43520e63e3a4` | Maps to `steer-pii-post-llm`. |
 | `defenseclaw-ambiguous-admin-intent` | `894bfeea-274c-4639-9d21-e7bb1d53f48b` | Shows approval-seeking behavior for risky admin requests. |
-| `defenseclaw-grounded-cluster-review` | `82505136-42a9-4eab-932b-2e7903ee23fa` | Validates K8 facts, especially `isovalent-demo` and namespace `defenesclaw`. |
+| `defenseclaw-grounded-cluster-review` | `82505136-42a9-4eab-932b-2e7903ee23fa` | Validates K8 facts, especially `isovalent-demo` and namespace `defenseclaw`. |
 | `defenseclaw-enterprise-ops-thousandeyes` | `4d89a5d8-1e7f-421d-b742-cadb6e000c68` | Enterprise closed loop across Splunk O11y, ThousandEyes, K8s remediation, Splunk Enterprise, Galileo, and shadow-first Autonomy SLO. |
 | `defenseclaw-runtime-governance` prompt | `096341e8-05c8-4c8f-9e39-12155a61a8ad` | Runtime governance prompt template. |
 | `defenseclaw-enterprise-ops-agent-flow` prompt | `ce2a5908-bc6c-45e0-89e7-cd498d6ed870` | Agent Flow metric/test block for the TeaStore incident flow. |
@@ -111,7 +111,7 @@ Log stream ID: `82b893bd-fa1f-411e-81e8-e12ca66692ad`
 | `defenseclaw-dangerous-tool-pre-tool` | `fa039b81-a70a-41cd-aacd-4e3c5e2488fe` | Maps to `deny-dangerous-shell-pre-tool`; best bridge to `/api/v1/inspect/tool`. |
 | `defenseclaw-pii-post-llm` | `810e5961-5bef-4615-8280-180238b6f1ac` | Maps to `steer-pii-post-llm`. |
 | `defenseclaw-ambiguous-admin-intent` | `6a404e8b-5952-44d8-aa4c-7362b319ecca` | Shows approval-seeking behavior for risky admin requests. |
-| `defenseclaw-grounded-cluster-review` | `c750e742-59d6-47e0-bc99-c8721386e9eb` | Validates K8 facts, especially `isovalent-demo` and namespace `defenesclaw`. |
+| `defenseclaw-grounded-cluster-review` | `c750e742-59d6-47e0-bc99-c8721386e9eb` | Validates K8 facts, especially `isovalent-demo` and namespace `defenseclaw`. |
 | `defenseclaw-enterprise-ops-thousandeyes` | `a706d5bf-e96d-447a-a461-1f3648331b27` | Enterprise closed loop across Splunk O11y, ThousandEyes, K8s remediation, Splunk Enterprise, and Galileo. |
 | `defenseclaw-runtime-governance` prompt | `1a327ae4-264d-4036-80f6-f8a424158a91` | Runtime governance prompt template. |
 
@@ -135,11 +135,11 @@ on that row in Galileo SaaS.
 
 ## Credential Setup
 
-For the live lab, get the Galileo API key from the `defenesclaw` namespace
+For the live lab, get the Galileo API key from the `defenseclaw` namespace
 without printing it:
 
 ```bash
-export GALILEO_API_KEY="$(kubectl -n defenesclaw get secret defenseclaw-secrets -o jsonpath='{.data.GALILEO_API_KEY}' | base64 --decode)"
+export GALILEO_API_KEY="$(kubectl -n defenseclaw get secret defenseclaw-secrets -o jsonpath='{.data.GALILEO_API_KEY}' | base64 --decode)"
 export GALILEO_PROJECT="defenseclaw-enterprise-ops-20260515"
 export GALILEO_PROJECT_ID="ef0960e1-8744-4019-9faa-103b13f94e0d"
 export GALILEO_LOG_STREAM="defenseclaw-enterprise-ops-20260515"
@@ -221,7 +221,7 @@ The code-backed equivalent can dry-run the experiment setup:
 To start a real Galileo experiment for one dataset:
 
 ```bash
-GALILEO_API_KEY="$(kubectl -n defenesclaw get secret defenseclaw-secrets -o jsonpath='{.data.GALILEO_API_KEY}' | base64 --decode)" \
+GALILEO_API_KEY="$(kubectl -n defenseclaw get secret defenseclaw-secrets -o jsonpath='{.data.GALILEO_API_KEY}' | base64 --decode)" \
 GALILEO_CONSOLE_URL="https://console.demo-v2.galileocloud.io" \
 GALILEO_API_URL="https://api.demo-v2.galileocloud.io" \
 /tmp/defenseclaw-galileo-upload/bin/python scripts/run_galileo_playground_experiment.py \
@@ -236,7 +236,7 @@ The prompt-runner path requires Galileo's configured OpenAI integration to have 
 The local-function runner logs deterministic DefenseClaw/Agent Control behavior into Galileo without calling an external LLM. This keeps the demo working even when the Playground model provider is out of quota:
 
 ```bash
-GALILEO_API_KEY="$(kubectl -n defenesclaw get secret defenseclaw-secrets -o jsonpath='{.data.GALILEO_API_KEY}' | base64 --decode)" \
+GALILEO_API_KEY="$(kubectl -n defenseclaw get secret defenseclaw-secrets -o jsonpath='{.data.GALILEO_API_KEY}' | base64 --decode)" \
 GALILEO_CONSOLE_URL="https://console.demo-v2.galileocloud.io" \
 GALILEO_API_URL="https://api.demo-v2.galileocloud.io" \
 /tmp/defenseclaw-galileo-upload/bin/python scripts/run_galileo_runtime_evidence_experiment.py \

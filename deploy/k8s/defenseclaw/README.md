@@ -3,8 +3,8 @@
 These manifests reproduce the DefenseClaw/OpenClaw lab stack currently running
 on the `isovalent-demo` EKS cluster.
 
-The core lab namespace is intentionally named `defenesclaw` because the live
-services and in-cluster DNS names use that spelling.
+The core lab namespace is `defenseclaw`. The optional Cisco Cloud Control
+tokenomics demo is isolated in `defenseclaw-tokenomics`.
 
 ## Secret Contract
 
@@ -12,18 +12,24 @@ Secret values are not committed. Create or update these Secrets before applying
 the manifests:
 
 ```bash
-kubectl -n defenesclaw create secret generic defenseclaw-secrets \
+kubectl create namespace defenseclaw --dry-run=client -o yaml | kubectl apply -f -
+
+kubectl -n defenseclaw create secret generic defenseclaw-secrets \
   --from-literal=OPENCLAW_GATEWAY_TOKEN="$OPENCLAW_GATEWAY_TOKEN" \
   --from-literal=OPENAI_API_KEY="$OPENAI_API_KEY" \
   --from-literal=GALILEO_API_KEY="$GALILEO_API_KEY" \
   --dry-run=client -o yaml | kubectl apply -f -
 
-kubectl -n defenesclaw create secret generic openclaw-secrets \
+kubectl -n defenseclaw create secret generic openclaw-secrets \
   --from-literal=OPENCLAW_GATEWAY_TOKEN="$OPENCLAW_GATEWAY_TOKEN" \
   --from-literal=OPENAI_API_KEY="$OPENAI_API_KEY" \
   --dry-run=client -o yaml | kubectl apply -f -
 
-kubectl -n defenesclaw create secret generic splunk-local-secrets \
+kubectl -n defenseclaw create secret generic splunk-cisco-skills-credentials \
+  --from-file=credentials=/path/to/chmod-600/splunk-cisco-credentials \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+kubectl -n defenseclaw create secret generic splunk-local-secrets \
   --from-literal=SPLUNK_PASSWORD="$SPLUNK_PASSWORD" \
   --from-literal=SPLUNK_HEC_TOKEN="$SPLUNK_HEC_TOKEN" \
   --from-literal=DEFENSECLAW_SPLUNK_HEC_TOKEN="$DEFENSECLAW_SPLUNK_HEC_TOKEN" \
@@ -33,7 +39,7 @@ kubectl -n defenesclaw create secret generic splunk-local-secrets \
   --from-literal=PHONE_HOME_ENABLED="${PHONE_HOME_ENABLED:-false}" \
   --dry-run=client -o yaml | kubectl apply -f -
 
-kubectl -n defenesclaw create secret generic agent-control-secrets \
+kubectl -n defenseclaw create secret generic agent-control-secrets \
   --from-literal=AGENT_CONTROL_API_KEY="$AGENT_CONTROL_API_KEY" \
   --from-literal=AGENT_CONTROL_API_KEYS="$AGENT_CONTROL_API_KEYS" \
   --from-literal=AGENT_CONTROL_ADMIN_API_KEYS="$AGENT_CONTROL_ADMIN_API_KEYS" \
@@ -42,7 +48,9 @@ kubectl -n defenesclaw create secret generic agent-control-secrets \
   --from-literal=AGENT_CONTROL_DB_URL="$AGENT_CONTROL_DB_URL" \
   --dry-run=client -o yaml | kubectl apply -f -
 
-kubectl -n defenseclaw create secret generic c3-agent-tokenomics-galileo \
+kubectl create namespace defenseclaw-tokenomics --dry-run=client -o yaml | kubectl apply -f -
+
+kubectl -n defenseclaw-tokenomics create secret generic c3-agent-tokenomics-galileo \
   --from-literal=GALILEO_API_KEY="$GALILEO_API_KEY" \
   --dry-run=client -o yaml | kubectl apply -f -
 ```
@@ -57,6 +65,17 @@ The Splunk OTel Collector values expect:
 ```bash
 duo-sso
 aws eks update-kubeconfig --region us-east-1 --name isovalent-demo
+
+make docker-gateway-overlay-push \
+  OVERLAY_BASE_IMAGE=637423309390.dkr.ecr.us-east-1.amazonaws.com/defenseclaw:0.6.0 \
+  OVERLAY_IMAGE_TAG=0.6.0-web-tui-20260520-2
+
+# Built by the splunk-cisco-skills-bundle workflow from pinned source commit
+# 2bce17ff8f2f29afd6f5326d7976d20c251538a4. Runtime pods never pull GitHub
+# or install Python dependencies from PyPI.
+gh workflow run splunk-cisco-skills-bundle.yml \
+  -f source_sha=2bce17ff8f2f29afd6f5326d7976d20c251538a4 \
+  -f publish=true
 
 kubectl apply -f deploy/k8s/defenseclaw/isovalent-demo-core.yaml
 kubectl apply -f deploy/k8s/defenseclaw/c3-agent-tokenomics-demo.yaml
@@ -75,32 +94,36 @@ helm upgrade --install splunk-otel-collector \
 ## Validate
 
 ```bash
-kubectl -n defenesclaw rollout status deploy/agent-control
-kubectl -n defenesclaw rollout status deploy/agent-control-postgres
-kubectl -n defenesclaw rollout status deploy/defenseclaw
-kubectl -n defenesclaw rollout status deploy/openclaw
-kubectl -n defenesclaw rollout status deploy/splunk-local
-kubectl -n defenseclaw rollout status deploy/c3-agent-tokenomics-demo
-kubectl -n defenseclaw rollout status deploy/c3-agent-tokenomics-mfe
+kubectl -n defenseclaw rollout status deploy/agent-control
+kubectl -n defenseclaw rollout status deploy/agent-control-postgres
+kubectl -n defenseclaw rollout status deploy/defenseclaw
+kubectl -n defenseclaw rollout status deploy/openclaw
+kubectl -n defenseclaw rollout status deploy/splunk-local
+kubectl -n defenseclaw-tokenomics rollout status deploy/c3-agent-tokenomics-demo
+kubectl -n defenseclaw-tokenomics rollout status deploy/c3-agent-tokenomics-mfe
 helm -n otel-splunk status splunk-otel-collector
+
+kubectl -n defenseclaw exec deploy/openclaw -- \
+  sh -c 'release=/home/node/.openclaw/splunk-cisco-skills/releases/2bce17ff8f2f29afd6f5326d7976d20c251538a4; test -s "$release/.complete" && test "$(cat "$release/.revision")" = "2bce17ff8f2f29afd6f5326d7976d20c251538a4"'
 ```
 
 ## K8 Demo Surface
 
-The core demo is the live DefenseClaw/OpenClaw runtime in `defenesclaw`.
+The core demo is the live DefenseClaw/OpenClaw runtime in `defenseclaw`.
 Splunk shows operational evidence, Agent Control shows active runtime policy,
 and Galileo shows repeatable prompt, dataset, and experiment evidence for the
 same governance scenarios. The Cisco Cloud Control tokenomics demo in namespace
-`defenseclaw` is a separate optional surface and is not part of this Agent Watch
-flow.
+`defenseclaw-tokenomics` is a separate optional surface and is not part of this
+Agent Watch flow.
 
 | Surface | Demo use | Entry point |
 | --- | --- | --- |
-| DefenseClaw API | Live `/api/v1/inspect/tool` policy decision | `kubectl -n defenesclaw port-forward svc/defenseclaw 18970:18970` |
-| Agent Control | Active runtime controls and matched policy | `kubectl -n defenesclaw get svc agent-control-ui` |
-| Splunk Local | Searchable audit, verdict, gateway, and OTel evidence | `kubectl -n defenesclaw get svc splunk-local-ui` |
+| DefenseClaw API | Live `/api/v1/inspect/tool` policy decision | `kubectl -n defenseclaw port-forward svc/defenseclaw 18970:18970` |
+| DefenseClaw Browser TUI | Live DefenseClaw TUI over a PTY-backed WebSocket | `kubectl -n defenseclaw get svc defenseclaw-tui` |
+| Agent Control | Active runtime controls and matched policy | `kubectl -n defenseclaw get svc agent-control-ui` |
+| Splunk Local | Searchable audit, verdict, gateway, and OTel evidence | `kubectl -n defenseclaw get svc splunk-local-ui` |
 | Galileo | Prompt, datasets, and completed runtime-evidence experiments | `https://app.galileo.ai/project/0ba7b20d-8262-44c4-b230-547a0cd74b2b` |
-| Cisco Cloud Control tokenomics MFE | Prebuilt executive tokenomics UI and fixture API | `kubectl -n defenseclaw get svc c3-agent-tokenomics-mfe` |
+| Cisco Cloud Control tokenomics MFE | Prebuilt executive tokenomics UI and fixture API | `kubectl -n defenseclaw-tokenomics get svc c3-agent-tokenomics-mfe` |
 
 ### Galileo Object Inventory
 
@@ -129,13 +152,13 @@ Use the dangerous tool scenario as the live bridge between the running K8
 stack and Galileo evidence:
 
 ```bash
-kubectl -n defenesclaw port-forward svc/defenseclaw 18970:18970
+kubectl -n defenseclaw port-forward svc/defenseclaw 18970:18970
 ```
 
 ```bash
 curl -sS http://127.0.0.1:18970/api/v1/inspect/tool \
   -H 'Content-Type: application/json' \
-  -d '{"tool":"shell","args":{"command":"kubectl delete pods --all -n defenesclaw"}}' | jq
+  -d '{"tool":"shell","args":{"command":"kubectl delete pods --all -n defenseclaw"}}' | jq
 ```
 
 In observe mode, the useful evidence is `raw_action`, `would_block`,
@@ -172,7 +195,7 @@ surface:
 | `defenseclaw-dangerous-tool-pre-tool` | `deny-dangerous-shell-pre-tool` | `/api/v1/inspect/tool` audit rows with `would_block=true`, `raw_action=block`, and Agent Control fields | Destructive shell/K8 tool use is denied before execution. |
 | `defenseclaw-pii-post-llm` | `steer-pii-post-llm` | `defenseclaw:verdict` and redacted completion evidence with PII/secret findings | Sensitive output is steered or redacted before review. |
 | `defenseclaw-ambiguous-admin-intent` | Approval-seeking behavior; prompt injection may be observed | `defenseclaw_control_actions`, HITL or would-ask/would-block details when configured | Risky admin intent should ask for approval, scope, and rollback. |
-| `defenseclaw-grounded-cluster-review` | None unless the row explains `deny-dangerous-shell-pre-tool` | Gateway, audit, and OTel rows for `isovalent-demo` / `defenesclaw` context | Answers stay grounded in the live cluster and ignore Cisco Cloud Control resources. |
+| `defenseclaw-grounded-cluster-review` | None unless the row explains `deny-dangerous-shell-pre-tool` | Gateway, audit, and OTel rows for `isovalent-demo` / `defenseclaw` context | Answers stay grounded in the live cluster and ignore Cisco Cloud Control resources. |
 
 ### Galileo Experiment Paths
 
@@ -185,7 +208,7 @@ python3 scripts/run_galileo_playground_experiment.py --all
 Use it live only when Galileo's configured model provider has quota:
 
 ```bash
-GALILEO_API_KEY="$(kubectl -n defenesclaw get secret defenseclaw-secrets -o jsonpath='{.data.GALILEO_API_KEY}' | base64 --decode)" \
+GALILEO_API_KEY="$(kubectl -n defenseclaw get secret defenseclaw-secrets -o jsonpath='{.data.GALILEO_API_KEY}' | base64 --decode)" \
 python3 scripts/run_galileo_playground_experiment.py --all --execute
 ```
 
@@ -197,6 +220,6 @@ python3 scripts/run_galileo_runtime_evidence_experiment.py --all
 ```
 
 ```bash
-GALILEO_API_KEY="$(kubectl -n defenesclaw get secret defenseclaw-secrets -o jsonpath='{.data.GALILEO_API_KEY}' | base64 --decode)" \
+GALILEO_API_KEY="$(kubectl -n defenseclaw get secret defenseclaw-secrets -o jsonpath='{.data.GALILEO_API_KEY}' | base64 --decode)" \
 python3 scripts/run_galileo_runtime_evidence_experiment.py --all --execute
 ```

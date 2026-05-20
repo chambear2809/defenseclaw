@@ -2168,11 +2168,11 @@ func TestClientWsURLExplicitTLS(t *testing.T) {
 }
 
 func TestClientWsURLAllowInsecure(t *testing.T) {
-	cfg := &config.GatewayConfig{Host: "openclaw.defenesclaw.svc.cluster.local", Port: 18789, AllowInsecure: true}
+	cfg := &config.GatewayConfig{Host: "openclaw.defenseclaw.svc.cluster.local", Port: 18789, AllowInsecure: true}
 	c := &Client{cfg: cfg}
 	got := c.wsURL()
-	if got != "ws://openclaw.defenesclaw.svc.cluster.local:18789" {
-		t.Errorf("wsURL() = %q, want ws://openclaw.defenesclaw.svc.cluster.local:18789", got)
+	if got != "ws://openclaw.defenseclaw.svc.cluster.local:18789" {
+		t.Errorf("wsURL() = %q, want ws://openclaw.defenseclaw.svc.cluster.local:18789", got)
 	}
 }
 
@@ -2190,7 +2190,7 @@ func TestRequiresTLS(t *testing.T) {
 		{"10.0.0.5", false, false, true},
 		{"gateway.example.com", false, false, true},
 		{"127.0.0.1", true, false, true},
-		{"openclaw.defenesclaw.svc.cluster.local", false, true, false},
+		{"openclaw.defenseclaw.svc.cluster.local", false, true, false},
 	}
 	for _, tt := range tests {
 		cfg := &config.GatewayConfig{Host: tt.host, TLS: tt.tls, AllowInsecure: tt.allowInsecure}
@@ -3600,7 +3600,7 @@ func TestInspectToolDangerousShell(t *testing.T) {
 func TestInspectToolDangerousKubernetesDeleteObserveMode(t *testing.T) {
 	api := testAPIServerWithConfig(t, "observe")
 	_, verdict := postInspect(t, api,
-		`{"tool":"shell","args":{"command":"kubectl delete pods --all -n defenesclaw"}}`)
+		`{"tool":"shell","args":{"command":"kubectl delete pods --all -n defenseclaw"}}`)
 
 	if verdict.Action != "allow" {
 		t.Errorf("action = %q, want allow in observe mode", verdict.Action)

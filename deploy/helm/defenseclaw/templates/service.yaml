@@ -36,3 +36,30 @@ spec:
   selector:
     {{- include "defenseclaw.selectorLabels" . | nindent 4 }}
 {{- end }}
+---
+{{- if .Values.webTui.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "defenseclaw.fullname" . }}-tui
+  labels:
+    {{- include "defenseclaw.labels" . | nindent 4 }}
+    app.kubernetes.io/component: web-tui
+  {{- with .Values.webTui.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.webTui.service.type }}
+  {{- with .Values.webTui.service.loadBalancerSourceRanges }}
+  loadBalancerSourceRanges:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  ports:
+    - name: http
+      port: {{ .Values.webTui.service.port }}
+      targetPort: web-tui
+      protocol: TCP
+  selector:
+    {{- include "defenseclaw.selectorLabels" . | nindent 4 }}
+{{- end }}

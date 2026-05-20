@@ -163,6 +163,9 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Scanners.PluginScanner != "defenseclaw" {
 		t.Errorf("expected plugin scanner binary %q, got %q", "defenseclaw", cfg.Scanners.PluginScanner)
 	}
+	if cfg.Notifications.Enabled {
+		t.Error("notifications.enabled should default false on every platform")
+	}
 }
 
 func TestDefaultGatewayWatcherPluginConfig(t *testing.T) {

@@ -1,6 +1,6 @@
 BINARY      := defenseclaw
 GATEWAY     := defenseclaw-gateway
-VERSION     := 0.5.0
+VERSION     := 0.6.0
 GOFLAGS     := -ldflags "-X main.version=$(VERSION)"
 VENV        := .venv
 GOBIN       := $(shell go env GOPATH)/bin
@@ -11,9 +11,18 @@ OC_EXT_DIR  := $(HOME)/.openclaw/extensions/defenseclaw
 RUFF        := $(shell if [ -x "$(VENV)/bin/ruff" ]; then printf '%s' "$(VENV)/bin/ruff"; elif command -v ruff >/dev/null 2>&1; then command -v ruff; else printf '%s' "$(VENV)/bin/ruff"; fi)
 
 DIST_DIR    := dist
+ECR_REPOSITORY ?= 637423309390.dkr.ecr.us-east-1.amazonaws.com/defenseclaw
+OVERLAY_BASE_IMAGE ?= $(ECR_REPOSITORY):$(VERSION)
+OVERLAY_IMAGE_TAG ?= $(VERSION)-web-tui
+GATEWAY_LINUX_AMD64 := defenseclaw-gateway-galileo-linux-amd64
+SPLUNK_CISCO_SKILLS_SOURCE ?= ../splunk-cisco-skills
+SPLUNK_CISCO_SKILLS_SHA ?= 2bce17ff8f2f29afd6f5326d7976d20c251538a4
+SPLUNK_CISCO_BUNDLE_REPOSITORY ?= 637423309390.dkr.ecr.us-east-1.amazonaws.com/splunk-cisco-skills-bundle
+SPLUNK_CISCO_BUNDLE_CONTEXT ?= build/splunk-cisco-skills-bundle
 
 .PHONY: all path doctor uninstall quickstart llm-setup \
         build install cli-install dev-install pycli dev-pycli gateway gateway-cross gateway-run start gateway-install \
+        gateway-linux-amd64 docker-gateway-overlay docker-gateway-overlay-push docker-splunk-cisco-skills-bundle \
         plugin plugin-install maybe-openclaw-plugin-install extensions test cli-test cli-test-cov gateway-test tui-test go-test-cov \
         connector-matrix-test go-connector-matrix-test py-connector-matrix-test \
         test-verbose test-file lint py-lint go-lint ts-test rego-test clean \
@@ -350,6 +359,39 @@ gateway-cross: sync-openclaw-extension
 	@test -n "$(GOOS)" -a -n "$(GOARCH)" || { echo "Usage: make gateway-cross GOOS=linux GOARCH=amd64"; exit 1; }
 	GOOS=$(GOOS) GOARCH=$(GOARCH) go build $(GOFLAGS) -o $(BINARY)-$(GOOS)-$(GOARCH) ./cmd/defenseclaw
 	@echo "Built $(BINARY)-$(GOOS)-$(GOARCH)"
+
+gateway-linux-amd64: sync-openclaw-extension
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+		-ldflags "-s -w -X main.version=$(VERSION)" \
+		-o $(GATEWAY_LINUX_AMD64) \
+		./cmd/defenseclaw
+	@echo "Built $(GATEWAY_LINUX_AMD64)"
+
+docker-gateway-overlay: gateway-linux-amd64
+	docker build --platform linux/amd64 \
+		--build-arg BASE_IMAGE=$(OVERLAY_BASE_IMAGE) \
+		-t $(ECR_REPOSITORY):$(OVERLAY_IMAGE_TAG) \
+		-f deploy/docker/defenseclaw-gateway-overlay.Dockerfile .
+	@echo "Built overlay image $(ECR_REPOSITORY):$(OVERLAY_IMAGE_TAG)"
+
+docker-gateway-overlay-push: docker-gateway-overlay
+	docker push $(ECR_REPOSITORY):$(OVERLAY_IMAGE_TAG)
+
+docker-splunk-cisco-skills-bundle:
+	scripts/prepare-splunk-cisco-skills-bundle-context.sh \
+		$(SPLUNK_CISCO_SKILLS_SOURCE) \
+		$(SPLUNK_CISCO_BUNDLE_CONTEXT) \
+		$(SPLUNK_CISCO_SKILLS_SHA)
+	docker build --platform linux/amd64 \
+		--build-arg BUNDLE_SOURCE_REPO=https://github.com/chambear2809/splunk-cisco-skills \
+		--build-arg BUNDLE_SOURCE_COMMIT=$(SPLUNK_CISCO_SKILLS_SHA) \
+		--build-arg BUNDLE_BUILD_URL=local-make \
+		--build-arg BUNDLE_BUILD_TIMESTAMP=$$(date -u +%Y-%m-%dT%H:%M:%SZ) \
+		--build-arg BUNDLE_SBOM_DIGEST=local \
+		-t $(SPLUNK_CISCO_BUNDLE_REPOSITORY):$(SPLUNK_CISCO_SKILLS_SHA) \
+		-f deploy/docker/splunk-cisco-skills-bundle.Dockerfile \
+		$(SPLUNK_CISCO_BUNDLE_CONTEXT)
+	@echo "Built $(SPLUNK_CISCO_BUNDLE_REPOSITORY):$(SPLUNK_CISCO_SKILLS_SHA)"
 
 gateway-run: gateway
 	./$(GATEWAY)
@@ -714,7 +756,7 @@ dist-clean:
 	rm -rf sandbox-test-*
 
 clean:
-	rm -f $(GATEWAY) $(BINARY)-linux-* $(BINARY)-darwin-*
+	rm -f $(GATEWAY) $(GATEWAY_LINUX_AMD64) $(BINARY)-linux-* $(BINARY)-darwin-*
 	rm -rf $(VENV) cli/*.egg-info
 	rm -rf $(PLUGIN_DIR)/dist $(PLUGIN_DIR)/node_modules
 	rm -f coverage.out coverage-py.xml

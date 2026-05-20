@@ -57,7 +57,7 @@ Official Cisco docs support the demo surface:
 | Investigate | Agent runs read-only K8s and ThousandEyes queries. | DefenseClaw allow verdicts in Splunk Enterprise |
 | Verify | DefenseClaw inspects and then creates or reuses a TeaStore ThousandEyes HTTP test from the K8s Enterprise Agent. | Agent Control approval-required decision plus ThousandEyes test ID |
 | Remediate | Agent proposes a bounded `teastore-webui-v1` scale with rollback. | Approval evidence plus O11y before/after |
-| Contain | Agent attempts `kubectl delete pods --all -n defenesclaw`. | `raw_action=block`, `would_block=true` in observe mode |
+| Contain | Agent attempts `kubectl delete pods --all -n defenseclaw`. | `raw_action=block`, `would_block=true` in observe mode |
 | Prove | One run is replayed across Splunk Enterprise, Splunk O11y, ThousandEyes, and Galileo. | Run/session pivot and Galileo dataset |
 
 ## TeaStore Target
@@ -162,14 +162,14 @@ not execute the tools.
 ```bash
 duo-sso
 aws eks update-kubeconfig --region us-east-1 --name isovalent-demo
-kubectl -n defenesclaw port-forward svc/defenseclaw 18970:18970
+kubectl -n defenseclaw port-forward svc/defenseclaw 18970:18970
 ```
 
 In another terminal:
 
 ```bash
 export OPENCLAW_GATEWAY_TOKEN="$(
-  kubectl -n defenesclaw get secret defenseclaw-secrets \
+  kubectl -n defenseclaw get secret defenseclaw-secrets \
     -o jsonpath='{.data.OPENCLAW_GATEWAY_TOKEN}' | base64 --decode
 )"
 
@@ -206,7 +206,7 @@ Use the Kubernetes Secret as the credential source:
 
 ```bash
 export THOUSANDEYES_TOKEN="$(
-  kubectl -n defenesclaw get secret thousandeyes-demo-secrets \
+  kubectl -n defenseclaw get secret thousandeyes-demo-secrets \
     -o jsonpath='{.data.THOUSANDEYES_TOKEN}' | base64 --decode
 )"
 
@@ -294,11 +294,11 @@ the real ThousandEyes test.
 
 ```bash
 export OPENCLAW_GATEWAY_TOKEN="$(
-  kubectl -n defenesclaw get secret defenseclaw-secrets \
+  kubectl -n defenseclaw get secret defenseclaw-secrets \
     -o jsonpath='{.data.OPENCLAW_GATEWAY_TOKEN}' | base64 --decode
 )"
 export THOUSANDEYES_TOKEN="$(
-  kubectl -n defenesclaw get secret thousandeyes-demo-secrets \
+  kubectl -n defenseclaw get secret thousandeyes-demo-secrets \
     -o jsonpath='{.data.THOUSANDEYES_TOKEN}' | base64 --decode
 )"
 
@@ -328,7 +328,7 @@ action block, Splunk audit closure, and Autonomy SLO:
 
 ```bash
 export GALILEO_API_KEY="$(
-  kubectl -n defenesclaw get secret defenseclaw-secrets \
+  kubectl -n defenseclaw get secret defenseclaw-secrets \
     -o jsonpath='{.data.GALILEO_API_KEY}' | base64 --decode
 )"
 export GALILEO_PROJECT="defenseclaw-enterprise-ops-20260515"
@@ -486,7 +486,7 @@ metric enums.
 Upload it with the existing uploader when Galileo credentials are available:
 
 ```bash
-GALILEO_API_KEY="$(kubectl -n defenesclaw get secret defenseclaw-secrets -o jsonpath='{.data.GALILEO_API_KEY}' | base64 --decode)" \
+GALILEO_API_KEY="$(kubectl -n defenseclaw get secret defenseclaw-secrets -o jsonpath='{.data.GALILEO_API_KEY}' | base64 --decode)" \
 GALILEO_CONSOLE_URL="https://console.demo-v2.galileocloud.io" \
 GALILEO_API_URL="https://api.demo-v2.galileocloud.io" \
 python3 scripts/upload_galileo_demo_datasets.py \
@@ -498,7 +498,7 @@ python3 scripts/upload_galileo_demo_datasets.py \
 Run deterministic runtime-evidence experiments without an external LLM call:
 
 ```bash
-GALILEO_API_KEY="$(kubectl -n defenesclaw get secret defenseclaw-secrets -o jsonpath='{.data.GALILEO_API_KEY}' | base64 --decode)" \
+GALILEO_API_KEY="$(kubectl -n defenseclaw get secret defenseclaw-secrets -o jsonpath='{.data.GALILEO_API_KEY}' | base64 --decode)" \
 GALILEO_CONSOLE_URL="https://console.demo-v2.galileocloud.io" \
 GALILEO_API_URL="https://api.demo-v2.galileocloud.io" \
 python3 scripts/run_galileo_runtime_evidence_experiment.py \

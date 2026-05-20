@@ -224,7 +224,8 @@ ConfigMap carries safe defaults such as
 demo log stream ID. The API key comes from an optional Secret:
 
 ```bash
-kubectl -n defenseclaw create secret generic c3-agent-tokenomics-galileo \
+kubectl create namespace defenseclaw-tokenomics --dry-run=client -o yaml | kubectl apply -f -
+kubectl -n defenseclaw-tokenomics create secret generic c3-agent-tokenomics-galileo \
   --from-literal=GALILEO_API_KEY="$GALILEO_API_KEY"
 ```
 
@@ -242,8 +243,8 @@ fixture tokenomics API on service port `8787`:
 
 ```bash
 kubectl apply -f deploy/k8s/defenseclaw/c3-agent-tokenomics-mfe.yaml
-kubectl -n defenseclaw rollout status deploy/c3-agent-tokenomics-mfe
-kubectl -n defenseclaw get svc c3-agent-tokenomics-mfe
+kubectl -n defenseclaw-tokenomics rollout status deploy/c3-agent-tokenomics-mfe
+kubectl -n defenseclaw-tokenomics get svc c3-agent-tokenomics-mfe
 ```
 
 ## Acceptance criteria

@@ -197,9 +197,10 @@ func TestCommandRules_TruePositives(t *testing.T) {
 		{"python -c execution", `python3 -c "import os; os.system('id')"`, "CMD-PYTHON-C"},
 		{"rm -rf /", `rm -rf /`, "CMD-RM-RF"},
 		{"rm -rf / with flags", `rm -rf --no-preserve-root /`, "CMD-RM-RF"},
-		{"kubectl delete all pods", `kubectl delete pods --all -n defenesclaw`, "CMD-KUBECTL-DELETE-ALL"},
-		{"kubectl delete runtime namespace object", `kubectl -n defenesclaw delete deployment defenseclaw`, "CMD-KUBECTL-DELETE-ALL"},
-		{"kubectl dump secrets json", `kubectl get secrets -n defenesclaw -o json`, "CMD-KUBECTL-SECRET-DUMP"},
+		{"kubectl delete all pods", `kubectl delete pods --all -n defenseclaw`, "CMD-KUBECTL-DELETE-ALL"},
+		{"kubectl delete all pods legacy namespace", `kubectl delete pods --all -n defenesclaw`, "CMD-KUBECTL-DELETE-ALL"},
+		{"kubectl delete runtime namespace object", `kubectl -n defenseclaw delete deployment defenseclaw`, "CMD-KUBECTL-DELETE-ALL"},
+		{"kubectl dump secrets json", `kubectl get secrets -n defenseclaw -o json`, "CMD-KUBECTL-SECRET-DUMP"},
 		{"mkfs", `mkfs.ext4 /dev/sda1`, "CMD-MKFS"},
 		{"dd if", `dd if=/dev/zero of=/dev/sda`, "CMD-DD-IF"},
 		{"chmod world writable", `chmod 777 /etc/important`, "CMD-CHMOD-WORLD"},
@@ -328,7 +329,7 @@ func TestCommandRules_RmRfCriticalPathPrecision(t *testing.T) {
 
 func TestCommandRules_KubectlDestructivePrecision(t *testing.T) {
 	safeCases := []string{
-		`kubectl -n defenesclaw get deploy,svc,pods -o wide`,
+		`kubectl -n defenseclaw get deploy,svc,pods -o wide`,
 		`kubectl get secret defenseclaw-secrets -o name`,
 		`kubectl -n checkout-demo rollout status deploy/checkout-api`,
 	}
@@ -345,7 +346,7 @@ func TestCommandRules_KubectlDestructivePrecision(t *testing.T) {
 		input  string
 		wantID string
 	}{
-		{`kubectl delete pods --all -n defenesclaw`, "CMD-KUBECTL-DELETE-ALL"},
+		{`kubectl delete pods --all -n defenseclaw`, "CMD-KUBECTL-DELETE-ALL"},
 		{`kubectl delete namespace checkout-demo`, "CMD-KUBECTL-DELETE-ALL"},
 		{`kubectl get secrets --all-namespaces`, "CMD-KUBECTL-SECRET-DUMP"},
 		{`kubectl get secret defenseclaw-secrets --output yaml`, "CMD-KUBECTL-SECRET-DUMP"},

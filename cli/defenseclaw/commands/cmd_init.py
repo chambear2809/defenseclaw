@@ -1149,9 +1149,9 @@ def _onboard_notifications(
         print the current state for visibility. Re-running ``init``
         on a configured install must not re-litigate onboarding.
       * ``--non-interactive`` or ``--yes`` or non-TTY stdin (CI) →
-        keep platform default, print a one-liner pointing at
+        keep the default setting, print a one-liner pointing at
         ``setup notifications``.
-      * Otherwise → ``click.confirm`` with the platform-aware
+      * Otherwise → ``click.confirm`` with the current configured
         default.
 
     The ``cfg`` mutation is in-memory; the caller does the
@@ -1177,7 +1177,7 @@ def _onboard_notifications(
     if non_interactive or yes or not _stdin_is_tty():
         state = "ON" if nc.enabled else "OFF"
         click.echo(
-            f"  Notifications: {ux.dim('platform default')} ({state})"
+            f"  Notifications: {ux.dim('default setting')} ({state})"
         )
         click.echo("  " + ux.dim("Toggle later with: defenseclaw setup notifications"))
         return
@@ -1241,9 +1241,9 @@ def _onboard_notifications(
         print the current state for visibility. Re-running ``init``
         on a configured install must not re-litigate onboarding.
       * ``--non-interactive`` or ``--yes`` or non-TTY stdin (CI) →
-        keep platform default, print a one-liner pointing at
+        keep the default setting, print a one-liner pointing at
         ``setup notifications``.
-      * Otherwise → ``click.confirm`` with the platform-aware
+      * Otherwise → ``click.confirm`` with the current configured
         default.
 
     The ``cfg`` mutation is in-memory; the caller does the
@@ -1269,7 +1269,7 @@ def _onboard_notifications(
     if non_interactive or yes or not _stdin_is_tty():
         state = "ON" if nc.enabled else "OFF"
         click.echo(
-            f"  Notifications: {ux.dim('platform default')} ({state})"
+            f"  Notifications: {ux.dim('default setting')} ({state})"
         )
         click.echo("  " + ux.dim("Toggle later with: defenseclaw setup notifications"))
         return

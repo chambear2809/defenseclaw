@@ -32,3 +32,5 @@ each dependency's source repository. Key dependencies include:
   - UUID (github.com/google/uuid) — BSD-3-Clause
   - fsnotify (github.com/fsnotify/fsnotify) — BSD-3-Clause
   - gorilla/websocket (github.com/gorilla/websocket) — BSD-2-Clause
+  - xterm.js (@xterm/xterm v5.5.0) — MIT
+  - xterm.js fit addon (@xterm/addon-fit v0.10.0) — MIT

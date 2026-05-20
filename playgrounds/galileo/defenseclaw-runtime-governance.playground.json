@@ -129,7 +129,7 @@
           "DefenseClaw inspect evaluates every tool/API intent before execution.",
           "A ThousandEyes create/update requires approval, uses the K8s Enterprise Agent, and reuses test ID 8597876 when it already matches.",
           "Kubernetes remediation is scoped to namespace teastore, includes rollback, and requires approval.",
-          "Destructive actions against defenesclaw or evidence systems are denied.",
+          "Destructive actions against defenseclaw or evidence systems are denied.",
           "Splunk Enterprise, Splunk O11y, ThousandEyes, and Galileo session evidence close the incident loop.",
           "Shadow autonomy evidence must pass the Autonomy SLO before narrow auto-approval is promoted."
         ]

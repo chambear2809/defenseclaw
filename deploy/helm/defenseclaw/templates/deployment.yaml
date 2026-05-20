@@ -25,6 +25,48 @@ spec:
       automountServiceAccountToken: false
       securityContext:
         {{- toYaml .Values.securityContext | nindent 8 }}
+      {{- if .Values.splunkCiscoSkills.enabled }}
+      initContainers:
+        - name: splunk-cisco-skills-bootstrap
+          image: "{{ include "defenseclaw.splunkCiscoSkillsImage" . }}"
+          imagePullPolicy: {{ .Values.splunkCiscoSkills.image.pullPolicy }}
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              sha="{{ .Values.splunkCiscoSkills.sourceSha }}"
+              release="/var/openclaw/splunk-cisco-skills/releases/${sha}"
+              if [ -f "${release}/.complete" ] && [ "$(cat "${release}/.revision" 2>/dev/null || true)" = "${sha}" ]; then
+                exit 0
+              fi
+              tmp="${release}.tmp"
+              rm -rf "${tmp}"
+              mkdir -p "$(dirname "${release}")" "${tmp}"
+              cp -R /bundle/. "${tmp}/"
+              echo "${sha}" > "${tmp}/.revision"
+              chown -R 1000:1000 "${tmp}"
+              touch "${tmp}/.complete"
+              rm -rf "${release}"
+              mv "${tmp}" "${release}"
+              test -s "${release}/.complete"
+              test "$(cat "${release}/.revision")" = "${sha}"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsGroup: 0
+            runAsNonRoot: false
+            runAsUser: 0
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - mountPath: /var/openclaw
+              name: defenseclaw-data
+              subPath: openclaw-client
+      {{- end }}
       containers:
         - name: defenseclaw
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
@@ -68,12 +110,80 @@ spec:
           volumeMounts:
             - mountPath: /home/node/.defenseclaw
               name: defenseclaw-data
+            - mountPath: /home/node/.openclaw
+              name: defenseclaw-data
+              subPath: openclaw-client
             - mountPath: /home/node/.defenseclaw/config.yaml
               name: defenseclaw-config
               readOnly: true
               subPath: config.yaml
             - mountPath: /tmp
               name: tmp
+        {{- if .Values.webTui.enabled }}
+        - name: defenseclaw-web-tui
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - defenseclaw-gateway
+          args:
+            - web-tui
+            - --bind
+            - {{ .Values.webTui.bind | quote }}
+            - --port
+            - {{ .Values.webTui.port | quote }}
+            - --max-sessions
+            - {{ .Values.webTui.maxSessions | quote }}
+            - --shutdown-grace
+            - {{ .Values.webTui.shutdownGrace | quote }}
+          env:
+            {{- range $name, $value := .Values.env }}
+            - name: {{ $name }}
+              value: {{ $value | quote }}
+            {{- end }}
+          envFrom:
+            {{- range .Values.envFromSecrets }}
+            - secretRef:
+                name: {{ . }}
+            {{- end }}
+          ports:
+            - name: web-tui
+              containerPort: {{ .Values.webTui.port }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: web-tui
+              scheme: HTTP
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: web-tui
+              scheme: HTTP
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          volumeMounts:
+            - mountPath: /home/node/.defenseclaw
+              name: defenseclaw-data
+            - mountPath: /home/node/.openclaw
+              name: defenseclaw-data
+              subPath: openclaw-client
+            - mountPath: /home/node/.defenseclaw/config.yaml
+              name: defenseclaw-config
+              readOnly: true
+              subPath: config.yaml
+            - mountPath: /tmp
+              name: tmp
+        {{- end }}
       volumes:
         - name: defenseclaw-data
           {{- if .Values.persistence.existingClaim }}

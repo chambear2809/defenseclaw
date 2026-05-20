@@ -84,8 +84,8 @@ func (r *recordingSender) WaitFor(t *testing.T, n int) []notify.Notification {
 // fullyEnabledNotificationsConfig builds a NotificationsConfig that
 // won't suppress anything, so a wiring test sees every emit. We
 // deliberately do NOT call config.DefaultNotificationsConfig() here
-// because that returns a platform-conditional Enabled — and on a
-// linux CI runner that would silently disable the dispatcher.
+// because the default keeps Enabled off, which would silently disable
+// the dispatcher in this wiring test.
 func fullyEnabledNotificationsConfig() config.NotificationsConfig {
 	return config.NotificationsConfig{
 		Enabled:         true,

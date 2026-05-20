@@ -16,10 +16,7 @@
 
 package config
 
-import (
-	"runtime"
-	"time"
-)
+import "time"
 
 // NotificationsConfig controls user-session OS notifications fired
 // by the gateway when blocks happen or HITL approval is requested.
@@ -97,22 +94,18 @@ const NotificationsDefaultDedupWindow = 30 * time.Second
 // summary line at the minute boundary.
 const NotificationsDefaultMaxPerMinute = 12
 
-// DefaultNotificationsEnabled is the platform-conditional master
-// default for the notification dispatcher. Per the rollout step 1
-// of macos-block-and-hitl-notifications, darwin (the only platform
-// with a consumer-grade desktop notification surface every user
-// already has running) opts in by default; every other GOOS waits
-// for an explicit operator opt-in via `defenseclaw setup
-// notifications on`. Exposed as a package-level var (not a const
-// or runtime check) so tests and the Python config helper can
-// pin the matrix without taking a build-tag dependency.
-var DefaultNotificationsEnabled = runtime.GOOS == "darwin"
+// DefaultNotificationsEnabled is the master default for the notification
+// dispatcher. Desktop notifications are opt-in on every platform, including
+// macOS, to avoid surprising local toasts during labs and scripted installs.
+// Exposed as a package-level var so tests and the Python config helper can pin
+// the matrix without taking a build-tag dependency.
+var DefaultNotificationsEnabled = false
 
 // DefaultNotificationsConfig returns the recommended starting point
-// for fresh installs: master switch defaults to true on darwin and
-// false elsewhere (see DefaultNotificationsEnabled). Categories
-// favor signal over noise — a fresh install only notifies for
-// things that ACTUALLY happened (enforced block, real native ask).
+// for fresh installs: the master switch defaults to false everywhere
+// (see DefaultNotificationsEnabled). Categories favor signal over
+// noise for operators who opt in — notifications only fire for things
+// that ACTUALLY happened (enforced block, real native ask).
 // BlockWouldBlock defaults to false; observe-mode "would have
 // blocked" / "would have asked" toasts are off by default and are
 // an explicit opt-in for operators tuning a strict policy. Sources

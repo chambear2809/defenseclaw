@@ -518,7 +518,7 @@ func (p *SetupPanel) loadSections() {
 				"Restart the gateway after editing — the dispatcher snapshots cfg at boot.",
 			Fields: []configField{
 				{Label: "Enabled", Key: "notifications.enabled", Kind: "bool", Value: fmt.Sprintf("%v", c.Notifications.Enabled),
-					Hint: "Master switch. Default: ON on macOS, OFF elsewhere. When false, every other field below is a no-op."},
+					Hint: "Master switch. Default: OFF on every platform, including macOS. When false, every other field below is a no-op."},
 				{Label: "── Categories ──", Kind: "header"},
 				{Label: "Block (enforced)", Key: "notifications.block_enforced", Kind: "bool", Value: fmt.Sprintf("%v", c.Notifications.BlockEnforced),
 					Hint: "Toast when a request is actually denied (mode=action, action=block)."},

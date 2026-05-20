@@ -42,7 +42,7 @@ func TestInspectToolSpanCarriesDemoHeadersAndVerdictWithoutRawArgs(t *testing.T)
 	api := testAPIServerWithConfig(t, "observe")
 	api.SetOTelProvider(provider)
 	ctx, parent := provider.StartGuardrailStageSpan(context.Background(), "http", "request", "")
-	body := `{"tool":"shell","args":{"command":"kubectl delete pods --all -n defenesclaw","token":"secret-token"}}`
+	body := `{"tool":"shell","args":{"command":"kubectl delete pods --all -n defenseclaw","token":"secret-token"}}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/inspect/tool", bytes.NewBufferString(body)).WithContext(ctx)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set(enterpriseOpsWorkflowHeader, "enterprise-k8s-thousandeyes")
@@ -105,7 +105,7 @@ func TestInspectToolSpanCarriesDemoHeadersAndVerdictWithoutRawArgs(t *testing.T)
 	for _, attr := range inspectSpan.Attributes {
 		allAttrs += attr.Value.Emit()
 	}
-	for _, forbidden := range []string{"kubectl delete", "secret-token", "defenesclaw"} {
+	for _, forbidden := range []string{"kubectl delete", "secret-token", "defenseclaw"} {
 		if strings.Contains(allAttrs, forbidden) {
 			t.Fatalf("inspect span leaked raw request data %q in attrs: %s", forbidden, allAttrs)
 		}

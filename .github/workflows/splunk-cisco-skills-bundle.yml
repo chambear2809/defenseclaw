@@ -1,0 +1,332 @@
+name: Splunk/Cisco Skills Bundle
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Pinned splunk-cisco-skills commit SHA to build
+        required: false
+        default: 2bce17ff8f2f29afd6f5326d7976d20c251538a4
+      publish:
+        description: Push, sign, and open a digest-pin PR
+        required: false
+        type: boolean
+        default: false
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/splunk-cisco-skills-bundle.yml
+      - deploy/docker/splunk-cisco-skills-bundle.Dockerfile
+      - deploy/helm/defenseclaw/**
+      - deploy/k8s/defenseclaw/isovalent-demo-core.yaml
+      - scripts/prepare-splunk-cisco-skills-bundle-context.sh
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/splunk-cisco-skills-bundle.yml
+      - deploy/docker/splunk-cisco-skills-bundle.Dockerfile
+      - deploy/helm/defenseclaw/**
+      - deploy/k8s/defenseclaw/isovalent-demo-core.yaml
+      - scripts/prepare-splunk-cisco-skills-bundle-context.sh
+  schedule:
+    - cron: "17 9 * * *"
+
+permissions:
+  contents: write
+  id-token: write
+  pull-requests: write
+
+concurrency:
+  group: splunk-cisco-skills-bundle-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  SOURCE_REPOSITORY: chambear2809/splunk-cisco-skills
+  BUNDLE_ECR_REPOSITORY: 637423309390.dkr.ecr.us-east-1.amazonaws.com/splunk-cisco-skills-bundle
+  AWS_REGION: us-east-1
+  AWS_ROLE_TO_ASSUME: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+
+jobs:
+  poll-source:
+    name: Poll splunk-cisco-skills main
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Compare pinned SHA with upstream main
+        id: poll
+        run: |
+          set -euo pipefail
+          latest="$(git ls-remote "https://github.com/${SOURCE_REPOSITORY}.git" refs/heads/main | awk '{print $1}')"
+          current="$(python - <<'PY'
+          import re
+          from pathlib import Path
+
+          text = Path("deploy/helm/defenseclaw/values.yaml").read_text()
+          match = re.search(r"sourceSha:\s*([0-9a-f]{40})", text)
+          if not match:
+              raise SystemExit("sourceSha not found")
+          print(match.group(1))
+          PY
+          )"
+          echo "latest=${latest}" >> "${GITHUB_OUTPUT}"
+          echo "current=${current}" >> "${GITHUB_OUTPUT}"
+          if [ "${latest}" != "${current}" ]; then
+            echo "changed=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "changed=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Open source-pin PR
+        if: steps.poll.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LATEST_SHA: ${{ steps.poll.outputs.latest }}
+        run: |
+          set -euo pipefail
+          branch="automation/splunk-cisco-skills-${LATEST_SHA}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "${branch}"
+          python - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          sha = os.environ["LATEST_SHA"]
+          paths = [
+              Path("deploy/helm/defenseclaw/values.yaml"),
+              Path("deploy/k8s/defenseclaw/isovalent-demo-core.yaml"),
+              Path("deploy/k8s/defenseclaw/README.md"),
+          ]
+          for path in paths:
+              text = path.read_text()
+              text = re.sub(r"sourceSha:\s*[0-9a-f]{40}", f"sourceSha: {sha}", text)
+              text = re.sub(r"(\n\s+tag:\s*)[0-9a-f]{40}", rf"\g<1>{sha}", text, count=1)
+              text = re.sub(r'(\n\s+digest:\s*)".*"', r'\1""', text, count=1)
+              text = re.sub(r"splunk-cisco-skills-bundle(?::[0-9a-f]{40}|@sha256:[0-9a-f]{64})", f"splunk-cisco-skills-bundle:{sha}", text)
+              text = re.sub(r"splunk-cisco-skills/releases/[0-9a-f]{40}", f"splunk-cisco-skills/releases/{sha}", text)
+              text = re.sub(r"source commit\n# [0-9a-f]{40}", f"source commit\n# {sha}", text)
+              text = re.sub(r"-f source_sha=[0-9a-f]{40}", f"-f source_sha={sha}", text)
+              text = re.sub(r"defenseclaw.io/splunk-cisco-skills-source-sha: [0-9a-f]{40}", f"defenseclaw.io/splunk-cisco-skills-source-sha: {sha}", text)
+              path.write_text(text)
+          PY
+          git add deploy/helm/defenseclaw/values.yaml deploy/k8s/defenseclaw/isovalent-demo-core.yaml deploy/k8s/defenseclaw/README.md
+          git commit -m "chore: pin splunk-cisco-skills ${LATEST_SHA}"
+          git push -f origin "${branch}"
+          gh pr create \
+            --title "Pin splunk-cisco-skills ${LATEST_SHA}" \
+            --body "Updates the reviewed Splunk/Cisco skills source pin. The bundle workflow will build and sign the image after merge." \
+            --base main \
+            --head "${branch}" || true
+
+  build-bundle:
+    name: Build bundle image
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    outputs:
+      source_sha: ${{ steps.pin.outputs.source_sha }}
+      image_ref: ${{ steps.meta.outputs.image_ref }}
+      image_digest: ${{ steps.publish.outputs.image_digest }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: defenseclaw
+
+      - name: Resolve pinned source SHA
+        id: pin
+        working-directory: defenseclaw
+        env:
+          SOURCE_SHA_INPUT: ${{ github.event.inputs.source_sha || '' }}
+        run: |
+          set -euo pipefail
+          if [ -n "${SOURCE_SHA_INPUT}" ]; then
+            source_sha="${SOURCE_SHA_INPUT}"
+          else
+            source_sha="$(python - <<'PY'
+          import re
+          from pathlib import Path
+
+          text = Path("deploy/helm/defenseclaw/values.yaml").read_text()
+          match = re.search(r"sourceSha:\s*([0-9a-f]{40})", text)
+          if not match:
+              raise SystemExit("sourceSha not found")
+          print(match.group(1))
+          PY
+          )"
+          fi
+          case "${source_sha}" in
+            (*[!0-9a-f]*|"")
+              echo "invalid source SHA: ${source_sha}" >&2
+              exit 1
+              ;;
+          esac
+          if [ "${#source_sha}" -ne 40 ]; then
+            echo "invalid source SHA length: ${source_sha}" >&2
+            exit 1
+          fi
+          echo "source_sha=${source_sha}" >> "${GITHUB_OUTPUT}"
+
+      - uses: actions/checkout@v5
+        with:
+          repository: ${{ env.SOURCE_REPOSITORY }}
+          ref: ${{ steps.pin.outputs.source_sha }}
+          path: splunk-cisco-skills
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - uses: sigstore/cosign-installer@v3
+
+      - uses: anchore/sbom-action/download-syft@v0
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Prepare minimal bundle context
+        run: |
+          set -euo pipefail
+          defenseclaw/scripts/prepare-splunk-cisco-skills-bundle-context.sh \
+            splunk-cisco-skills \
+            bundle-context \
+            "${{ steps.pin.outputs.source_sha }}"
+
+      - name: MCP smoke tests
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check -r bundle-context/requirements-agent.txt
+          PYTHONPATH=bundle-context/agent python - <<'PY'
+          from splunk_cisco_skills_mcp import core
+
+          catalog = core.list_skills()
+          skills = catalog.get("skills", [])
+          if len(skills) < 100:
+              raise SystemExit(f"expected at least 100 skills, got {len(skills)}")
+          products = core.list_cisco_products()
+          if not products.get("products"):
+              raise SystemExit("Cisco product catalog is empty")
+          resolved = core.resolve_cisco_product("thousandeyes")
+          if not resolved.get("matches"):
+              raise SystemExit("ThousandEyes product resolution returned no matches")
+          status = core.credential_status()
+          if "candidates" not in status:
+              raise SystemExit("credential_status returned an unexpected shape")
+          PY
+
+      - uses: astral-sh/setup-uv@v8.1.0
+        with:
+          python-version: "3.13"
+
+      - name: DefenseClaw skill scan smoke
+        working-directory: defenseclaw
+        run: |
+          set -euo pipefail
+          uv sync
+          uv run defenseclaw skill scan cisco-product-setup \
+            --path ../bundle-context/skills/cisco-product-setup \
+            --json >/tmp/cisco-product-setup-scan.json
+
+      - name: Generate SBOM
+        id: sbom
+        run: |
+          set -euo pipefail
+          syft dir:bundle-context -o spdx-json=sbom.spdx.json
+          digest="sha256:$(sha256sum sbom.spdx.json | awk '{print $1}')"
+          echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
+
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: splunk-cisco-skills-bundle-sbom-${{ steps.pin.outputs.source_sha }}
+          path: sbom.spdx.json
+
+      - name: Image metadata
+        id: meta
+        run: |
+          set -euo pipefail
+          image="${BUNDLE_ECR_REPOSITORY}:${{ steps.pin.outputs.source_sha }}"
+          echo "image_ref=${image}" >> "${GITHUB_OUTPUT}"
+          echo "build_timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "${GITHUB_OUTPUT}"
+
+      - name: Build bundle image
+        working-directory: defenseclaw
+        run: |
+          set -euo pipefail
+          docker buildx build \
+            --load \
+            --tag "${{ steps.meta.outputs.image_ref }}" \
+            --build-arg BUNDLE_SOURCE_REPO="https://github.com/${SOURCE_REPOSITORY}" \
+            --build-arg BUNDLE_SOURCE_COMMIT="${{ steps.pin.outputs.source_sha }}" \
+            --build-arg BUNDLE_BUILD_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            --build-arg BUNDLE_BUILD_TIMESTAMP="${{ steps.meta.outputs.build_timestamp }}" \
+            --build-arg BUNDLE_SBOM_DIGEST="${{ steps.sbom.outputs.digest }}" \
+            --file deploy/docker/splunk-cisco-skills-bundle.Dockerfile \
+            ../bundle-context
+
+      - name: Configure AWS credentials
+        if: env.AWS_ROLE_TO_ASSUME != '' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && github.event.inputs.publish == 'true'))
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        if: env.AWS_ROLE_TO_ASSUME != '' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && github.event.inputs.publish == 'true'))
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Push and sign image
+        id: publish
+        if: env.AWS_ROLE_TO_ASSUME != '' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && github.event.inputs.publish == 'true'))
+        env:
+          COSIGN_EXPERIMENTAL: "true"
+        run: |
+          set -euo pipefail
+          docker push "${{ steps.meta.outputs.image_ref }}"
+          digest="$(docker buildx imagetools inspect "${{ steps.meta.outputs.image_ref }}" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          cosign sign --yes "${{ steps.meta.outputs.image_ref }}@${digest}"
+          echo "image_digest=${digest}" >> "${GITHUB_OUTPUT}"
+
+      - name: Open digest-pin PR
+        if: steps.publish.outputs.image_digest != ''
+        working-directory: defenseclaw
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE_DIGEST: ${{ steps.publish.outputs.image_digest }}
+          SOURCE_SHA: ${{ steps.pin.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          branch="automation/splunk-cisco-skills-digest-${SOURCE_SHA}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "${branch}"
+          python - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          digest = os.environ["IMAGE_DIGEST"]
+          sha = os.environ["SOURCE_SHA"]
+
+          values = Path("deploy/helm/defenseclaw/values.yaml")
+          text = values.read_text()
+          text = re.sub(r'(\n\s+digest:\s*)".*"', rf'\1"{digest}"', text, count=1)
+          values.write_text(text)
+
+          static = Path("deploy/k8s/defenseclaw/isovalent-demo-core.yaml")
+          text = static.read_text()
+          text = re.sub(
+              r"637423309390\.dkr\.ecr\.us-east-1\.amazonaws\.com/splunk-cisco-skills-bundle(?::[0-9a-f]{40}|@sha256:[0-9a-f]{64})",
+              f"637423309390.dkr.ecr.us-east-1.amazonaws.com/splunk-cisco-skills-bundle@{digest}",
+              text,
+          )
+          static.write_text(text)
+          PY
+          git add deploy/helm/defenseclaw/values.yaml deploy/k8s/defenseclaw/isovalent-demo-core.yaml
+          git commit -m "chore: pin splunk-cisco-skills bundle digest"
+          git push -f origin "${branch}"
+          gh pr create \
+            --title "Pin splunk-cisco-skills bundle digest" \
+            --body "Pins the signed ECR image digest for splunk-cisco-skills source ${SOURCE_SHA}." \
+            --base main \
+            --head "${branch}" || true

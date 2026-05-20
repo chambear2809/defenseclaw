@@ -1,6 +1,6 @@
 # Live-derived DefenseClaw/OpenClaw lab stack for the isovalent-demo EKS cluster.
 # Secret values are intentionally omitted; create the required Secrets first.
-# The defenesclaw namespace spelling matches the running lab DNS names.
+# The live runtime uses the correctly spelled defenseclaw namespace.
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -9,13 +9,13 @@ metadata:
   labels:
     app: defenseclaw
     app.kubernetes.io/name: defenseclaw
-  name: defenesclaw
+  name: defenseclaw
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: defenseclaw-data
-  namespace: defenesclaw
+  namespace: defenseclaw
 spec:
   accessModes:
     - ReadWriteOnce
@@ -29,7 +29,7 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: openclaw-data
-  namespace: defenesclaw
+  namespace: defenseclaw
 spec:
   accessModes:
     - ReadWriteOnce
@@ -43,7 +43,7 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: splunk-local-etc
-  namespace: defenesclaw
+  namespace: defenseclaw
 spec:
   accessModes:
     - ReadWriteOnce
@@ -57,7 +57,7 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: splunk-local-var
-  namespace: defenesclaw
+  namespace: defenseclaw
 spec:
   accessModes:
     - ReadWriteOnce
@@ -74,7 +74,7 @@ metadata:
     app.kubernetes.io/component: database
     app.kubernetes.io/name: agent-control
   name: agent-control-postgres-data
-  namespace: defenesclaw
+  namespace: defenseclaw
 spec:
   accessModes:
     - ReadWriteOnce
@@ -88,7 +88,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: defenseclaw-config
-  namespace: defenesclaw
+  namespace: defenseclaw
 data:
   config.yaml: |
     data_dir: /home/node/.defenseclaw
@@ -105,7 +105,7 @@ data:
       config_file: /home/node/.openclaw/openclaw.json
     gateway:
       enabled: true
-      host: openclaw.defenesclaw.svc.cluster.local
+      host: openclaw.defenseclaw.svc.cluster.local
       port: 18789
       token_env: OPENCLAW_GATEWAY_TOKEN
       allow_insecure: true
@@ -114,20 +114,23 @@ data:
       reconnect_ms: 800
       max_reconnect_ms: 15000
       approval_timeout_s: 30
-      api_host: defenseclaw.defenesclaw.svc.cluster.local
+      api_host: defenseclaw.defenseclaw.svc.cluster.local
       api_bind: 0.0.0.0
       api_port: 18970
       otlp_forward_http_endpoint: http://splunk-otel-collector-agent.otel-splunk.svc:4318
       watcher:
-        enabled: false
+        enabled: true
         skill:
-          enabled: false
+          enabled: true
           take_action: false
-          dirs: []
+          dirs:
+            - /home/node/.openclaw/splunk-cisco-skills/releases/2bce17ff8f2f29afd6f5326d7976d20c251538a4/skills
         plugin:
           enabled: false
           take_action: false
           dirs: []
+        mcp:
+          take_action: false
     scanners:
       skill_scanner:
         binary: skill-scanner
@@ -177,7 +180,7 @@ data:
         batch_size: 50
         flush_interval_s: 5
         splunk_hec:
-          endpoint: https://splunk-local.defenesclaw.svc.cluster.local:8088/services/collector/event
+          endpoint: https://splunk-local.defenseclaw.svc.cluster.local:8088/services/collector/event
           token_env: DEFENSECLAW_SPLUNK_HEC_TOKEN
           index: defenseclaw_local
           source: defenseclaw
@@ -185,7 +188,7 @@ data:
           verify_tls: false
     agent_control:
       enabled: true
-      url: http://agent-control.defenesclaw.svc.cluster.local:8000
+      url: http://agent-control.defenseclaw.svc.cluster.local:8000
       api_key_env: AGENT_CONTROL_API_KEY
       timeout_ms: 2000
       agent_name: defenseclaw-openclaw
@@ -197,15 +200,15 @@ metadata:
   labels:
     app.kubernetes.io/name: defenseclaw
   name: defenseclaw-client-config
-  namespace: defenesclaw
+  namespace: defenseclaw
 data:
   config.yaml: |
     notifications:
       enabled: false
     gateway:
-      host: openclaw.defenesclaw.svc.cluster.local
+      host: openclaw.defenseclaw.svc.cluster.local
       port: 18789
-      api_host: defenseclaw.defenesclaw.svc.cluster.local
+      api_host: defenseclaw.defenseclaw.svc.cluster.local
       api_port: 18970
 ---
 apiVersion: v1
@@ -215,7 +218,7 @@ metadata:
     app.kubernetes.io/component: gateway
     app.kubernetes.io/name: openclaw
   name: openclaw-config
-  namespace: defenesclaw
+  namespace: defenseclaw
 data:
   AGENTS.md: |
     # OpenClaw Test Lab
@@ -240,7 +243,7 @@ data:
         "controlUi": {
           "allowedOrigins": [
             "https://openclaw.rosa.fso-tme.eoha.p3.openshiftapps.com",
-            "https://aef6ae6eb19ee43fa91af9eda8e002b9-941781231.us-east-1.elb.amazonaws.com"
+            "https://acbe4270cfe0e4ca7b3ae74a848f9454-231483608.us-east-1.elb.amazonaws.com"
           ]
         }
       },
@@ -262,11 +265,37 @@ data:
           "memory": "none"
         }
       },
+      "skills": {
+        "load": {
+          "watch": true,
+          "extraDirs": [
+            "/home/node/.openclaw/splunk-cisco-skills/releases/2bce17ff8f2f29afd6f5326d7976d20c251538a4/skills"
+          ]
+        }
+      },
+      "mcp": {
+        "servers": {
+          "splunk-cisco-skills": {
+            "type": "stdio",
+            "command": "python3",
+            "args": [
+              "/home/node/.openclaw/splunk-cisco-skills/releases/2bce17ff8f2f29afd6f5326d7976d20c251538a4/agent/run-splunk-cisco-skills-mcp.py"
+            ],
+            "cwd": "/home/node/.openclaw/splunk-cisco-skills/releases/2bce17ff8f2f29afd6f5326d7976d20c251538a4",
+            "env": {
+              "PYTHONPATH": "/home/node/.openclaw/splunk-cisco-skills/releases/2bce17ff8f2f29afd6f5326d7976d20c251538a4/vendor/python:/home/node/.openclaw/splunk-cisco-skills/releases/2bce17ff8f2f29afd6f5326d7976d20c251538a4/agent",
+              "SPLUNK_CREDENTIALS_FILE": "/var/run/splunk-cisco-skills/credentials",
+              "SPLUNK_CISCO_SKILLS_MCP_NO_VENV": "1",
+              "SPLUNK_SKILLS_MCP_ALLOW_MUTATION": "1"
+            }
+          }
+        }
+      },
       "diagnostics": {
         "enabled": true,
         "otel": {
           "enabled": true,
-          "endpoint": "http://defenseclaw.defenesclaw.svc.cluster.local:18970",
+          "endpoint": "http://defenseclaw.defenseclaw.svc.cluster.local:18970",
           "protocol": "http/protobuf",
           "headers": {
             "Authorization": "Bearer ${OPENCLAW_GATEWAY_TOKEN}",
@@ -293,7 +322,7 @@ metadata:
     app: defenseclaw
     app.kubernetes.io/name: defenseclaw
   name: defenseclaw
-  namespace: defenesclaw
+  namespace: defenseclaw
 spec:
   replicas: 1
   selector:
@@ -314,9 +343,49 @@ spec:
       securityContext:
         fsGroup: 1000
         fsGroupChangePolicy: OnRootMismatch
+      initContainers:
+        - name: splunk-cisco-skills-bootstrap
+          image: 637423309390.dkr.ecr.us-east-1.amazonaws.com/splunk-cisco-skills-bundle@sha256:2e103b40c0f963c1e8b108277ec4f874c8eaaa3b744d3fd6b830b8df191e83da
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              sha="2bce17ff8f2f29afd6f5326d7976d20c251538a4"
+              release="/var/openclaw/splunk-cisco-skills/releases/${sha}"
+              if [ -f "${release}/.complete" ] && [ "$(cat "${release}/.revision" 2>/dev/null || true)" = "${sha}" ]; then
+                exit 0
+              fi
+              tmp="${release}.tmp"
+              rm -rf "${tmp}"
+              mkdir -p "$(dirname "${release}")" "${tmp}"
+              cp -R /bundle/. "${tmp}/"
+              echo "${sha}" > "${tmp}/.revision"
+              chown -R 1000:1000 "${tmp}"
+              touch "${tmp}/.complete"
+              rm -rf "${release}"
+              mv "${tmp}" "${release}"
+              test -s "${release}/.complete"
+              test "$(cat "${release}/.revision")" = "${sha}"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+            runAsGroup: 0
+            runAsNonRoot: false
+            runAsUser: 0
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - mountPath: /var/openclaw
+              name: defenseclaw-data
+              subPath: openclaw-client
       containers:
         - name: defenseclaw
-          image: 637423309390.dkr.ecr.us-east-1.amazonaws.com/defenseclaw:0.5.0-response-jsoncap-20260513202348-69eb02f-dirty
+          image: 637423309390.dkr.ecr.us-east-1.amazonaws.com/defenseclaw:0.6.0-web-tui-20260520-2
           imagePullPolicy: IfNotPresent
           env:
             - name: HOME
@@ -375,6 +444,90 @@ spec:
           volumeMounts:
             - mountPath: /home/node/.defenseclaw
               name: defenseclaw-data
+            - mountPath: /home/node/.openclaw
+              name: defenseclaw-data
+              subPath: openclaw-client
+            - mountPath: /home/node/.defenseclaw/config.yaml
+              name: defenseclaw-config
+              readOnly: true
+              subPath: config.yaml
+            - mountPath: /tmp
+              name: tmp
+        - name: defenseclaw-web-tui
+          image: 637423309390.dkr.ecr.us-east-1.amazonaws.com/defenseclaw:0.6.0-web-tui-20260520-2
+          imagePullPolicy: IfNotPresent
+          command:
+            - defenseclaw-gateway
+          args:
+            - web-tui
+            - --bind
+            - 0.0.0.0
+            - --port
+            - "18971"
+            - --max-sessions
+            - "1"
+            - --shutdown-grace
+            - 5s
+          env:
+            - name: HOME
+              value: /home/node
+            - name: OTEL_SERVICE_NAME
+              value: defenseclaw
+            - name: DEFENSECLAW_DECISION_EVIDENCE
+              value: "true"
+          envFrom:
+            - secretRef:
+                name: defenseclaw-secrets
+            - secretRef:
+                name: splunk-local-secrets
+            - secretRef:
+                name: agent-control-secrets
+          ports:
+            - containerPort: 18971
+              name: web-tui
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: web-tui
+              scheme: HTTP
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: web-tui
+              scheme: HTTP
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+            runAsGroup: 1000
+            runAsNonRoot: true
+            runAsUser: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - mountPath: /home/node/.defenseclaw
+              name: defenseclaw-data
+            - mountPath: /home/node/.openclaw
+              name: defenseclaw-data
+              subPath: openclaw-client
             - mountPath: /home/node/.defenseclaw/config.yaml
               name: defenseclaw-config
               readOnly: true
@@ -397,7 +550,7 @@ metadata:
   labels:
     app.kubernetes.io/name: defenseclaw
   name: defenseclaw
-  namespace: defenesclaw
+  namespace: defenseclaw
 spec:
   type: ClusterIP
   selector:
@@ -412,13 +565,36 @@ apiVersion: v1
 kind: Service
 metadata:
   annotations:
+    service.beta.kubernetes.io/aws-load-balancer-attributes: tcp.idle_timeout.seconds=3600
+    service.beta.kubernetes.io/aws-load-balancer-connection-idle-timeout: "3600"
+    service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
+    service.beta.kubernetes.io/aws-load-balancer-type: nlb
+  labels:
+    app.kubernetes.io/component: web-tui
+    app.kubernetes.io/name: defenseclaw
+  name: defenseclaw-tui
+  namespace: defenseclaw
+spec:
+  type: LoadBalancer
+  selector:
+    app.kubernetes.io/name: defenseclaw
+  ports:
+    - name: http
+      port: 80
+      protocol: TCP
+      targetPort: web-tui
+---
+apiVersion: v1
+kind: Service
+metadata:
+  annotations:
     service.beta.kubernetes.io/aws-load-balancer-backend-protocol: http
     service.beta.kubernetes.io/aws-load-balancer-connection-idle-timeout: "3600"
   labels:
     app.kubernetes.io/component: dashboard
     app.kubernetes.io/name: defenseclaw
   name: defenseclaw-ui
-  namespace: defenesclaw
+  namespace: defenseclaw
 spec:
   type: LoadBalancer
   selector:
@@ -437,7 +613,7 @@ metadata:
     app.kubernetes.io/component: gateway
     app.kubernetes.io/name: openclaw
   name: openclaw
-  namespace: defenesclaw
+  namespace: defenseclaw
 spec:
   replicas: 1
   selector:
@@ -450,6 +626,7 @@ spec:
     metadata:
       annotations:
         defenseclaw.io/openclaw-version: 2026.4.9
+        defenseclaw.io/splunk-cisco-skills-source-sha: 2bce17ff8f2f29afd6f5326d7976d20c251538a4
         defenseclaw.io/workspace-perms-fix: 2026-04-10-2
         instrumentation.opentelemetry.io/inject-nodejs: "false"
         splunk.com/exclude: "true"
@@ -464,7 +641,7 @@ spec:
         fsGroupChangePolicy: OnRootMismatch
       initContainers:
         - name: defenseclaw-plugin-bootstrap
-          image: 637423309390.dkr.ecr.us-east-1.amazonaws.com/defenseclaw:0.5.0-agent-control-allow-insecure-optpath-20260509001148-f809759e0f16
+          image: 637423309390.dkr.ecr.us-east-1.amazonaws.com/defenseclaw:0.6.0-web-tui-20260520-2
           imagePullPolicy: IfNotPresent
           command:
             - sh
@@ -490,6 +667,103 @@ spec:
           volumeMounts:
             - mountPath: /var/openclaw
               name: openclaw-data
+        - name: splunk-cisco-skills-bootstrap
+          image: 637423309390.dkr.ecr.us-east-1.amazonaws.com/splunk-cisco-skills-bundle@sha256:2e103b40c0f963c1e8b108277ec4f874c8eaaa3b744d3fd6b830b8df191e83da
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              sha="2bce17ff8f2f29afd6f5326d7976d20c251538a4"
+              release="/var/openclaw/splunk-cisco-skills/releases/${sha}"
+              if [ -f "${release}/.complete" ] && [ "$(cat "${release}/.revision" 2>/dev/null || true)" = "${sha}" ]; then
+                exit 0
+              fi
+              tmp="${release}.tmp"
+              rm -rf "${tmp}"
+              mkdir -p "$(dirname "${release}")" "${tmp}"
+              cp -R /bundle/. "${tmp}/"
+              echo "${sha}" > "${tmp}/.revision"
+              chown -R 1000:1000 "${tmp}"
+              touch "${tmp}/.complete"
+              rm -rf "${release}"
+              mv "${tmp}" "${release}"
+              test -s "${release}/.complete"
+              test "$(cat "${release}/.revision")" = "${sha}"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+            runAsGroup: 0
+            runAsNonRoot: false
+            runAsUser: 0
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - mountPath: /var/openclaw
+              name: openclaw-data
+        - name: splunk-cisco-credentials-preflight
+          image: 637423309390.dkr.ecr.us-east-1.amazonaws.com/splunk-cisco-skills-bundle@sha256:2e103b40c0f963c1e8b108277ec4f874c8eaaa3b744d3fd6b830b8df191e83da
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              src="/mnt/splunk-cisco-credentials/credentials"
+              dst="/var/run/splunk-cisco-skills/credentials"
+              test -s "${src}"
+              cp "${src}" "${dst}"
+              chown 1000:1000 "${dst}"
+              chmod 0600 "${dst}"
+              test "$(stat -c '%u' "${dst}")" = "1000"
+              test "$(stat -c '%a' "${dst}")" = "600"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+            runAsGroup: 0
+            runAsNonRoot: false
+            runAsUser: 0
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - mountPath: /mnt/splunk-cisco-credentials
+              name: splunk-cisco-credentials-source
+              readOnly: true
+            - mountPath: /var/run/splunk-cisco-skills
+              name: splunk-cisco-credentials
+        - name: splunk-cisco-credentials-verify
+          image: 637423309390.dkr.ecr.us-east-1.amazonaws.com/splunk-cisco-skills-bundle@sha256:2e103b40c0f963c1e8b108277ec4f874c8eaaa3b744d3fd6b830b8df191e83da
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              dst="/var/run/splunk-cisco-skills/credentials"
+              test -r "${dst}"
+              test "$(stat -c '%u' "${dst}")" = "1000"
+              test "$(stat -c '%a' "${dst}")" = "600"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+            runAsGroup: 1000
+            runAsNonRoot: true
+            runAsUser: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - mountPath: /var/run/splunk-cisco-skills
+              name: splunk-cisco-credentials
       containers:
         - name: openclaw
           image: ghcr.io/openclaw/openclaw@sha256:d65cc3d5fd0c8b1f752c2f70377843230112250c10e99c3b61769234c217c5db
@@ -514,7 +788,15 @@ spec:
             - name: TERM
               value: xterm-256color
             - name: OPENCLAW_CONTROL_UI_ALLOWED_ORIGIN
-              value: https://openclaw.rosa.fso-tme.eoha.p3.openshiftapps.com
+              value: https://acbe4270cfe0e4ca7b3ae74a848f9454-231483608.us-east-1.elb.amazonaws.com
+            - name: PYTHONPATH
+              value: /home/node/.openclaw/splunk-cisco-skills/releases/2bce17ff8f2f29afd6f5326d7976d20c251538a4/vendor/python:/home/node/.openclaw/splunk-cisco-skills/releases/2bce17ff8f2f29afd6f5326d7976d20c251538a4/agent
+            - name: SPLUNK_CREDENTIALS_FILE
+              value: /var/run/splunk-cisco-skills/credentials
+            - name: SPLUNK_CISCO_SKILLS_MCP_NO_VENV
+              value: "1"
+            - name: SPLUNK_SKILLS_MCP_ALLOW_MUTATION
+              value: "1"
           envFrom:
             - secretRef:
                 name: openclaw-secrets
@@ -577,6 +859,9 @@ spec:
               name: defenseclaw-client-config
               readOnly: true
               subPath: config.yaml
+            - mountPath: /var/run/splunk-cisco-skills
+              name: splunk-cisco-credentials
+              readOnly: true
             - mountPath: /tmp
               name: tmp
       volumes:
@@ -589,6 +874,14 @@ spec:
         - name: defenseclaw-client-config
           configMap:
             name: defenseclaw-client-config
+        - name: splunk-cisco-credentials-source
+          secret:
+            secretName: splunk-cisco-skills-credentials
+            items:
+              - key: credentials
+                path: credentials
+        - name: splunk-cisco-credentials
+          emptyDir: {}
         - name: tmp
           emptyDir: {}
 ---
@@ -599,7 +892,7 @@ metadata:
     app.kubernetes.io/component: gateway
     app.kubernetes.io/name: openclaw
   name: openclaw
-  namespace: defenesclaw
+  namespace: defenseclaw
 spec:
   type: ClusterIP
   selector:
@@ -623,7 +916,7 @@ metadata:
     app.kubernetes.io/component: gateway
     app.kubernetes.io/name: openclaw
   name: openclaw-ui
-  namespace: defenesclaw
+  namespace: defenseclaw
 spec:
   type: LoadBalancer
   selector:
@@ -642,7 +935,7 @@ metadata:
     app: splunk-local
     app.kubernetes.io/name: splunk-local
   name: splunk-local
-  namespace: defenesclaw
+  namespace: defenseclaw
 spec:
   replicas: 1
   selector:
@@ -745,7 +1038,7 @@ metadata:
     app: splunk-local
     app.kubernetes.io/name: splunk-local
   name: splunk-local
-  namespace: defenesclaw
+  namespace: defenseclaw
 spec:
   type: ClusterIP
   selector:
@@ -773,7 +1066,7 @@ metadata:
     app.kubernetes.io/component: web
     app.kubernetes.io/name: splunk-local
   name: splunk-local-ui
-  namespace: defenesclaw
+  namespace: defenseclaw
 spec:
   type: LoadBalancer
   selector:
@@ -795,7 +1088,7 @@ metadata:
     app.kubernetes.io/component: database
     app.kubernetes.io/name: agent-control
   name: agent-control-postgres
-  namespace: defenesclaw
+  namespace: defenseclaw
 spec:
   replicas: 1
   selector:
@@ -879,7 +1172,7 @@ metadata:
     app.kubernetes.io/component: database
     app.kubernetes.io/name: agent-control
   name: agent-control-postgres
-  namespace: defenesclaw
+  namespace: defenseclaw
 spec:
   type: ClusterIP
   selector:
@@ -898,7 +1191,7 @@ metadata:
     app.kubernetes.io/component: server
     app.kubernetes.io/name: agent-control
   name: agent-control
-  namespace: defenesclaw
+  namespace: defenseclaw
 spec:
   replicas: 1
   selector:
@@ -983,7 +1276,7 @@ metadata:
     app.kubernetes.io/component: server
     app.kubernetes.io/name: agent-control
   name: agent-control
-  namespace: defenesclaw
+  namespace: defenseclaw
 spec:
   type: ClusterIP
   selector:
@@ -1007,7 +1300,7 @@ metadata:
     app.kubernetes.io/component: dashboard
     app.kubernetes.io/name: agent-control
   name: agent-control-ui
-  namespace: defenesclaw
+  namespace: defenseclaw
 spec:
   type: LoadBalancer
   selector:

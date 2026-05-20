@@ -6,7 +6,7 @@ metadata:
     {{- include "defenseclaw.labels" . | nindent 4 }}
 data:
   config.yaml: |
-    {{- .Values.configYaml | nindent 4 }}
+    {{- tpl .Values.configYaml . | nindent 4 }}
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -16,4 +16,4 @@ metadata:
     {{- include "defenseclaw.labels" . | nindent 4 }}
 data:
   config.yaml: |
-    {{- .Values.clientConfigYaml | nindent 4 }}
+    {{- tpl .Values.clientConfigYaml . | nindent 4 }}

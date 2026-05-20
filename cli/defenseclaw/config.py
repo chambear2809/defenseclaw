@@ -611,10 +611,16 @@ class GatewayWatcherPluginConfig:
 
 
 @dataclass
+class GatewayWatcherMCPConfig:
+    take_action: bool = False
+
+
+@dataclass
 class GatewayWatcherConfig:
     enabled: bool = True
     skill: GatewayWatcherSkillConfig = field(default_factory=GatewayWatcherSkillConfig)
     plugin: GatewayWatcherPluginConfig = field(default_factory=GatewayWatcherPluginConfig)
+    mcp: GatewayWatcherMCPConfig = field(default_factory=GatewayWatcherMCPConfig)
 
 
 @dataclass
@@ -1027,10 +1033,9 @@ class NotificationSourceFilter:
     """Per-source toggles for the user-session notifier dispatcher.
 
     Mirrors :class:`config.NotificationSourceFilter` in
-    ``internal/config/notifications.go``. Defaults are all True so a
-    fresh ``notifications.enabled: true`` install reports every
-    block surface; operators dial down by flipping individual
-    sub-fields off.
+    ``internal/config/notifications.go``. Defaults are all True so an
+    operator who sets ``notifications.enabled: true`` sees every block
+    surface; they can dial down by flipping individual sub-fields off.
     """
 
     hook: bool = True
@@ -1041,27 +1046,23 @@ class NotificationSourceFilter:
 def _default_notifications_enabled() -> bool:
     """Mirror Go's ``config.DefaultNotificationsEnabled``.
 
-    Darwin is the only platform with a consumer-grade desktop
-    notification surface that every user already has running, so it
-    opts in by default. Every other OS waits for an explicit
-    ``defenseclaw setup notifications on`` opt-in. Implemented as a
-    free function (not a literal default) so the platform check is
-    evaluated at config-construction time, not module-import time —
-    important for unit tests that monkey-patch ``platform.system``.
+    Desktop notifications are opt-in on every platform, including
+    macOS, so labs and scripted installs do not surprise operators
+    with local toasts. Kept as a function rather than a literal so it
+    remains a single parity point with the Go side.
     """
-    return platform.system() == "Darwin"
+    return False
 
 
 @dataclass
 class NotificationsConfig:
     """User-session OS notifications. Mirrors internal/config.NotificationsConfig.
 
-    Master switch ``enabled`` defaults to ``True`` on darwin and
-    ``False`` elsewhere — same matrix as Go's
-    ``DefaultNotificationsEnabled``. ``defenseclaw setup
-    notifications`` (the single-prompt onboarding wizard) is still
-    the canonical opt-in path; operators dialing noise back down can
-    flip individual category / source / throttle fields.
+    Master switch ``enabled`` defaults to ``False`` everywhere, matching
+    Go's ``DefaultNotificationsEnabled``. ``defenseclaw setup
+    notifications on`` is the canonical opt-in path; operators dialing
+    noise back down can flip individual category / source / throttle
+    fields.
 
     Category defaults favor signal over noise: ``block_enforced``
     and ``hitl_approval`` are on so users see real blocks and real
@@ -1979,6 +1980,7 @@ def _merge_gateway_watcher(raw: dict[str, Any] | None) -> GatewayWatcherConfig:
         return GatewayWatcherConfig()
     skill_raw = raw.get("skill", {})
     plugin_raw = raw.get("plugin", {})
+    mcp_raw = raw.get("mcp", {})
     return GatewayWatcherConfig(
         enabled=raw.get("enabled", True),
         skill=GatewayWatcherSkillConfig(
@@ -1990,6 +1992,9 @@ def _merge_gateway_watcher(raw: dict[str, Any] | None) -> GatewayWatcherConfig:
             enabled=plugin_raw.get("enabled", True),
             take_action=plugin_raw.get("take_action", False),
             dirs=plugin_raw.get("dirs", []),
+        ),
+        mcp=GatewayWatcherMCPConfig(
+            take_action=mcp_raw.get("take_action", False),
         ),
     )
 
@@ -2271,10 +2276,10 @@ def _merge_ai_discovery(raw: dict[str, Any] | None) -> AIDiscoveryConfig:
 def _merge_notifications(raw: dict[str, Any] | None) -> NotificationsConfig:
     """Build a :class:`NotificationsConfig` from the YAML ``notifications:`` block.
 
-    Defaults are platform-conditional for the master switch (true on
-    darwin, false elsewhere — see :func:`_default_notifications_enabled`)
-    and on for every category and source so that once an operator
-    opts in via ``defenseclaw setup notifications`` they immediately
+    Defaults keep the master switch off everywhere (see
+    :func:`_default_notifications_enabled`) and on for every category
+    and source so that once an operator opts in via
+    ``defenseclaw setup notifications on`` they immediately
     see every block surface; tuning down is then a matter of
     flipping the explicit per-category / per-source keys.
 

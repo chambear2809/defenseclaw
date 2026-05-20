@@ -2,7 +2,7 @@ replicaCount: 1
 
 image:
   repository: 637423309390.dkr.ecr.us-east-1.amazonaws.com/defenseclaw
-  tag: 0.5.0-response-jsoncap-20260513202348-69eb02f-dirty
+  tag: 0.6.0-web-tui-20260520-2
   pullPolicy: IfNotPresent
 
 nameOverride: ""
@@ -22,9 +22,32 @@ envFromSecrets:
   - splunk-local-secrets
   - agent-control-secrets
 
+splunkCiscoSkills:
+  enabled: true
+  sourceRepo: https://github.com/chambear2809/splunk-cisco-skills
+  sourceSha: 2bce17ff8f2f29afd6f5326d7976d20c251538a4
+  releaseRoot: /home/node/.openclaw/splunk-cisco-skills/releases
+  image:
+    repository: 637423309390.dkr.ecr.us-east-1.amazonaws.com/splunk-cisco-skills-bundle
+    tag: 2bce17ff8f2f29afd6f5326d7976d20c251538a4
+    digest: "sha256:2e103b40c0f963c1e8b108277ec4f874c8eaaa3b744d3fd6b830b8df191e83da"
+    pullPolicy: IfNotPresent
+
 service:
   type: ClusterIP
   port: 18970
+
+webTui:
+  enabled: false
+  bind: 0.0.0.0
+  port: 18971
+  maxSessions: 1
+  shutdownGrace: 5s
+  service:
+    type: ClusterIP
+    port: 80
+    annotations: {}
+    loadBalancerSourceRanges: []
 
 uiService:
   enabled: true
@@ -171,7 +194,7 @@ configYaml: |
     config_file: /home/node/.openclaw/openclaw.json
   gateway:
     enabled: true
-    host: openclaw.defenesclaw.svc.cluster.local
+    host: openclaw.defenseclaw.svc.cluster.local
     port: 18789
     token_env: OPENCLAW_GATEWAY_TOKEN
     allow_insecure: true
@@ -180,20 +203,23 @@ configYaml: |
     reconnect_ms: 800
     max_reconnect_ms: 15000
     approval_timeout_s: 30
-    api_host: defenseclaw.defenesclaw.svc.cluster.local
+    api_host: defenseclaw.defenseclaw.svc.cluster.local
     api_bind: 0.0.0.0
     api_port: 18970
     otlp_forward_http_endpoint: http://splunk-otel-collector-agent.otel-splunk.svc:4318
     watcher:
-      enabled: false
+      enabled: true
       skill:
-        enabled: false
+        enabled: true
         take_action: false
-        dirs: []
+        dirs:
+          - "{{ .Values.splunkCiscoSkills.releaseRoot }}/{{ .Values.splunkCiscoSkills.sourceSha }}/skills"
       plugin:
         enabled: false
         take_action: false
         dirs: []
+      mcp:
+        take_action: false
   scanners:
     skill_scanner:
       binary: skill-scanner
@@ -243,7 +269,7 @@ configYaml: |
       batch_size: 50
       flush_interval_s: 5
       splunk_hec:
-        endpoint: https://splunk-local.defenesclaw.svc.cluster.local:8088/services/collector/event
+        endpoint: https://splunk-local.defenseclaw.svc.cluster.local:8088/services/collector/event
         token_env: DEFENSECLAW_SPLUNK_HEC_TOKEN
         index: defenseclaw_local
         source: defenseclaw
@@ -251,7 +277,7 @@ configYaml: |
         verify_tls: false
   agent_control:
     enabled: true
-    url: http://agent-control.defenesclaw.svc.cluster.local:8000
+    url: http://agent-control.defenseclaw.svc.cluster.local:8000
     api_key_env: AGENT_CONTROL_API_KEY
     timeout_ms: 2000
     agent_name: defenseclaw-openclaw
@@ -261,7 +287,7 @@ clientConfigYaml: |
   notifications:
     enabled: false
   gateway:
-    host: openclaw.defenesclaw.svc.cluster.local
+    host: openclaw.defenseclaw.svc.cluster.local
     port: 18789
-    api_host: defenseclaw.defenesclaw.svc.cluster.local
+    api_host: defenseclaw.defenseclaw.svc.cluster.local
     api_port: 18970

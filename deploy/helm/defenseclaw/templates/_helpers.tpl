@@ -26,3 +26,12 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- define "defenseclaw.selectorLabels" -}}
 app.kubernetes.io/name: {{ include "defenseclaw.name" . }}
 {{- end -}}
+
+{{- define "defenseclaw.splunkCiscoSkillsImage" -}}
+{{- $image := .Values.splunkCiscoSkills.image -}}
+{{- if $image.digest -}}
+{{- printf "%s@%s" $image.repository $image.digest -}}
+{{- else -}}
+{{- printf "%s:%s" $image.repository $image.tag -}}
+{{- end -}}
+{{- end -}}
