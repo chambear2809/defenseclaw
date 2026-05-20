@@ -45,7 +45,6 @@ spec:
               mkdir -p "$(dirname "${release}")" "${tmp}"
               cp -R /bundle/. "${tmp}/"
               echo "${sha}" > "${tmp}/.revision"
-              chown -R 1000:1000 "${tmp}"
               touch "${tmp}/.complete"
               rm -rf "${release}"
               mv "${tmp}" "${release}"
