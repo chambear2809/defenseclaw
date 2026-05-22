@@ -21,6 +21,7 @@ Wheel install (production):
     <site-packages>/defenseclaw/_data/skills/codeguard/
     <site-packages>/defenseclaw/_data/splunk_local_bridge/
     <site-packages>/defenseclaw/_data/local_observability_stack/
+    <site-packages>/defenseclaw/_data/splunk_o11y_dashboards/
 
 Editable install (dev):
     <repo>/policies/
@@ -28,6 +29,7 @@ Editable install (dev):
     <repo>/bundles/splunk_local_bridge/
     <repo>/bundles/local_observability_stack/
     <repo>/bundles/c3_agent_tokenomics/
+    <repo>/bundles/splunk_o11y_dashboards/
     <repo>/extensions/defenseclaw/
 
 Every resolver tries _data/ first (wheel), then repo-relative (dev).
@@ -103,6 +105,19 @@ def bundled_c3_agent_tokenomics_dir() -> Path:
         _DATA_DIR / "c3_agent_tokenomics",
         _REPO_ROOT / "bundles" / "c3_agent_tokenomics",
     )
+
+
+def bundled_splunk_o11y_dashboards_dir() -> Path:
+    """Terraform dashboard bundle for Splunk Observability Cloud."""
+    return _first_existing(
+        _DATA_DIR / "splunk_o11y_dashboards",
+        _REPO_ROOT / "bundles" / "splunk_o11y_dashboards",
+    )
+
+
+def bundled_splunk_o11y_dashboards_terraform_dir() -> Path:
+    """Terraform module path for the Splunk Observability Cloud dashboard bundle."""
+    return bundled_splunk_o11y_dashboards_dir() / "terraform"
 
 
 def bundled_extensions_dir() -> Path:

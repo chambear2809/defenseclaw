@@ -276,7 +276,7 @@ func (a *APIServer) handleOTLPSignal(w http.ResponseWriter, r *http.Request, sig
 	a.otel.RecordOTelIngest(ctx, string(signal), source, "ok", stats.Records, bodyBytes)
 	tokenUsage := extractOTLPTokenUsage(summaryBody, signal, source)
 	for _, usage := range tokenUsage {
-		a.otel.RecordLLMTokenUsage(ctx, usage.operationName, usage.providerName, usage.model, usage.agentName, SharedAgentRegistry().AgentID(), usage.tokenType, usage.tokens)
+		a.otel.RecordLLMTokenUsage(ctx, usage.operationName, usage.providerName, usage.model, usage.agentName, SharedAgentRegistry().AgentID(), SessionIDFromContext(ctx), usage.tokenType, usage.tokens)
 	}
 	durations := extractOTLPOperationDurations(summaryBody, signal, source)
 	for _, duration := range durations {
