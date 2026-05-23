@@ -23,6 +23,11 @@ import (
 
 	"github.com/defenseclaw/defenseclaw/internal/config"
 	"github.com/defenseclaw/defenseclaw/internal/gatewaylog"
+	"github.com/defenseclaw/defenseclaw/internal/redaction"
+	"github.com/defenseclaw/defenseclaw/internal/telemetry"
+	"go.opentelemetry.io/otel/attribute"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 // TestAgentNameForStream verifies the precedence rule used when
@@ -63,6 +68,104 @@ func TestSessionMessageUsage_AcceptsOpenClawTokenAliases(t *testing.T) {
 	if usage.CompletionTokens != 45 {
 		t.Fatalf("CompletionTokens=%d want 45", usage.CompletionTokens)
 	}
+}
+
+func TestSessionMessageToolResultCompletesDeferredToolSpanWithRawOutput(t *testing.T) {
+	redaction.SetDisableAll(true)
+	t.Cleanup(func() { redaction.SetDisableAll(false) })
+
+	reader := sdkmetric.NewManualReader()
+	exporter := tracetest.NewInMemoryExporter()
+	otelProvider, err := telemetry.NewProviderForTraceTest(reader, exporter)
+	if err != nil {
+		t.Fatalf("NewProviderForTraceTest: %v", err)
+	}
+	defer otelProvider.Shutdown(context.Background())
+
+	store, logger := testStoreAndLogger(t)
+	r := NewEventRouter(nil, store, logger, false, otelProvider)
+	r.SetDefaultAgentName("openclaw")
+
+	const (
+		sessionID = "agent:main:explicit:raw-output"
+		runID     = "run-raw-output"
+		callID    = "call-raw-output"
+	)
+
+	r.handleSessionTool(EventFrame{
+		Type:  "session.tool",
+		Event: "session.tool",
+		Payload: mustMarshal(SessionToolPayload{
+			SessionKey: sessionID,
+			RunID:      runID,
+			Data: &sessionToolData{
+				Phase:      "start",
+				Name:       "exec",
+				ToolCallID: callID,
+				Args:       json.RawMessage(`{"command":"printf raw-output"}`),
+			},
+		}),
+	})
+
+	r.handleSessionTool(EventFrame{
+		Type:  "session.tool",
+		Event: "session.tool",
+		Payload: mustMarshal(SessionToolPayload{
+			SessionKey: sessionID,
+			RunID:      runID,
+			Data: &sessionToolData{
+				Phase:      "result",
+				Name:       "exec",
+				ToolCallID: callID,
+			},
+		}),
+	})
+	if got := exporter.GetSpans(); len(got) != 0 {
+		t.Fatalf("empty stream result ended span early; spans=%d", len(got))
+	}
+
+	r.handleSessionMessage(EventFrame{
+		Type:  "session.message",
+		Event: "session.message",
+		Payload: mustMarshal(map[string]any{
+			"sessionKey": sessionID,
+			"runId":      runID,
+			"messageId":  "msg-tool-result",
+			"messageSeq": 3,
+			"message": map[string]any{
+				"role":       "toolResult",
+				"toolCallId": callID,
+				"toolName":   "exec",
+				"content": []map[string]any{
+					{"type": "text", "text": "raw-output"},
+				},
+				"details": map[string]any{"exitCode": 0},
+			},
+		}),
+	})
+
+	spans := exporter.GetSpans()
+	if len(spans) != 1 {
+		t.Fatalf("spans=%d want 1", len(spans))
+	}
+	attrs := attrsByKey(spans[0].Attributes)
+	if got := attrs["gen_ai.tool.call.result"].AsString(); got != `{"exit_code":0,"output":"raw-output"}` {
+		t.Fatalf("gen_ai.tool.call.result=%q", got)
+	}
+	if got := attrs["output.value"].AsString(); got != "raw-output" {
+		t.Fatalf("output.value=%q", got)
+	}
+	if got := attrs["defenseclaw.content.redacted"].AsBool(); got {
+		t.Fatal("defenseclaw.content.redacted=true, want false")
+	}
+}
+
+func attrsByKey(attrs []attribute.KeyValue) map[string]attribute.Value {
+	out := make(map[string]attribute.Value, len(attrs))
+	for _, attr := range attrs {
+		out[string(attr.Key)] = attr.Value
+	}
+	return out
 }
 
 // TestToolDestinationApp verifies the destination_app formatting rule

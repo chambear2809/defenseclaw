@@ -1,0 +1,90 @@
+{
+  "data": {
+    "action": {
+      "decision": "steer",
+      "steering_context": {
+        "message": "Pause for operator approval before changing ThousandEyes test configuration. Include target URL, interval, tags, rollback/delete plan, and post-change Splunk O11y verification."
+      }
+    },
+    "condition": {
+      "or": [
+        {
+          "and": [
+            {
+              "evaluator": {
+                "config": {
+                  "pattern": "(?is)(\\bPOST\\b|\"method\"\\s*:\\s*\"POST\")"
+                },
+                "name": "regex"
+              },
+              "selector": {
+                "path": "*"
+              }
+            },
+            {
+              "evaluator": {
+                "config": {
+                  "pattern": "(?is)(api\\.thousandeyes\\.com/v7/tests|/v7/tests/(http-server|agent-to-server))"
+                },
+                "name": "regex"
+              },
+              "selector": {
+                "path": "*"
+              }
+            }
+          ]
+        },
+        {
+          "and": [
+            {
+              "evaluator": {
+                "config": {
+                  "pattern": "(?is)(thousandeyes-mcp|mcp__thousandeyes-mcp__create_synthetic_test)"
+                },
+                "name": "regex"
+              },
+              "selector": {
+                "path": "*"
+              }
+            },
+            {
+              "evaluator": {
+                "config": {
+                  "pattern": "(?is)(create_synthetic_test|create_alert_rule|update_|delete_synthetic_test|run_.*instant_test)"
+                },
+                "name": "regex"
+              },
+              "selector": {
+                "path": "*"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "description": "Require operator approval before creating or modifying ThousandEyes synthetic tests.",
+    "enabled": true,
+    "execution": "server",
+    "scope": {
+      "stages": [
+        "pre"
+      ],
+      "step_names": [
+        "http",
+        "mcp__thousandeyes-mcp__create_synthetic_test",
+        "mcp__thousandeyes-mcp__delete_synthetic_test",
+        "mcp__thousandeyes-mcp__update_synthetic_test",
+        "mcp__thousandeyes-mcp__run_http_server_instant_test"
+      ],
+      "step_types": [
+        "tool"
+      ]
+    },
+    "tags": [
+      "defenseclaw",
+      "enterprise-ops-demo",
+      "thousandeyes",
+      "approval"
+    ]
+  }
+}

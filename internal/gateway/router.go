@@ -43,6 +43,10 @@ type activeSpan struct {
 	startTime time.Time
 	tool      string
 	provider  string
+	id        string
+	sessionID string
+	runID     string
+	output    strings.Builder
 }
 
 // activeAgent tracks an invoke_agent span for a running agent session.
@@ -226,6 +230,93 @@ func agentSpanSummary(aa *activeAgent) telemetry.AgentSpanSummary {
 		InputTokens:         aa.inputTokens,
 		OutputTokens:        aa.outputTokens,
 		TokenUsageEstimated: aa.tokenUsageEstimated,
+	}
+}
+
+func (r *EventRouter) findActiveToolSpanLocked(tool, id, sessionID, runID string) (string, int, *activeSpan) {
+	if id != "" {
+		for key, q := range r.activeToolSpans {
+			for i, as := range q {
+				if as != nil && as.id == id {
+					return key, i, as
+				}
+			}
+		}
+	}
+	if tool == "" {
+		return "", -1, nil
+	}
+	q := r.activeToolSpans[tool]
+	for i, as := range q {
+		if as == nil {
+			continue
+		}
+		if sessionID != "" && as.sessionID != "" && as.sessionID != sessionID {
+			continue
+		}
+		if runID != "" && as.runID != "" && as.runID != runID {
+			continue
+		}
+		return tool, i, as
+	}
+	if len(q) > 0 {
+		return tool, 0, q[0]
+	}
+	return "", -1, nil
+}
+
+func (r *EventRouter) activeToolOutput(tool, id, sessionID, runID string) string {
+	r.spanMu.Lock()
+	defer r.spanMu.Unlock()
+	_, _, as := r.findActiveToolSpanLocked(tool, id, sessionID, runID)
+	if as == nil {
+		return ""
+	}
+	return as.output.String()
+}
+
+func (r *EventRouter) appendActiveToolOutput(tool, id, sessionID, runID, delta string) {
+	if delta == "" {
+		return
+	}
+	r.spanMu.Lock()
+	defer r.spanMu.Unlock()
+	_, _, as := r.findActiveToolSpanLocked(tool, id, sessionID, runID)
+	if as == nil {
+		return
+	}
+	as.output.WriteString(delta)
+}
+
+func (r *EventRouter) endToolSpansForRun(runID string, exitCode int) {
+	if r.otel == nil {
+		return
+	}
+	var spans []*activeSpan
+	r.spanMu.Lock()
+	for key, q := range r.activeToolSpans {
+		kept := q[:0]
+		for _, as := range q {
+			if as == nil {
+				continue
+			}
+			if runID == "" || as.runID == "" || as.runID == runID {
+				spans = append(spans, as)
+				continue
+			}
+			kept = append(kept, as)
+		}
+		if len(kept) == 0 {
+			delete(r.activeToolSpans, key)
+		} else {
+			r.activeToolSpans[key] = kept
+		}
+	}
+	r.spanMu.Unlock()
+
+	for _, as := range spans {
+		output := as.output.String()
+		r.otel.EndToolSpan(as.span, exitCode, len(output), as.startTime, as.tool, as.provider, output)
 	}
 }
 
@@ -623,6 +714,14 @@ func (r *EventRouter) handleSessionTool(evt EventFrame) {
 		if output == "" {
 			output = payload.Result
 		}
+		if output == "" && payload.Data != nil && payload.CallID != "" {
+			output = r.activeToolOutput(toolName, payload.CallID, payload.SessionKey, payload.RunID)
+		}
+		if output == "" && payload.Data != nil && payload.CallID != "" {
+			readLoopLogf("[bifrost] session.tool result deferred until session.message toolResult tool=%s callId=%s",
+				toolName, payload.CallID)
+			return
+		}
 		syntheticEvt := EventFrame{
 			Type:  evt.Type,
 			Event: "tool_result",
@@ -682,12 +781,20 @@ func (r *EventRouter) handleSessionMessage(evt EventFrame) {
 		var msg struct {
 			Role         string               `json:"role"`
 			Content      json.RawMessage      `json:"content"`
+			ToolCallID   string               `json:"toolCallId"`
+			ToolName     string               `json:"toolName"`
 			Timestamp    int64                `json:"timestamp"`
 			StopReason   string               `json:"stopReason"`
 			ErrorMessage string               `json:"errorMessage"`
 			Provider     string               `json:"provider"`
 			Model        string               `json:"model"`
 			Usage        *sessionMessageUsage `json:"usage,omitempty"`
+			Details      *struct {
+				Status     string `json:"status"`
+				ExitCode   *int   `json:"exitCode"`
+				Aggregated string `json:"aggregated"`
+			} `json:"details,omitempty"`
+			IsError bool `json:"isError,omitempty"`
 		}
 		if err := json.Unmarshal(envelope.Message, &msg); err != nil {
 			readLoopLogf("[bifrost] session.message: has message field but failed to parse: %v", err)
@@ -728,6 +835,32 @@ func (r *EventRouter) handleSessionMessage(evt EventFrame) {
 				finishReasons = []string{msg.StopReason}
 			}
 			emitLLMResponseEvent(msgCtx, msgMeta, contentStr, string(msg.Content), finishReasons)
+		case "toolResult":
+			output := sessionMessageTextContent(msg.Content)
+			if output == "" && msg.Details != nil {
+				output = msg.Details.Aggregated
+			}
+			exitCode := 0
+			if msg.Details != nil && msg.Details.ExitCode != nil {
+				exitCode = *msg.Details.ExitCode
+			}
+			if msg.IsError && exitCode == 0 {
+				exitCode = 1
+			}
+			r.handleToolResult(EventFrame{
+				Type:  evt.Type,
+				Event: "tool_result",
+				Payload: mustMarshal(ToolResultPayload{
+					Tool:      firstNonEmpty(msg.ToolName, "tool"),
+					Output:    output,
+					ExitCode:  &exitCode,
+					ID:        msg.ToolCallID,
+					SessionID: envelope.SessionKey,
+					RunID:     envelope.RunID,
+					AgentName: r.agentNameForStream(""),
+				}),
+				Seq: evt.Seq,
+			})
 		}
 
 		if r.hilt != nil && r.hilt.ResolveFromMessage(envelope.SessionKey, msg.Role, contentStr) {
@@ -1027,6 +1160,22 @@ func mustMarshal(v interface{}) json.RawMessage {
 	return b
 }
 
+func sessionMessageTextContent(content json.RawMessage) string {
+	if len(content) == 0 {
+		return ""
+	}
+	if content[0] == '"' {
+		var s string
+		if err := json.Unmarshal(content, &s); err == nil {
+			return s
+		}
+	}
+	if text := responsesTextFromContent(content); text != "" {
+		return text
+	}
+	return string(content)
+}
+
 // agentEventPayload is the structure of an agent streaming event.
 // Tool calls appear as type=tool_call or contain toolCall/toolResult fields.
 type agentEventPayload struct {
@@ -1148,6 +1297,11 @@ type agentStreamData struct {
 	Name       string          `json:"name"`
 	ToolCallID string          `json:"toolCallId"`
 	Args       json.RawMessage `json:"args,omitempty"`
+	Text       string          `json:"text,omitempty"`
+	Delta      string          `json:"delta,omitempty"`
+	Output     string          `json:"output,omitempty"`
+	Content    string          `json:"content,omitempty"`
+	Chunk      string          `json:"chunk,omitempty"`
 	Error      string          `json:"error,omitempty"`
 	StartedAt  int64           `json:"startedAt,omitempty"`
 	EndedAt    int64           `json:"endedAt,omitempty"`
@@ -1227,6 +1381,7 @@ func (r *EventRouter) handleAgentStreamEvent(se struct {
 
 			// End invoke_agent span with error.
 			if r.otel != nil && se.RunID != "" {
+				r.endToolSpansForRun(se.RunID, 1)
 				r.spanMu.Lock()
 				r.activeLLMCtx = nil
 				if aa := r.activeAgentSpans[se.RunID]; aa != nil {
@@ -1246,6 +1401,7 @@ func (r *EventRouter) handleAgentStreamEvent(se struct {
 
 			// End invoke_agent span successfully.
 			if r.otel != nil && se.RunID != "" {
+				r.endToolSpansForRun(se.RunID, 0)
 				r.spanMu.Lock()
 				r.activeLLMCtx = nil
 				if aa := r.activeAgentSpans[se.RunID]; aa != nil {
@@ -1281,6 +1437,12 @@ func (r *EventRouter) handleAgentStreamEvent(se struct {
 			Seq:     evt.Seq,
 		}
 		r.handleSessionTool(toolEvt)
+
+	case "command_output":
+		if data.Phase == "delta" {
+			r.appendActiveToolOutput("", data.ToolCallID, se.SessionKey, se.RunID,
+				firstNonEmpty(data.Delta, data.Text, data.Output, data.Content, data.Chunk, data.Meta))
+		}
 
 	case "text":
 		readLoopLogf("[bifrost] agent text stream: phase=%s (content delivery, no action)", data.Phase)
@@ -1401,6 +1563,9 @@ func (r *EventRouter) handleToolCall(evt EventFrame) {
 			startTime: time.Now(),
 			tool:      payload.Tool,
 			provider:  "builtin",
+			id:        payload.ID,
+			sessionID: payload.SessionID,
+			runID:     payload.RunID,
 		})
 		r.spanMu.Unlock()
 	}
@@ -1439,6 +1604,33 @@ func (r *EventRouter) handleToolResult(evt EventFrame) {
 		exitCode = *payload.ExitCode
 	}
 
+	var as *activeSpan
+	if r.otel != nil {
+		r.spanMu.Lock()
+		key, idx, candidate := r.findActiveToolSpanLocked(payload.Tool, payload.ID, payload.SessionID, payload.RunID)
+		if candidate != nil {
+			as = candidate
+			if payload.Tool == "" || payload.Tool == "tool" {
+				payload.Tool = as.tool
+			}
+			if payload.SessionID == "" {
+				payload.SessionID = as.sessionID
+			}
+			if payload.RunID == "" {
+				payload.RunID = as.runID
+			}
+			if payload.Output == "" {
+				payload.Output = as.output.String()
+			}
+			q := r.activeToolSpans[key]
+			r.activeToolSpans[key] = append(q[:idx], q[idx+1:]...)
+			if len(r.activeToolSpans[key]) == 0 {
+				delete(r.activeToolSpans, key)
+			}
+		}
+		r.spanMu.Unlock()
+	}
+
 	r.logStreamToolAction(payload.SessionID, "gateway-tool-result", payload.Tool, payload.ID,
 		fmt.Sprintf("exit_code=%d output_len=%d", exitCode, len(payload.Output)))
 	meta := streamLLMEventMeta(r, payload.SessionID, payload.RunID, "builtin", "", payload.AgentName)
@@ -1448,22 +1640,9 @@ func (r *EventRouter) handleToolResult(evt EventFrame) {
 
 	r.inspectToolResult(payload)
 
-	if r.otel != nil {
-		r.spanMu.Lock()
-		var as *activeSpan
-		if q := r.activeToolSpans[payload.Tool]; len(q) > 0 {
-			as = q[0]
-			r.activeToolSpans[payload.Tool] = q[1:]
-			if len(r.activeToolSpans[payload.Tool]) == 0 {
-				delete(r.activeToolSpans, payload.Tool)
-			}
-		}
-		r.spanMu.Unlock()
-
-		if as != nil {
-			r.otel.SetRawSpanString(as.span, "defenseclaw.tool.output", payload.Output)
-			r.otel.EndToolSpan(as.span, exitCode, len(payload.Output), as.startTime, as.tool, as.provider, payload.Output)
-		}
+	if r.otel != nil && as != nil {
+		r.otel.SetRawSpanString(as.span, "defenseclaw.tool.output", payload.Output)
+		r.otel.EndToolSpan(as.span, exitCode, len(payload.Output), as.startTime, as.tool, as.provider, payload.Output)
 	}
 }
 

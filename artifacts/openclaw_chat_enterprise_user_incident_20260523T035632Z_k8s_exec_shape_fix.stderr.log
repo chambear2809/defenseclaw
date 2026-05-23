@@ -1,0 +1,12 @@
+[defenseclaw] AWS HTTP/1 shim skipped (no Amazon Bedrock in model config). Set plugins.entries.defenseclaw.awsHttp1Shim to "on" or DEFENSECLAW_FORCE_AWS_HTTP1_SHIM=1 if your setup needs it.
+[defenseclaw] LLM fetch interceptor active (proxy: http://127.0.0.1:4000)
+Debugger listening on ws://127.0.0.1:9229/b83086a4-99d7-40f0-8374-1d8d46d865c3
+For help, see: https://nodejs.org/en/docs/inspector
+Debugger attached.
+Config (/home/node/.openclaw/openclaw.json): missing env var "BRIDGEIT_ACCESS_TOKEN" at mcp.servers.bridgeit-rag.env.BRIDGEIT_ACCESS_TOKEN - feature using this value will be unavailable
+[defenseclaw] LLM fetch interceptor active (proxy: http://127.0.0.1:4000)
+Debugger listening on ws://127.0.0.1:9229/05d99bb7-a5d5-4a6e-8292-9cb7a3fe18fe
+For help, see: https://nodejs.org/en/docs/inspector
+Debugger attached.
+OpenTelemetry eBPF Instrumentation has injected instrumentation via the NodeJS debugger
+The debugger will be deactivated again and closed

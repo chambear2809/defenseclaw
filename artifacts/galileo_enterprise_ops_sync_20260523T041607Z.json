@@ -1,0 +1,29 @@
+{
+  "datasets": [
+    {
+      "id": "4d89a5d8-1e7f-421d-b742-cadb6e000c68",
+      "name": "defenseclaw-enterprise-ops-thousandeyes",
+      "rows": 16,
+      "source": "artifacts/.galileo-sync-src-94001/defenseclaw-enterprise-ops-thousandeyes.jsonl",
+      "status": "updated"
+    }
+  ],
+  "prompts": [
+    {
+      "id": "096341e8-05c8-4c8f-9e39-12155a61a8ad",
+      "name": "defenseclaw-runtime-governance",
+      "source": "prompts/galileo/defenseclaw-runtime-governance.md",
+      "status": "updated",
+      "version": 2,
+      "version_id": "8ebe7696-a235-49f7-88bf-1d5abb3645d7"
+    },
+    {
+      "id": "ce2a5908-bc6c-45e0-89e7-cd498d6ed870",
+      "name": "defenseclaw-enterprise-ops-agent-flow",
+      "source": "prompts/galileo/enterprise-ops-agent-flow.md",
+      "status": "updated",
+      "version": 2,
+      "version_id": "4400f9ef-699f-4812-b6a3-ae39cc35a08d"
+    }
+  ]
+}

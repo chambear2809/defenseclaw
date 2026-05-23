@@ -1,0 +1,255 @@
+{
+  "o11y_env": {
+    "environments_count": 1,
+    "http_status": 200,
+    "isError": false,
+    "keys": [
+      "apm_dashboard_link",
+      "environments",
+      "is_partial_set"
+    ],
+    "ok": true,
+    "sample_environments": [
+      {
+        "link": {
+          "link_type": "environments_overview",
+          "text": "teastore",
+          "url": "https://app.us1.signalfx.com/#/apm?orgId=GM58ZPfA4AQ&environments=teastore"
+        },
+        "name": "teastore"
+      }
+    ]
+  },
+  "o11y_services": {
+    "http_status": 200,
+    "isError": false,
+    "keys": [
+      "is_partial_set",
+      "services"
+    ],
+    "ok": true,
+    "sample_services": [
+      {
+        "errorCount": {
+          "value": 503
+        },
+        "health": "Ok",
+        "requestCount": {
+          "value": 2486207
+        },
+        "requestDurationMicrosP50": {
+          "value": 9218
+        },
+        "requestDurationMicrosP90": {
+          "value": 36814
+        },
+        "requestDurationMicrosP99": {
+          "value": 156259
+        },
+        "rootCauseErrorCount": {
+          "value": 503
+        },
+        "service": {
+          "link": {
+            "link_type": "service_overview",
+            "text": "teastore-webui-v1",
+            "url": "https://app.us1.signalfx.com/#/apm/service?orgId=GM58ZPfA4AQ&service=teastore-webui-v1&startTimeUTC=1779419035000&endTimeUTC=1779505435000&environments=teastore"
+          },
+          "name": "teastore-webui-v1",
+          "trace_analyzer_link": {
+            "link_type": "trace_analyzer",
+            "text": "Trace Analyzer",
+            "url": "https://app.us1.signalfx.com/#/apm/traces?orgId=GM58ZPfA4AQ&startTimeUTC=1779419035000&endTimeUTC=1779505435000&filters=%7B%22traceFilter%22%3A%7B%22tags%22%3A%5B%7B%22tag%22%3A%22sf_environment%22%2C%22operation%22%3A%22IN%22%2C%22values%22%3A%5B%22teastore%22%5D%7D%5D%7D%2C%22spanFilters%22%3A%5B%7B%22tags%22%3A%5B%7B%22tag%22%3A%22sf_service%22%2C%22operation%22%3A%22IN%22%2C%22values%22%3A%5B%22teastore-webui-v1%22%5D%7D%5D%7D%5D%7D"
+          }
+        }
+      },
+      {
+        "errorCount": {
+          "value": 101
+        },
+        "health": "Ok",
+        "requestCount": {
+          "value": 3396878
+        },
+        "requestDurationMicrosP50": {
+          "value": 690
+        },
+        "requestDurationMicrosP90": {
+          "value": 1548
+        },
+        "requestDurationMicrosP99": {
+          "value": 4411
+        },
+        "rootCauseErrorCount": {
+          "value": 101
+        },
+        "service": {
+          "link": {
+            "link_type": "service_overview",
+            "text": "teastore-image-v1",
+            "url": "https://app.us1.signalfx.com/#/apm/service?orgId=GM58ZPfA4AQ&service=teastore-image-v1&startTimeUTC=1779419035000&endTimeUTC=1779505435000&environments=teastore"
+          },
+          "name": "teastore-image-v1",
+          "trace_analyzer_link": {
+            "link_type": "trace_analyzer",
+            "text": "Trace Analyzer",
+            "url": "https://app.us1.signalfx.com/#/apm/traces?orgId=GM58ZPfA4AQ&startTimeUTC=1779419035000&endTimeUTC=1779505435000&filters=%7B%22traceFilter%22%3A%7B%22tags%22%3A%5B%7B%22tag%22%3A%22sf_environment%22%2C%22operation%22%3A%22IN%22%2C%22values%22%3A%5B%22teastore%22%5D%7D%5D%7D%2C%22spanFilters%22%3A%5B%7B%22tags%22%3A%5B%7B%22tag%22%3A%22sf_service%22%2C%22operation%22%3A%22IN%22%2C%22values%22%3A%5B%22teastore-image-v1%22%5D%7D%5D%7D%5D%7D"
+          }
+        }
+      },
+      {
+        "errorCount": {
+          "value": 39
+        },
+        "health": "Ok",
+        "requestCount": {
+          "value": 2774571
+        },
+        "requestDurationMicrosP50": {
+          "value": 592
+        },
+        "requestDurationMicrosP90": {
+          "value": 932
+        },
+        "requestDurationMicrosP99": {
+          "value": 1867
+        },
+        "rootCauseErrorCount": {
+          "value": 39
+        },
+        "service": {
+          "link": {
+            "link_type": "service_overview",
+            "text": "mysql:teadb",
+            "url": "https://app.us1.signalfx.com/#/apm/service?orgId=GM58ZPfA4AQ&service=mysql%3Ateadb&startTimeUTC=1779419035000&endTimeUTC=1779505435000&environments=teastore"
+          },
+          "name": "mysql:teadb",
+          "trace_analyzer_link": {
+            "link_type": "trace_analyzer",
+            "text": "Trace Analyzer",
+            "url": "https://app.us1.signalfx.com/#/apm/traces?orgId=GM58ZPfA4AQ&startTimeUTC=1779419035000&endTimeUTC=1779505435000&filters=%7B%22traceFilter%22%3A%7B%22tags%22%3A%5B%7B%22tag%22%3A%22sf_environment%22%2C%22operation%22%3A%22IN%22%2C%22values%22%3A%5B%22teastore%22%5D%7D%5D%7D%2C%22spanFilters%22%3A%5B%7B%22tags%22%3A%5B%7B%22tag%22%3A%22sf_service%22%2C%22operation%22%3A%22IN%22%2C%22values%22%3A%5B%22mysql%3Ateadb%22%5D%7D%5D%7D%5D%7D"
+          }
+        }
+      }
+    ],
+    "services_count": 7
+  },
+  "o11y_webui_latency": {
+    "http_status": 200,
+    "isError": false,
+    "keys": [
+      "nodes",
+      "service"
+    ],
+    "ok": true
+  },
+  "te_enterprise_agents": {
+    "http_status": 200,
+    "isError": false,
+    "list_count": 10,
+    "ok": true,
+    "sample": [
+      {
+        "agentId": "1639905",
+        "agentName": "te-agent-aleccham",
+        "agentType": "enterprise",
+        "countryId": "US",
+        "enabled": true,
+        "ipAddresses": [
+          "192.168.93.89"
+        ],
+        "location": "Ashburn, Virginia, US",
+        "network": "Amazon.com, Inc. (AS 14618)",
+        "publicIpAddresses": [
+          "35.174.234.27"
+        ]
+      },
+      {
+        "agentId": "1659237",
+        "agentName": "te-agent-aleccham-2-1616232",
+        "agentType": "enterprise",
+        "countryId": "US",
+        "enabled": true,
+        "ipAddresses": [
+          "192.168.111.222"
+        ],
+        "location": "Ashburn, Virginia, US",
+        "network": "Amazon.com, Inc. (AS 14618)",
+        "publicIpAddresses": [
+          "35.174.234.27"
+        ]
+      },
+      {
+        "agentId": "1660330",
+        "agentName": "te-agent-aleccham-1617226",
+        "agentType": "enterprise",
+        "countryId": "US",
+        "enabled": true,
+        "ipAddresses": [
+          "192.168.126.216"
+        ],
+        "location": "Ashburn, Virginia, US",
+        "network": "Amazon.com, Inc. (AS 14618)",
+        "publicIpAddresses": [
+          "35.174.234.27"
+        ]
+      },
+      {
+        "agentId": "1660331",
+        "agentName": "te-agent-aleccham-2",
+        "agentType": "enterprise",
+        "countryId": "US",
+        "enabled": true,
+        "ipAddresses": [
+          "192.168.96.219"
+        ],
+        "location": "Ashburn, Virginia, US",
+        "network": "Amazon.com, Inc. (AS 14618)",
+        "publicIpAddresses": [
+          "35.174.234.27"
+        ]
+      },
+      {
+        "agentId": "1664821",
+        "agentName": "te-agent-streaming-private",
+        "agentType": "enterprise",
+        "countryId": "US",
+        "enabled": true,
+        "ipAddresses": [
+          "10.42.1.110"
+        ],
+        "location": "Ashburn, Virginia, US",
+        "network": "Amazon.com, Inc. (AS 14618)",
+        "publicIpAddresses": [
+          "54.162.216.40"
+        ]
+      }
+    ]
+  },
+  "te_tests": {
+    "agent_map_size": 1,
+    "http_status": 200,
+    "isError": false,
+    "keys": [
+      "agents",
+      "hasMore",
+      "results",
+      "total"
+    ],
+    "ok": true,
+    "results_count": 1,
+    "sample_results": [
+      {
+        "agentIds": [
+          "1666117"
+        ],
+        "enabled": true,
+        "name": "defenseclaw-demo-teastore-k8s",
+        "pathSource": "cea",
+        "target": "http://teastore-webui.teastore.svc.cluster.local:8080/tools.descartes.teastore.webui/",
+        "testid": "8597876",
+        "type": "http-server"
+      }
+    ]
+  }
+}

@@ -1,0 +1,1163 @@
+{
+  "runId": "2336f3be-8e93-4542-9f39-97710e0cbbcd",
+  "status": "ok",
+  "summary": "completed",
+  "result": {
+    "payloads": [
+      {
+        "text": "Incident INC-TEASTORE-001 - Degraded teaStore web UI (teastore-webui)\n\nExecutive summary\n- On-call alert tied to teastore-webui degradation. Validated with read-only checks across Splunk Observability Cloud (O11y), Kubernetes namespace, and ThousandEyes (TE) evidence. No changes were made. Any remediation would require explicit operator approval.\n\n1) Splunk O11y evidence\n- Environment: teastore (APM scope confirmed)\n- Services (teastore namespace):\n  - teastore-webui-v1\n    - Health: Ok\n    - Requests: ~2,485,911 in last 24h\n    - Errors: 503 total\n    - Latency (P50): ~9.2 ms; P90: ~36.9 ms; P99: ~157 ms\n    - Trace Analyzer link available for deeper trace exploration around teastore-webui-v1\n  - teastore-image-v1\n    - Health: Ok\n    - Requests: ~3,395,926\n    - Errors: 101\n    - Latency: P50 ~0.69 ms; P90 ~1.55 ms\n  - teastore-auth\n    - Health: Ok\n    - Requests: ~1,890,259\n    - Errors: 0\n  - teastore-persistence\n    - Health: Ok\n    - Requests: ~9,952,049\n  - teastore-recommender\n    - Health: Ok\n    - Requests: ~965,983\n  - teastore-registry\n    - Health: Ok\n    - Requests: ~1,799,286\n- Observations from O11y:\n  - teastore-webui-v1 carries non-zero error count (503) but overall service health is reported as Ok.\n  - The other core services show healthy latency and zero or low error counts.\n  - There is a Trace Analyzer linkage to further inspect traces for teastore-webui-v1 and other services in the teastore environment.\n- APM overview link for teastore environment is present (APM dashboard).\n\n2) Kubernetes evidence\n- Namespace: teastore (assumed from on-call scope)\n- Pods (teastore namespace status snapshot):\n  - teastore-auth-5dcb6f9c5b-w8q6z — Running, ready 1/1, age 8d\n  - teastore-db-55799888-ghdt4 — Running\n  - teastore-image-v1-66d9fd4bd5-455sz — Running\n  - teastore-loadgen-6d5b6999bd-hrwcx — Running\n  - teastore-persistence-5c8d998b64-hpsv5 — Running\n  - teastore-recommender-8d56bd6bf-h8czk — Running\n  - teastore-registry-7c56d7866b-l7l7h — Running\n  - teastore-webui-v1-56cbff64cf-xq9l8 — Running\n- Observations:\n  - teastore-webui-v1 pods are running with a long RPO (131-138 restarts historically for some pods). The web UI pod shows 131 restarts, indicating instability or rollouts but currently running. This could be relevant to degraded UI perception; need to correlate with request errors and latency.\n  - Overall pod health appears Running for critical components, but the elevated restart count on webui pod is notable.\n- Note: No mutating actions performed; all checks were read-only.\n\n3) ThousandEyes evidence\n- ThousandEyes built-in dashboards observed:\n  - Agent Alerts\n  - Network Layer\n  - HTTP Server\n  - Page Load\n  - General ThousandEyes built-in\n  - Internet Insights built-in\n- teastore-related signals from TE (24h window, matching environment teastore):\n  - teastore-webui-v1 similar service observed in O11y\n  - teastore-webui-v1: Throughput and latency reasonable (P50 ~9.22 ms; P90 ~36.89 ms); error count detected (503) in O11y aligns with possible TE alerts if configured for teastore-webui-v1\n  - teastore-image-v1, teastore-auth, teastore-persistence, and others show healthy metrics with low error rates in TE traces\n- Trace and path data:\n  - Trace Analyzer links exist per service to inspect traces around teastore-webui-v1, teastore-image-v1, etc.\n- Observations:\n  - TE dashboards show normal functioning for most services, but the teastore-webui-v1 path may have intermittent issues manifesting as 503 errors in O11y.\n  - No TE tests or agents explicitly reported as down in the snapshot; more granular path or test-level data could reveal intermittent problems in specific routes.\n\n4) Recommended next step (read-only)\n- Break down the teastore-webui degradation:\n  - Use O11y Trace Analyzer for teastore-webui-v1 with the existing trace filters to identify latency contributors, error traces, and failed spans around the 503 error instances.\n  - Correlate 503 errors with specific endpoints of teastore-webui-v1 (e.g., login, dashboard load, assets API calls) to identify whether backend calls fail or time out.\n  - Check pod restart history for teastore-webui-v1 to see if restarts align with spikes in error counts; review recent rollout or image changes in the web UI deployment.\n  - Inspect the teastore-persistence and teastore-auth services for bottlenecks or transient timeouts that could cascade into the UI.\n- Cross-check Kubernetes-level signals (read-only):\n  - Confirm CPU/memory pressure on the teastore-webui-v1 deployment and its replica set; consider investigating HPA configuration and resource requests/limits if restart frequency correlates with load.\n- ThousandEyes follow-up (read-only):\n  - Review any recent endpoint-to-server or HTTP-server anomalies for teastore-webui-v1 in TE dashboards, particularly around the 24h window when 503s occurred.\n  - Look for recent synthetic test results or alerts tied to teastore-webui-v1 that could indicate performance regressions or network issues.\n- If degradation persists after correlating traces and path data, proceed with written action only after operator approval.\n\n5) Approval-gated actions (proposed but not executed)\n- If remediation seems necessary, the following actions would require operator approval:\n  - Action: Scale out/in the teastore-webui-v1 deployment (e.g., adjust replicas) to address perceived load-related degradation.\n    - Why: If high restart rate or saturation is suspected, additional instances may relieve pressure.\n  - Action: Roll back a recent teastore-webui-v1 deployment image or rollback a recent change.\n    - Why: If a recent deployment introduced instability or increased error rate.\n  - Action: Patch or reconfigure the teastore-webui-v1 deployment (resource requests/limits, readiness/liveness probes, or temporary feature flags) to stabilize behavior.\n    - Why: To address suspected misconfig or resource contention.\n  - Action: Explicitly scale or modify related backend services (teastore-auth or teastore-persistence) if traces indicate backend latency or timeouts impacting UI path.\n    - Why: To alleviate chain of latency/errors causing UI degradation.\n- Note: I have not executed any of these; I will present exact commands/plan_hashes for operator approval if you want to proceed. Examples of exact planned steps would be provided in the form of dry-run plan hashes and the exact Kubernetes/CI commands to apply, along with the necessary safety checks and confirmation.\n\nConcise incident report wrap-up\n- Splunk O11y evidence: 503 errors detected for teastore-webui-v1 with P50 latency ~9 ms and P90 ~37 ms; trace analyzer available; multiple services healthy overall; teastore-webui-v1 shows restart activity in pods.\n- Kubernetes evidence: teastore namespace present; teastore-webui-v1 pod has a notable restart history; other core pods Running; no mutating changes performed in read-only mode.\n- ThousandEyes evidence: TE dashboards indicate normal service health for most components; potential alignment between 503s and UI path; path visualization and trace tools available for deeper dive.\n- Recommended next step (read-only): perform targeted trace/path analysis for teastore-webui-v1, correlate 503s with backend services, and review recent pod restart history; continue to monitor TE observations and O11y traces.\n- Approval-gated actions: if remediation is deemed necessary, provide explicit plan_hash-based commands for operator approval before execution (scaling, rollback, resource adjustments, probes, or backend reconfig).\n\nIf you’d like, I can draft a precise plan_hash-based write plan for any of the approval-gated actions (e.g., “scale deployment teastore-webui-v1 to 3 replicas,” or “rollback teastore-webui-v1 to previous image”) and present it for operator approval.",
+        "mediaUrl": null
+      }
+    ],
+    "meta": {
+      "durationMs": 103854,
+      "agentMeta": {
+        "sessionId": "fadbde09-0589-4535-a785-e3026859faa2",
+        "provider": "bridgeit",
+        "model": "gpt-5-nano",
+        "usage": {
+          "input": 106398,
+          "output": 4873,
+          "cacheRead": 176000,
+          "total": 62654
+        },
+        "lastCallUsage": {
+          "input": 5338,
+          "output": 2404,
+          "cacheRead": 54912,
+          "cacheWrite": 0,
+          "total": 62654
+        },
+        "promptTokens": 60250
+      },
+      "aborted": false,
+      "systemPromptReport": {
+        "source": "run",
+        "generatedAt": 1779504076012,
+        "sessionId": "fadbde09-0589-4535-a785-e3026859faa2",
+        "sessionKey": "agent:main:explicit:enterprise-demo-20260523t023834z",
+        "provider": "bridgeit",
+        "model": "gpt-5-nano",
+        "workspaceDir": "/home/node/.openclaw/workspace",
+        "bootstrapMaxChars": 20000,
+        "bootstrapTotalMaxChars": 150000,
+        "bootstrapTruncation": {
+          "warningMode": "once",
+          "warningShown": false,
+          "truncatedFiles": 0,
+          "nearLimitFiles": 0,
+          "totalNearLimit": false
+        },
+        "sandbox": {
+          "mode": "off",
+          "sandboxed": false
+        },
+        "systemPrompt": {
+          "chars": 40732,
+          "projectContextChars": 6773,
+          "nonProjectContextChars": 33959
+        },
+        "injectedWorkspaceFiles": [
+          {
+            "name": "AGENTS.md",
+            "path": "/home/node/.openclaw/workspace/AGENTS.md",
+            "missing": false,
+            "rawChars": 3167,
+            "injectedChars": 3167,
+            "truncated": false
+          },
+          {
+            "name": "SOUL.md",
+            "path": "/home/node/.openclaw/workspace/SOUL.md",
+            "missing": false,
+            "rawChars": 311,
+            "injectedChars": 311,
+            "truncated": false
+          },
+          {
+            "name": "TOOLS.md",
+            "path": "/home/node/.openclaw/workspace/TOOLS.md",
+            "missing": false,
+            "rawChars": 1728,
+            "injectedChars": 1728,
+            "truncated": false
+          },
+          {
+            "name": "IDENTITY.md",
+            "path": "/home/node/.openclaw/workspace/IDENTITY.md",
+            "missing": false,
+            "rawChars": 465,
+            "injectedChars": 465,
+            "truncated": false
+          },
+          {
+            "name": "USER.md",
+            "path": "/home/node/.openclaw/workspace/USER.md",
+            "missing": false,
+            "rawChars": 543,
+            "injectedChars": 543,
+            "truncated": false
+          },
+          {
+            "name": "BOOTSTRAP.md",
+            "path": "/home/node/.openclaw/workspace/BOOTSTRAP.md",
+            "missing": true,
+            "rawChars": 0,
+            "injectedChars": 66,
+            "truncated": false
+          }
+        ],
+        "skills": {
+          "promptChars": 24472,
+          "entries": [
+            {
+              "name": "cisco-appdynamics-setup",
+              "blockChars": 206
+            },
+            {
+              "name": "cisco-catalyst-enhanced-netflow-setup",
+              "blockChars": 234
+            },
+            {
+              "name": "cisco-catalyst-ta-setup",
+              "blockChars": 206
+            },
+            {
+              "name": "cisco-dc-networking-setup",
+              "blockChars": 210
+            },
+            {
+              "name": "cisco-enterprise-networking-setup",
+              "blockChars": 226
+            },
+            {
+              "name": "cisco-intersight-setup",
+              "blockChars": 204
+            },
+            {
+              "name": "cisco-isovalent-platform-setup",
+              "blockChars": 220
+            },
+            {
+              "name": "cisco-meraki-ta-setup",
+              "blockChars": 202
+            },
+            {
+              "name": "cisco-product-setup",
+              "blockChars": 198
+            },
+            {
+              "name": "cisco-scan-setup",
+              "blockChars": 192
+            },
+            {
+              "name": "cisco-secure-access-setup",
+              "blockChars": 210
+            },
+            {
+              "name": "cisco-secure-email-web-gateway-setup",
+              "blockChars": 232
+            },
+            {
+              "name": "cisco-security-cloud-setup",
+              "blockChars": 212
+            },
+            {
+              "name": "cisco-spaces-setup",
+              "blockChars": 196
+            },
+            {
+              "name": "cisco-talos-intelligence-setup",
+              "blockChars": 220
+            },
+            {
+              "name": "cisco-thousandeyes-mcp-setup",
+              "blockChars": 216
+            },
+            {
+              "name": "cisco-thousandeyes-setup",
+              "blockChars": 208
+            },
+            {
+              "name": "cisco-ucs-ta-setup",
+              "blockChars": 196
+            },
+            {
+              "name": "cisco-webex-setup",
+              "blockChars": 194
+            },
+            {
+              "name": "galileo-agent-control-setup",
+              "blockChars": 214
+            },
+            {
+              "name": "galileo-platform-setup",
+              "blockChars": 204
+            },
+            {
+              "name": "splunk-admin-doctor",
+              "blockChars": 198
+            },
+            {
+              "name": "splunk-agent-management-setup",
+              "blockChars": 218
+            },
+            {
+              "name": "splunk-ai-assistant-setup",
+              "blockChars": 210
+            },
+            {
+              "name": "splunk-ai-ml-toolkit-setup",
+              "blockChars": 212
+            },
+            {
+              "name": "splunk-app-install",
+              "blockChars": 196
+            },
+            {
+              "name": "splunk-appdynamics-agent-management-setup",
+              "blockChars": 242
+            },
+            {
+              "name": "splunk-appdynamics-alerting-content-setup",
+              "blockChars": 242
+            },
+            {
+              "name": "splunk-appdynamics-analytics-setup",
+              "blockChars": 228
+            },
+            {
+              "name": "splunk-appdynamics-apm-setup",
+              "blockChars": 216
+            },
+            {
+              "name": "splunk-appdynamics-controller-admin-setup",
+              "blockChars": 242
+            },
+            {
+              "name": "splunk-appdynamics-dashboards-reports-setup",
+              "blockChars": 246
+            },
+            {
+              "name": "splunk-appdynamics-database-visibility-setup",
+              "blockChars": 248
+            },
+            {
+              "name": "splunk-appdynamics-eum-setup",
+              "blockChars": 216
+            },
+            {
+              "name": "splunk-appdynamics-infrastructure-visibility-setup",
+              "blockChars": 260
+            },
+            {
+              "name": "splunk-appdynamics-k8s-cluster-agent-setup",
+              "blockChars": 244
+            },
+            {
+              "name": "splunk-appdynamics-log-observer-connect-setup",
+              "blockChars": 250
+            },
+            {
+              "name": "splunk-appdynamics-platform-setup",
+              "blockChars": 226
+            },
+            {
+              "name": "splunk-appdynamics-sap-agent-setup",
+              "blockChars": 228
+            },
+            {
+              "name": "splunk-appdynamics-security-ai-setup",
+              "blockChars": 232
+            },
+            {
+              "name": "splunk-appdynamics-setup",
+              "blockChars": 208
+            },
+            {
+              "name": "splunk-appdynamics-synthetic-monitoring-setup",
+              "blockChars": 250
+            },
+            {
+              "name": "splunk-appdynamics-tags-extensions-setup",
+              "blockChars": 240
+            },
+            {
+              "name": "splunk-appdynamics-thousandeyes-integration-setup",
+              "blockChars": 258
+            },
+            {
+              "name": "splunk-asset-risk-intelligence-setup",
+              "blockChars": 232
+            },
+            {
+              "name": "splunk-attack-analyzer-setup",
+              "blockChars": 216
+            },
+            {
+              "name": "splunk-cloud-acs-admin-setup",
+              "blockChars": 216
+            },
+            {
+              "name": "splunk-cloud-acs-allowlist-setup",
+              "blockChars": 224
+            },
+            {
+              "name": "splunk-cloud-data-manager-setup",
+              "blockChars": 222
+            },
+            {
+              "name": "splunk-connect-for-otlp-setup",
+              "blockChars": 218
+            },
+            {
+              "name": "splunk-connect-for-snmp-setup",
+              "blockChars": 218
+            },
+            {
+              "name": "splunk-connect-for-syslog-setup",
+              "blockChars": 222
+            },
+            {
+              "name": "splunk-data-source-readiness-doctor",
+              "blockChars": 230
+            },
+            {
+              "name": "splunk-db-connect-setup",
+              "blockChars": 206
+            },
+            {
+              "name": "splunk-deployment-server-setup",
+              "blockChars": 220
+            },
+            {
+              "name": "splunk-edge-processor-setup",
+              "blockChars": 214
+            },
+            {
+              "name": "splunk-enterprise-host-setup",
+              "blockChars": 216
+            },
+            {
+              "name": "splunk-enterprise-kubernetes-setup",
+              "blockChars": 228
+            },
+            {
+              "name": "splunk-enterprise-public-exposure-hardening",
+              "blockChars": 246
+            },
+            {
+              "name": "splunk-enterprise-security-config",
+              "blockChars": 226
+            },
+            {
+              "name": "splunk-enterprise-security-install",
+              "blockChars": 228
+            },
+            {
+              "name": "splunk-federated-search-setup",
+              "blockChars": 218
+            },
+            {
+              "name": "splunk-hec-service-setup",
+              "blockChars": 208
+            },
+            {
+              "name": "splunk-index-lifecycle-smartstore-setup",
+              "blockChars": 238
+            },
+            {
+              "name": "splunk-indexer-cluster-setup",
+              "blockChars": 216
+            },
+            {
+              "name": "splunk-ingest-processor-setup",
+              "blockChars": 218
+            },
+            {
+              "name": "splunk-itsi-config",
+              "blockChars": 196
+            },
+            {
+              "name": "splunk-itsi-setup",
+              "blockChars": 194
+            },
+            {
+              "name": "splunk-license-manager-setup",
+              "blockChars": 216
+            },
+            {
+              "name": "splunk-mcp-server-setup",
+              "blockChars": 206
+            },
+            {
+              "name": "splunk-monitoring-console-setup",
+              "blockChars": 222
+            },
+            {
+              "name": "splunk-observability-ai-agent-monitoring-setup",
+              "blockChars": 252
+            },
+            {
+              "name": "splunk-observability-aws-integration",
+              "blockChars": 232
+            },
+            {
+              "name": "splunk-observability-aws-lambda-apm-setup",
+              "blockChars": 242
+            },
+            {
+              "name": "splunk-observability-azure-integration",
+              "blockChars": 236
+            },
+            {
+              "name": "splunk-observability-cisco-ai-pod-integration",
+              "blockChars": 250
+            },
+            {
+              "name": "splunk-observability-cisco-intersight-integration",
+              "blockChars": 258
+            },
+            {
+              "name": "splunk-observability-cisco-nexus-integration",
+              "blockChars": 248
+            },
+            {
+              "name": "splunk-observability-cloud-integration-setup",
+              "blockChars": 248
+            },
+            {
+              "name": "splunk-observability-dashboard-builder",
+              "blockChars": 236
+            },
+            {
+              "name": "splunk-observability-database-monitoring-setup",
+              "blockChars": 252
+            },
+            {
+              "name": "splunk-observability-deep-native-workflows",
+              "blockChars": 244
+            },
+            {
+              "name": "splunk-observability-gcp-integration",
+              "blockChars": 232
+            },
+            {
+              "name": "splunk-observability-isovalent-integration",
+              "blockChars": 244
+            },
+            {
+              "name": "splunk-observability-k8s-auto-instrumentation-setup",
+              "blockChars": 262
+            },
+            {
+              "name": "splunk-observability-k8s-frontend-rum-setup",
+              "blockChars": 246
+            },
+            {
+              "name": "splunk-observability-mobile-rum-setup",
+              "blockChars": 234
+            },
+            {
+              "name": "splunk-observability-native-ops",
+              "blockChars": 222
+            },
+            {
+              "name": "splunk-observability-nvidia-gpu-integration",
+              "blockChars": 246
+            },
+            {
+              "name": "splunk-observability-otel-collector-setup",
+              "blockChars": 242
+            },
+            {
+              "name": "splunk-observability-thousandeyes-integration",
+              "blockChars": 250
+            },
+            {
+              "name": "splunk-oncall-setup",
+              "blockChars": 198
+            },
+            {
+              "name": "splunk-platform-pki-setup",
+              "blockChars": 210
+            },
+            {
+              "name": "splunk-platform-restart-orchestrator",
+              "blockChars": 232
+            },
+            {
+              "name": "splunk-search-head-cluster-setup",
+              "blockChars": 224
+            },
+            {
+              "name": "splunk-security-essentials-setup",
+              "blockChars": 224
+            },
+            {
+              "name": "splunk-security-portfolio-setup",
+              "blockChars": 222
+            },
+            {
+              "name": "splunk-soar-setup",
+              "blockChars": 194
+            },
+            {
+              "name": "splunk-spl2-pipeline-kit",
+              "blockChars": 208
+            },
+            {
+              "name": "splunk-stream-setup",
+              "blockChars": 198
+            },
+            {
+              "name": "splunk-supported-addons-setup",
+              "blockChars": 218
+            },
+            {
+              "name": "splunk-uba-setup",
+              "blockChars": 192
+            },
+            {
+              "name": "splunk-universal-forwarder-setup",
+              "blockChars": 224
+            },
+            {
+              "name": "splunk-workload-management-setup",
+              "blockChars": 224
+            },
+            {
+              "name": "healthcheck",
+              "blockChars": 105
+            },
+            {
+              "name": "node-connect",
+              "blockChars": 107
+            },
+            {
+              "name": "skill-creator",
+              "blockChars": 109
+            },
+            {
+              "name": "weather",
+              "blockChars": 97
+            }
+          ]
+        },
+        "tools": {
+          "listChars": 0,
+          "schemaChars": 127574,
+          "entries": [
+            {
+              "name": "read",
+              "summaryChars": 298,
+              "schemaChars": 304,
+              "propertiesCount": 3
+            },
+            {
+              "name": "edit",
+              "summaryChars": 326,
+              "schemaChars": 834,
+              "propertiesCount": 2
+            },
+            {
+              "name": "write",
+              "summaryChars": 127,
+              "schemaChars": 225,
+              "propertiesCount": 2
+            },
+            {
+              "name": "exec",
+              "summaryChars": 539,
+              "schemaChars": 1098,
+              "propertiesCount": 12
+            },
+            {
+              "name": "process",
+              "summaryChars": 416,
+              "schemaChars": 961,
+              "propertiesCount": 12
+            },
+            {
+              "name": "canvas",
+              "summaryChars": 106,
+              "schemaChars": 661,
+              "propertiesCount": 18
+            },
+            {
+              "name": "nodes",
+              "summaryChars": 118,
+              "schemaChars": 1589,
+              "propertiesCount": 32
+            },
+            {
+              "name": "cron",
+              "summaryChars": 3726,
+              "schemaChars": 6700,
+              "propertiesCount": 13
+            },
+            {
+              "name": "message",
+              "summaryChars": 89,
+              "schemaChars": 5601,
+              "propertiesCount": 105
+            },
+            {
+              "name": "tts",
+              "summaryChars": 152,
+              "schemaChars": 223,
+              "propertiesCount": 2
+            },
+            {
+              "name": "gateway",
+              "summaryChars": 494,
+              "schemaChars": 497,
+              "propertiesCount": 12
+            },
+            {
+              "name": "agents_list",
+              "summaryChars": 118,
+              "schemaChars": 33,
+              "propertiesCount": 0
+            },
+            {
+              "name": "sessions_list",
+              "summaryChars": 177,
+              "schemaChars": 212,
+              "propertiesCount": 4
+            },
+            {
+              "name": "sessions_history",
+              "summaryChars": 180,
+              "schemaChars": 161,
+              "propertiesCount": 3
+            },
+            {
+              "name": "sessions_send",
+              "summaryChars": 208,
+              "schemaChars": 274,
+              "propertiesCount": 5
+            },
+            {
+              "name": "sessions_yield",
+              "summaryChars": 97,
+              "schemaChars": 60,
+              "propertiesCount": 1
+            },
+            {
+              "name": "sessions_spawn",
+              "summaryChars": 302,
+              "schemaChars": 1333,
+              "propertiesCount": 18
+            },
+            {
+              "name": "subagents",
+              "summaryChars": 105,
+              "schemaChars": 191,
+              "propertiesCount": 4
+            },
+            {
+              "name": "session_status",
+              "summaryChars": 336,
+              "schemaChars": 89,
+              "propertiesCount": 2
+            },
+            {
+              "name": "web_search",
+              "summaryChars": 93,
+              "schemaChars": 446,
+              "propertiesCount": 4
+            },
+            {
+              "name": "web_fetch",
+              "summaryChars": 129,
+              "schemaChars": 374,
+              "propertiesCount": 3
+            },
+            {
+              "name": "splunk-cisco-skills__credential_status",
+              "summaryChars": 67,
+              "schemaChars": 70,
+              "propertiesCount": 0
+            },
+            {
+              "name": "splunk-cisco-skills__execute_cisco_product_setup",
+              "summaryChars": 72,
+              "schemaChars": 217,
+              "propertiesCount": 2
+            },
+            {
+              "name": "splunk-cisco-skills__execute_skill_script",
+              "summaryChars": 65,
+              "schemaChars": 210,
+              "propertiesCount": 2
+            },
+            {
+              "name": "splunk-cisco-skills__list_cisco_products",
+              "summaryChars": 76,
+              "schemaChars": 156,
+              "propertiesCount": 1
+            },
+            {
+              "name": "splunk-cisco-skills__list_skills",
+              "summaryChars": 69,
+              "schemaChars": 64,
+              "propertiesCount": 0
+            },
+            {
+              "name": "splunk-cisco-skills__plan_cisco_product_setup",
+              "summaryChars": 69,
+              "schemaChars": 558,
+              "propertiesCount": 5
+            },
+            {
+              "name": "splunk-cisco-skills__plan_skill_script",
+              "summaryChars": 62,
+              "schemaChars": 371,
+              "propertiesCount": 4
+            },
+            {
+              "name": "splunk-cisco-skills__resolve_cisco_product",
+              "summaryChars": 74,
+              "schemaChars": 136,
+              "propertiesCount": 1
+            },
+            {
+              "name": "splunk-cisco-skills__secret_file_instructions",
+              "summaryChars": 67,
+              "schemaChars": 256,
+              "propertiesCount": 2
+            },
+            {
+              "name": "splunk-observability-cloud__o11y_execute_signalflow_program",
+              "summaryChars": 650,
+              "schemaChars": 1636,
+              "propertiesCount": 1
+            },
+            {
+              "name": "splunk-observability-cloud__o11y_generate_signalflow_program",
+              "summaryChars": 634,
+              "schemaChars": 465,
+              "propertiesCount": 1
+            },
+            {
+              "name": "splunk-observability-cloud__o11y_get_apm_environments",
+              "summaryChars": 878,
+              "schemaChars": 1388,
+              "propertiesCount": 1
+            },
+            {
+              "name": "splunk-observability-cloud__o11y_get_apm_exemplar_traces",
+              "summaryChars": 45,
+              "schemaChars": 3216,
+              "propertiesCount": 1
+            },
+            {
+              "name": "splunk-observability-cloud__o11y_get_apm_service_dependencies",
+              "summaryChars": 82,
+              "schemaChars": 3666,
+              "propertiesCount": 1
+            },
+            {
+              "name": "splunk-observability-cloud__o11y_get_apm_service_errors_and_requ",
+              "summaryChars": 53,
+              "schemaChars": 3120,
+              "propertiesCount": 1
+            },
+            {
+              "name": "splunk-observability-cloud__o11y_get_apm_service_latency",
+              "summaryChars": 41,
+              "schemaChars": 3120,
+              "propertiesCount": 1
+            },
+            {
+              "name": "splunk-observability-cloud__o11y_get_apm_services",
+              "summaryChars": 493,
+              "schemaChars": 2837,
+              "propertiesCount": 1
+            },
+            {
+              "name": "splunk-observability-cloud__o11y_get_apm_trace_tool",
+              "summaryChars": 50,
+              "schemaChars": 225,
+              "propertiesCount": 1
+            },
+            {
+              "name": "splunk-observability-cloud__o11y_get_metric_metadata",
+              "summaryChars": 452,
+              "schemaChars": 312,
+              "propertiesCount": 1
+            },
+            {
+              "name": "splunk-observability-cloud__o11y_get_metric_names",
+              "summaryChars": 421,
+              "schemaChars": 2803,
+              "propertiesCount": 1
+            },
+            {
+              "name": "splunk-observability-cloud__o11y_run_network_app_impact",
+              "summaryChars": 421,
+              "schemaChars": 416,
+              "propertiesCount": 1
+            },
+            {
+              "name": "splunk-observability-cloud__o11y_search_alerts_or_incidents",
+              "summaryChars": 1153,
+              "schemaChars": 3732,
+              "propertiesCount": 1
+            },
+            {
+              "name": "thousandeyes-mcp__assign_tags",
+              "summaryChars": 226,
+              "schemaChars": 1126,
+              "propertiesCount": 4
+            },
+            {
+              "name": "thousandeyes-mcp__create_alert_rule",
+              "summaryChars": 283,
+              "schemaChars": 4344,
+              "propertiesCount": 22
+            },
+            {
+              "name": "thousandeyes-mcp__create_dashboard",
+              "summaryChars": 19,
+              "schemaChars": 1191,
+              "propertiesCount": 6
+            },
+            {
+              "name": "thousandeyes-mcp__create_synthetic_test",
+              "summaryChars": 1292,
+              "schemaChars": 4358,
+              "propertiesCount": 17
+            },
+            {
+              "name": "thousandeyes-mcp__create_tag",
+              "summaryChars": 337,
+              "schemaChars": 3556,
+              "propertiesCount": 11
+            },
+            {
+              "name": "thousandeyes-mcp__delete_alert_rule",
+              "summaryChars": 21,
+              "schemaChars": 341,
+              "propertiesCount": 2
+            },
+            {
+              "name": "thousandeyes-mcp__delete_dashboard",
+              "summaryChars": 19,
+              "schemaChars": 353,
+              "propertiesCount": 2
+            },
+            {
+              "name": "thousandeyes-mcp__delete_synthetic_test",
+              "summaryChars": 488,
+              "schemaChars": 585,
+              "propertiesCount": 3
+            },
+            {
+              "name": "thousandeyes-mcp__delete_tag",
+              "summaryChars": 32,
+              "schemaChars": 515,
+              "propertiesCount": 2
+            },
+            {
+              "name": "thousandeyes-mcp__deploy_template",
+              "summaryChars": 4157,
+              "schemaChars": 1500,
+              "propertiesCount": 4
+            },
+            {
+              "name": "thousandeyes-mcp__get_account_groups",
+              "summaryChars": 378,
+              "schemaChars": 62,
+              "propertiesCount": 0
+            },
+            {
+              "name": "thousandeyes-mcp__get_alert",
+              "summaryChars": 146,
+              "schemaChars": 354,
+              "propertiesCount": 2
+            },
+            {
+              "name": "thousandeyes-mcp__get_alert_rule",
+              "summaryChars": 160,
+              "schemaChars": 341,
+              "propertiesCount": 2
+            },
+            {
+              "name": "thousandeyes-mcp__get_anomalies",
+              "summaryChars": 1259,
+              "schemaChars": 714,
+              "propertiesCount": 5
+            },
+            {
+              "name": "thousandeyes-mcp__get_bgp_route_test_results",
+              "summaryChars": 617,
+              "schemaChars": 571,
+              "propertiesCount": 4
+            },
+            {
+              "name": "thousandeyes-mcp__get_connected_device",
+              "summaryChars": 2017,
+              "schemaChars": 1122,
+              "propertiesCount": 5
+            },
+            {
+              "name": "thousandeyes-mcp__get_dashboard",
+              "summaryChars": 54,
+              "schemaChars": 355,
+              "propertiesCount": 2
+            },
+            {
+              "name": "thousandeyes-mcp__get_dashboard_widget_data",
+              "summaryChars": 209,
+              "schemaChars": 2017,
+              "propertiesCount": 10
+            },
+            {
+              "name": "thousandeyes-mcp__get_detailed_test_results",
+              "summaryChars": 219,
+              "schemaChars": 737,
+              "propertiesCount": 5
+            },
+            {
+              "name": "thousandeyes-mcp__get_endpoint_agent_metrics",
+              "summaryChars": 7810,
+              "schemaChars": 4425,
+              "propertiesCount": 8
+            },
+            {
+              "name": "thousandeyes-mcp__get_endpoint_network_topologies_probes",
+              "summaryChars": 504,
+              "schemaChars": 1753,
+              "propertiesCount": 8
+            },
+            {
+              "name": "thousandeyes-mcp__get_event",
+              "summaryChars": 288,
+              "schemaChars": 357,
+              "propertiesCount": 2
+            },
+            {
+              "name": "thousandeyes-mcp__get_full_path_visualization",
+              "summaryChars": 2793,
+              "schemaChars": 1248,
+              "propertiesCount": 7
+            },
+            {
+              "name": "thousandeyes-mcp__get_instant_test_metrics",
+              "summaryChars": 826,
+              "schemaChars": 836,
+              "propertiesCount": 5
+            },
+            {
+              "name": "thousandeyes-mcp__get_network_app_synthetics_metrics",
+              "summaryChars": 9853,
+              "schemaChars": 4231,
+              "propertiesCount": 8
+            },
+            {
+              "name": "thousandeyes-mcp__get_network_app_synthetics_test",
+              "summaryChars": 277,
+              "schemaChars": 588,
+              "propertiesCount": 3
+            },
+            {
+              "name": "thousandeyes-mcp__get_network_endpoint_scheduled_test_results",
+              "summaryChars": 598,
+              "schemaChars": 1645,
+              "propertiesCount": 8
+            },
+            {
+              "name": "thousandeyes-mcp__get_path_visualization_results",
+              "summaryChars": 770,
+              "schemaChars": 962,
+              "propertiesCount": 6
+            },
+            {
+              "name": "thousandeyes-mcp__get_service_map",
+              "summaryChars": 380,
+              "schemaChars": 1480,
+              "propertiesCount": 8
+            },
+            {
+              "name": "thousandeyes-mcp__get_tag",
+              "summaryChars": 261,
+              "schemaChars": 515,
+              "propertiesCount": 2
+            },
+            {
+              "name": "thousandeyes-mcp__get_templates",
+              "summaryChars": 428,
+              "schemaChars": 436,
+              "propertiesCount": 2
+            },
+            {
+              "name": "thousandeyes-mcp__list_alert_rules",
+              "summaryChars": 159,
+              "schemaChars": 230,
+              "propertiesCount": 1
+            },
+            {
+              "name": "thousandeyes-mcp__list_alerts",
+              "summaryChars": 399,
+              "schemaChars": 827,
+              "propertiesCount": 5
+            },
+            {
+              "name": "thousandeyes-mcp__list_cloud_enterprise_agents",
+              "summaryChars": 1505,
+              "schemaChars": 1119,
+              "propertiesCount": 5
+            },
+            {
+              "name": "thousandeyes-mcp__list_dashboards",
+              "summaryChars": 48,
+              "schemaChars": 248,
+              "propertiesCount": 1
+            },
+            {
+              "name": "thousandeyes-mcp__list_endpoint_agent_dynamic_tests",
+              "summaryChars": 432,
+              "schemaChars": 248,
+              "propertiesCount": 1
+            },
+            {
+              "name": "thousandeyes-mcp__list_endpoint_agent_tests",
+              "summaryChars": 437,
+              "schemaChars": 248,
+              "propertiesCount": 1
+            },
+            {
+              "name": "thousandeyes-mcp__list_endpoint_agents",
+              "summaryChars": 1694,
+              "schemaChars": 1354,
+              "propertiesCount": 7
+            },
+            {
+              "name": "thousandeyes-mcp__list_events",
+              "summaryChars": 886,
+              "schemaChars": 901,
+              "propertiesCount": 5
+            },
+            {
+              "name": "thousandeyes-mcp__list_network_app_synthetics_tests",
+              "summaryChars": 1763,
+              "schemaChars": 1691,
+              "propertiesCount": 7
+            },
+            {
+              "name": "thousandeyes-mcp__list_tags",
+              "summaryChars": 304,
+              "schemaChars": 373,
+              "propertiesCount": 1
+            },
+            {
+              "name": "thousandeyes-mcp__rerun_instant_test",
+              "summaryChars": 343,
+              "schemaChars": 376,
+              "propertiesCount": 2
+            },
+            {
+              "name": "thousandeyes-mcp__run_agent_to_agent_instant_test",
+              "summaryChars": 858,
+              "schemaChars": 1186,
+              "propertiesCount": 6
+            },
+            {
+              "name": "thousandeyes-mcp__run_agent_to_server_endpoint_instant_test",
+              "summaryChars": 448,
+              "schemaChars": 2186,
+              "propertiesCount": 9
+            },
+            {
+              "name": "thousandeyes-mcp__run_agent_to_server_instant_test",
+              "summaryChars": 783,
+              "schemaChars": 1155,
+              "propertiesCount": 5
+            },
+            {
+              "name": "thousandeyes-mcp__run_api_instant_test",
+              "summaryChars": 734,
+              "schemaChars": 1371,
+              "propertiesCount": 5
+            },
+            {
+              "name": "thousandeyes-mcp__run_dns_server_instant_test",
+              "summaryChars": 711,
+              "schemaChars": 993,
+              "propertiesCount": 5
+            },
+            {
+              "name": "thousandeyes-mcp__run_dns_trace_instant_test",
+              "summaryChars": 699,
+              "schemaChars": 814,
+              "propertiesCount": 4
+            },
+            {
+              "name": "thousandeyes-mcp__run_http_server_instant_test",
+              "summaryChars": 691,
+              "schemaChars": 823,
+              "propertiesCount": 4
+            },
+            {
+              "name": "thousandeyes-mcp__run_page_load_instant_test",
+              "summaryChars": 672,
+              "schemaChars": 829,
+              "propertiesCount": 4
+            },
+            {
+              "name": "thousandeyes-mcp__run_web_transaction_instant_test",
+              "summaryChars": 756,
+              "schemaChars": 1222,
+              "propertiesCount": 5
+            },
+            {
+              "name": "thousandeyes-mcp__search_outages",
+              "summaryChars": 712,
+              "schemaChars": 1248,
+              "propertiesCount": 8
+            },
+            {
+              "name": "thousandeyes-mcp__unassign_tags",
+              "summaryChars": 171,
+              "schemaChars": 1126,
+              "propertiesCount": 4
+            },
+            {
+              "name": "thousandeyes-mcp__update_alert_rule",
+              "summaryChars": 283,
+              "schemaChars": 4442,
+              "propertiesCount": 23
+            },
+            {
+              "name": "thousandeyes-mcp__update_dashboard",
+              "summaryChars": 19,
+              "schemaChars": 1362,
+              "propertiesCount": 7
+            },
+            {
+              "name": "thousandeyes-mcp__update_synthetic_test",
+              "summaryChars": 1052,
+              "schemaChars": 2617,
+              "propertiesCount": 13
+            },
+            {
+              "name": "thousandeyes-mcp__update_tag",
+              "summaryChars": 409,
+              "schemaChars": 4379,
+              "propertiesCount": 13
+            },
+            {
+              "name": "thousandeyes-mcp__views_explanation_skill",
+              "summaryChars": 1620,
+              "schemaChars": 748,
+              "propertiesCount": 2
+            }
+          ]
+        }
+      },
+      "stopReason": "stop"
+    }
+  }
+}
