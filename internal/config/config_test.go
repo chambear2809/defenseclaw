@@ -1091,6 +1091,9 @@ func TestDefaultConfigCiscoAIDefense(t *testing.T) {
 	if cfg.CiscoAIDefense.APIKeyEnv != "CISCO_AI_DEFENSE_API_KEY" {
 		t.Errorf("expected APIKeyEnv %q, got %q", "CISCO_AI_DEFENSE_API_KEY", cfg.CiscoAIDefense.APIKeyEnv)
 	}
+	if cfg.CiscoAIDefense.OAuthTokenURL != "" || cfg.CiscoAIDefense.OAuthBasicEnv != "" || cfg.CiscoAIDefense.OAuthBasic != "" {
+		t.Errorf("expected Cisco OAuth defaults to be empty, got %+v", cfg.CiscoAIDefense)
+	}
 	if cfg.CiscoAIDefense.TimeoutMs != 3000 {
 		t.Errorf("expected TimeoutMs=3000, got %d", cfg.CiscoAIDefense.TimeoutMs)
 	}

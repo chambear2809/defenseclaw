@@ -18,6 +18,7 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/defenseclaw/defenseclaw/internal/config"
@@ -48,6 +49,19 @@ func TestAgentNameForStream(t *testing.T) {
 				t.Errorf("agentNameForStream(%q) = %q, want %q", tc.hint, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestSessionMessageUsage_AcceptsOpenClawTokenAliases(t *testing.T) {
+	var usage sessionMessageUsage
+	if err := json.Unmarshal([]byte(`{"input_tokens":123,"output_tokens":"45"}`), &usage); err != nil {
+		t.Fatalf("Unmarshal usage: %v", err)
+	}
+	if usage.PromptTokens != 123 {
+		t.Fatalf("PromptTokens=%d want 123", usage.PromptTokens)
+	}
+	if usage.CompletionTokens != 45 {
+		t.Fatalf("CompletionTokens=%d want 45", usage.CompletionTokens)
 	}
 }
 

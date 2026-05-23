@@ -17,13 +17,16 @@
 """defenseclaw mcp — Manage MCP servers (scan, block, allow, list, set, unset).
 
 Reads MCP server configuration from OpenClaw's ``mcp.servers`` key in
-``~/.openclaw/openclaw.json``.  Writes go through the ``openclaw config``
-CLI so OpenClaw validates the schema and hot-reloads cleanly.
+``~/.openclaw/openclaw.json``.  Writes prefer the ``openclaw config`` CLI so
+OpenClaw validates the schema and hot-reloads cleanly, with a direct
+``openclaw.json`` fallback for environments where the chat runtime is present
+but the CLI is not on this process' PATH.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 
 import click
@@ -585,27 +588,74 @@ def unblock(app: AppContext, target: str) -> None:
 # safe write surface — we surface a clear error rather than racing
 # ZeptoClaw's autosave.
 
-def _openclaw_config_set(path: str, value: str) -> None:
+def _openclaw_config_file(config_file: str | None) -> str:
+    return os.path.expanduser(config_file or "~/.openclaw/openclaw.json")
+
+
+def _openclaw_mcp_server_keys(path: str) -> tuple[str, str, str]:
+    prefix = "mcp.servers."
+    if not path.startswith(prefix) or not path[len(prefix):]:
+        raise click.ClickException(
+            f"direct openclaw.json fallback only supports {prefix}<name>, got {path!r}"
+        )
+    return ("mcp", "servers", path[len(prefix):])
+
+
+def _direct_openclaw_config_set(config_file: str | None, path: str, value: str) -> None:
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise click.ClickException(f"openclaw config value is not valid JSON: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise click.ClickException("openclaw MCP server value must be a JSON object")
+    connector_paths._atomic_json_merge(
+        _openclaw_config_file(config_file),
+        _openclaw_mcp_server_keys(path),
+        parsed,
+    )
+
+
+def _direct_openclaw_config_unset(config_file: str | None, path: str) -> None:
+    connector_paths._atomic_json_delete(
+        _openclaw_config_file(config_file),
+        _openclaw_mcp_server_keys(path),
+    )
+
+
+def _openclaw_config_set(
+    path: str,
+    value: str,
+    *,
+    config_file: str | None = None,
+) -> None:
     """Write a value via ``openclaw config set`` (schema-validated, hot-reloaded)."""
     from defenseclaw.config import openclaw_bin, openclaw_cmd_prefix
     prefix = openclaw_cmd_prefix()
-    result = subprocess.run(
-        [*prefix, openclaw_bin(), "config", "set", path, value, "--strict-json"],
-        capture_output=True, text=True, timeout=15,
-    )
+    try:
+        result = subprocess.run(
+            [*prefix, openclaw_bin(), "config", "set", path, value, "--strict-json"],
+            capture_output=True, text=True, timeout=15,
+        )
+    except FileNotFoundError:
+        _direct_openclaw_config_set(config_file, path, value)
+        return
     if result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip()
         raise click.ClickException(f"openclaw config set failed: {detail}")
 
 
-def _openclaw_config_unset(path: str) -> None:
+def _openclaw_config_unset(path: str, *, config_file: str | None = None) -> None:
     """Remove a value via ``openclaw config unset``."""
     from defenseclaw.config import openclaw_bin, openclaw_cmd_prefix
     prefix = openclaw_cmd_prefix()
-    result = subprocess.run(
-        [*prefix, openclaw_bin(), "config", "unset", path],
-        capture_output=True, text=True, timeout=15,
-    )
+    try:
+        result = subprocess.run(
+            [*prefix, openclaw_bin(), "config", "unset", path],
+            capture_output=True, text=True, timeout=15,
+        )
+    except FileNotFoundError:
+        _direct_openclaw_config_unset(config_file, path)
+        return
     if result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip()
         raise click.ClickException(f"openclaw config unset failed: {detail}")
@@ -619,11 +669,16 @@ def _set_mcp_via_connector(cfg, name: str, entry: dict) -> None:
     with a clean error instead of a stack trace.
     """
     try:
+        openclaw_config_file = getattr(getattr(cfg, "claw", object()), "config_file", None)
         connector_paths.set_mcp_server(
             cfg.active_connector(),
             name,
             entry,
-            openclaw_config_setter=_openclaw_config_set,
+            openclaw_config_setter=lambda path, value: _openclaw_config_set(
+                path,
+                value,
+                config_file=openclaw_config_file,
+            ),
         )
     except connector_paths.MCPWriteUnsupportedError as e:
         raise click.ClickException(str(e)) from e
@@ -634,10 +689,14 @@ def _unset_mcp_via_connector(cfg, name: str) -> None:
     Symmetric with :func:`_set_mcp_via_connector`.
     """
     try:
+        openclaw_config_file = getattr(getattr(cfg, "claw", object()), "config_file", None)
         connector_paths.unset_mcp_server(
             cfg.active_connector(),
             name,
-            openclaw_config_unsetter=_openclaw_config_unset,
+            openclaw_config_unsetter=lambda path: _openclaw_config_unset(
+                path,
+                config_file=openclaw_config_file,
+            ),
         )
     except connector_paths.MCPWriteUnsupportedError as e:
         raise click.ClickException(str(e)) from e

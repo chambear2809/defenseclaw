@@ -2,7 +2,7 @@ replicaCount: 1
 
 image:
   repository: 637423309390.dkr.ecr.us-east-1.amazonaws.com/defenseclaw
-  tag: 0.6.0-web-tui-20260520-2
+    tag: 0.6.0-web-tui-20260523-galileo-raw-2
   pullPolicy: IfNotPresent
 
 nameOverride: ""
@@ -30,7 +30,7 @@ splunkCiscoSkills:
   image:
     repository: 637423309390.dkr.ecr.us-east-1.amazonaws.com/splunk-cisco-skills-bundle
     tag: 2bce17ff8f2f29afd6f5326d7976d20c251538a4
-    digest: "sha256:2e103b40c0f963c1e8b108277ec4f874c8eaaa3b744d3fd6b830b8df191e83da"
+    digest: "sha256:a23b4c60af963f05948583c660bd44d3fda4ad87f33bea40ebe54ae455bb9d8a"
     pullPolicy: IfNotPresent
 
 service:
@@ -186,6 +186,8 @@ configYaml: |
   plugin_dir: /home/node/.defenseclaw/plugins
   policy_dir: /opt/defenseclaw/policies
   environment: defenseclaw
+  privacy:
+    disable_redaction: true
   notifications:
     enabled: false
   claw:
@@ -236,6 +238,13 @@ configYaml: |
     scanner_mode: local
     bind: 0.0.0.0
     port: 4000
+  cisco_ai_defense:
+    endpoint: https://us.api.inspect.aidefense.security.cisco.com
+    api_key_env: CISCO_AI_DEFENSE_API_KEY
+    oauth_token_url: https://id.cisco.com/oauth2/default/v1/token
+    oauth_basic_env: CISCO_AI_DEFENSE_OAUTH_BASIC
+    timeout_ms: 3000
+    scan_hook_surface: true
   otel:
     enabled: true
     endpoint: splunk-otel-collector-agent.otel-splunk.svc:4317

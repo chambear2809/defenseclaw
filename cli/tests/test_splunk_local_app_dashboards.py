@@ -115,7 +115,7 @@ def _expanded_generating_prefix(search: str, macros: dict[tuple[str, int], str])
 class SplunkLocalAppDashboardTests(unittest.TestCase):
     def test_all_dashboard_xml_files_parse(self):
         views = sorted(_VIEWS_DIR.glob("*.xml"))
-        self.assertEqual(len(views), 12)
+        self.assertEqual(len(views), 13)
         for view in views:
             root = ET.parse(view).getroot()
             self.assertIn(root.tag, {"dashboard", "form"}, view)

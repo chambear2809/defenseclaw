@@ -200,3 +200,63 @@ func TestCiscoInspectClient_SuccessRecordsLatency(t *testing.T) {
 		t.Fatal("expected latency histogram point")
 	}
 }
+
+func TestCiscoInspectClient_OAuthClientCredentialsUsesAccessToken(t *testing.T) {
+	var tokenCalls int
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tokenCalls++
+		if r.Method != http.MethodPost {
+			t.Errorf("token method: got %s", r.Method)
+		}
+		if got := r.Header.Get("Authorization"); got != "Basic test-basic" {
+			t.Errorf("token auth header: got %q", got)
+		}
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("ParseForm: %v", err)
+		}
+		if got := r.Form.Get("grant_type"); got != "client_credentials" {
+			t.Errorf("grant_type: got %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"access_token":"oauth-token","token_type":"Bearer","expires_in":3600}`)
+	}))
+	t.Cleanup(tokenSrv.Close)
+
+	var inspectCalls int
+	inspectSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		inspectCalls++
+		if got := r.Header.Get("X-Cisco-AI-Defense-API-Key"); got != "oauth-token" {
+			t.Errorf("inspect API key header: got %q", got)
+		}
+		if got := r.Header.Get("Authorization"); got != "" {
+			t.Errorf("inspect request should not forward oauth basic auth; got %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"is_safe":true,"action":"allow"}`)
+	}))
+	t.Cleanup(inspectSrv.Close)
+
+	t.Setenv("TEST_CISCO_OAUTH_BASIC", "test-basic")
+	cfg := &config.CiscoAIDefenseConfig{
+		Endpoint:      inspectSrv.URL,
+		TimeoutMs:     5000,
+		OAuthTokenURL: tokenSrv.URL,
+		OAuthBasicEnv: "TEST_CISCO_OAUTH_BASIC",
+	}
+	c := NewCiscoInspectClient(cfg, "")
+	if c == nil {
+		t.Fatal("expected client from oauth config")
+	}
+	for i := 0; i < 2; i++ {
+		v := c.Inspect([]ChatMessage{{Role: "user", Content: "ok"}})
+		if v == nil || v.Action != "allow" {
+			t.Fatalf("unexpected verdict on call %d: %+v", i+1, v)
+		}
+	}
+	if tokenCalls != 1 {
+		t.Fatalf("expected cached oauth token after first call, tokenCalls=%d", tokenCalls)
+	}
+	if inspectCalls != 2 {
+		t.Fatalf("expected two inspect calls, inspectCalls=%d", inspectCalls)
+	}
+}

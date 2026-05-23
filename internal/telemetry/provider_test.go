@@ -30,6 +30,7 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/defenseclaw/defenseclaw/internal/config"
 	"github.com/defenseclaw/defenseclaw/internal/gatewaylog"
@@ -147,13 +148,30 @@ func TestStartToolSpan_RawArgsOnlyWhenRedactionDisabled(t *testing.T) {
 	_, span = p.StartToolSpan(context.Background(), "shell", "running",
 		json.RawMessage(`{"secret":"abc123"}`), false, "", "builtin", "",
 		ToolSpanContext{})
-	p.EndToolSpan(span, 0, 0, time.Now(), "shell", "builtin")
+	p.EndToolSpan(span, 0, 0, time.Now(), "shell", "builtin", "cluster is healthy")
 	spans = exp.GetSpans()
 	if len(spans) != 1 {
 		t.Fatalf("got %d raw-mode spans, want 1", len(spans))
 	}
 	if got, ok := attrByKey(spans[0].Attributes, "defenseclaw.tool.args"); !ok || got.AsString() != `{"secret":"abc123"}` {
 		t.Fatalf("raw tool args attr = %q ok=%v, want exact JSON", got.AsString(), ok)
+	}
+	for key, want := range map[string]string{
+		"gen_ai.tool.call.arguments": `{"secret":"abc123"}`,
+		"gen_ai.input.messages":      genAITextMessageSpanValue("user", `{"secret":"abc123"}`, ""),
+		"input.value":                `{"secret":"abc123"}`,
+		"gen_ai.tool.call.result":    rawToolResult(0, "cluster is healthy"),
+		"gen_ai.output.messages":     genAITextMessageSpanValue("tool", "cluster is healthy", ""),
+		"output.value":               "cluster is healthy",
+		"defenseclaw.tool.output":    "cluster is healthy",
+	} {
+		got, ok := attrByKey(spans[0].Attributes, key)
+		if !ok || got.AsString() != want {
+			t.Fatalf("%s = %q ok=%v, want %q", key, got.AsString(), ok, want)
+		}
+	}
+	if got, ok := attrByKey(spans[0].Attributes, "defenseclaw.content.redacted"); !ok || got.AsBool() {
+		t.Fatalf("defenseclaw.content.redacted=%v ok=%v want false", got.AsBool(), ok)
 	}
 }
 
@@ -210,8 +228,14 @@ func TestStartAgentSpan_MirrorsResourceJoinKeysOntoSpan(t *testing.T) {
 	}
 
 	assertMirroredResourceJoinKeys(t, spans[0].Attributes)
+	if spans[0].SpanKind != trace.SpanKindClient {
+		t.Fatalf("agent span kind=%v, want %v", spans[0].SpanKind, trace.SpanKindClient)
+	}
 	if got, ok := attrByKey(spans[0].Attributes, "gen_ai.agent.type"); !ok || got.AsString() != "codex" {
 		t.Fatalf("gen_ai.agent.type=%q ok=%v want codex", got.AsString(), ok)
+	}
+	if got, ok := attrByKey(spans[0].Attributes, "gen_ai.conversation_root"); !ok || !got.AsBool() {
+		t.Fatalf("gen_ai.conversation_root=%v ok=%v want true", got.AsBool(), ok)
 	}
 }
 
@@ -383,6 +407,80 @@ func TestRuntimeSpansIncludeRedactedGalileoInputsAndOutputs(t *testing.T) {
 			if got.AsString() != want {
 				t.Fatalf("%s=%q want %q", key, got.AsString(), want)
 			}
+		}
+	})
+}
+
+func TestRuntimeSpansExposeGalileoContentWhenRedactionDisabled(t *testing.T) {
+	redaction.SetDisableAll(true)
+	t.Cleanup(func() { redaction.SetDisableAll(false) })
+
+	t.Run("llm", func(t *testing.T) {
+		p, exp := newTracingProvider(t)
+		_, span := p.StartLLMSpan(context.Background(), "openai", "gpt-5.5", "openai", 2048, 0.1)
+		p.EndLLMSpan(context.Background(), span, "gpt-5.5", 100, 50, []string{"stop"}, 0, "", "", "openai", time.Now(), "codex", "codex", "openai_codex", "",
+			LLMSpanContent{Input: "show cluster status", Output: "cluster is healthy"})
+
+		spans := exp.GetSpans()
+		if len(spans) != 1 {
+			t.Fatalf("got %d spans, want 1", len(spans))
+		}
+		for key, want := range map[string]string{
+			"gen_ai.input.messages":  genAITextMessageSpanValue("user", "show cluster status", ""),
+			"gen_ai.output.messages": genAITextMessageSpanValue("assistant", "cluster is healthy", "stop"),
+			"input.value":            "show cluster status",
+			"output.value":           "cluster is healthy",
+		} {
+			got, ok := attrByKey(spans[0].Attributes, key)
+			if !ok || got.AsString() != want {
+				t.Fatalf("%s=%q ok=%v want %q", key, got.AsString(), ok, want)
+			}
+		}
+		if got, ok := attrByKey(spans[0].Attributes, "defenseclaw.content.redacted"); !ok || got.AsBool() {
+			t.Fatalf("defenseclaw.content.redacted=%v ok=%v want false", got.AsBool(), ok)
+		}
+		for key, want := range map[string]int64{
+			"gen_ai.usage.input_tokens":      100,
+			"gen_ai.usage.output_tokens":     50,
+			"gen_ai.usage.prompt_tokens":     100,
+			"gen_ai.usage.completion_tokens": 50,
+			"input_token_count":              100,
+			"output_token_count":             50,
+			"llm.token_count.prompt":         100,
+			"llm.token_count.completion":     50,
+		} {
+			got, ok := attrByKey(spans[0].Attributes, key)
+			if !ok || got.AsInt64() != want {
+				t.Fatalf("%s=%d ok=%v want %d", key, got.AsInt64(), ok, want)
+			}
+		}
+	})
+
+	t.Run("agent rollup", func(t *testing.T) {
+		p, exp := newTracingProvider(t)
+		_, span := p.StartAgentSpan(context.Background(), "session-123", "codex", "codex", "openai_codex", "openai")
+		p.EndAgentSpan(span, "", AgentSpanSummary{
+			Input:        "investigate errors",
+			Output:       "found no errors",
+			InputTokens:  12,
+			OutputTokens: 7,
+		})
+
+		spans := exp.GetSpans()
+		if len(spans) != 1 {
+			t.Fatalf("got %d spans, want 1", len(spans))
+		}
+		if got, ok := attrByKey(spans[0].Attributes, "gen_ai.input.messages"); !ok || got.AsString() != genAITextMessageSpanValue("user", "investigate errors", "") {
+			t.Fatalf("agent input=%q ok=%v", got.AsString(), ok)
+		}
+		if got, ok := attrByKey(spans[0].Attributes, "gen_ai.output.messages"); !ok || got.AsString() != genAITextMessageSpanValue("assistant", "found no errors", "") {
+			t.Fatalf("agent output=%q ok=%v", got.AsString(), ok)
+		}
+		if got, ok := attrByKey(spans[0].Attributes, "gen_ai.usage.input_tokens"); !ok || got.AsInt64() != 12 {
+			t.Fatalf("agent input tokens=%d ok=%v want 12", got.AsInt64(), ok)
+		}
+		if got, ok := attrByKey(spans[0].Attributes, "gen_ai.usage.output_tokens"); !ok || got.AsInt64() != 7 {
+			t.Fatalf("agent output tokens=%d ok=%v want 7", got.AsInt64(), ok)
 		}
 	})
 }
@@ -1327,6 +1425,58 @@ func TestRecordLLMTokens_EmitsMetric(t *testing.T) {
 		hasSessionID := hasAttribute(dp.Attributes, "gen_ai.conversation.id", "sess-123")
 		if !hasSessionID {
 			t.Error("histogram data point missing attribute gen_ai.conversation.id=sess-123")
+		}
+		if !hasAttribute(dp.Attributes, "gen_ai.system", "openai") {
+			t.Error("histogram data point missing attribute gen_ai.system=openai")
+		}
+		if !hasAttribute(dp.Attributes, "gen_ai.framework", "defenseclaw") {
+			t.Error("histogram data point missing attribute gen_ai.framework=defenseclaw")
+		}
+	}
+}
+
+func TestRecordAgentDuration_EmitsMetric(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	p, err := NewProviderForTest(reader)
+	if err != nil {
+		t.Fatalf("NewProviderForTest: %v", err)
+	}
+	defer p.Shutdown(context.Background())
+
+	ctx := context.Background()
+	p.RecordAgentDuration(ctx, "invoke_agent", "test-agent", "coding-agent", "agent-id-1", 1.25)
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(ctx, &rm); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+
+	found := findHistogram(rm, "gen_ai.agent.duration")
+	if found == nil {
+		t.Fatal("metric gen_ai.agent.duration not found")
+		return
+	}
+
+	hist, ok := found.Data.(metricdata.Histogram[float64])
+	if !ok {
+		t.Fatalf("expected Histogram[float64], got %T", found.Data)
+	}
+	if len(hist.DataPoints) == 0 {
+		t.Fatal("expected at least one histogram data point")
+	}
+	dp := hist.DataPoints[0]
+	if dp.Sum != 1.25 {
+		t.Fatalf("duration sum = %v, want 1.25", dp.Sum)
+	}
+	for key, val := range map[string]string{
+		"gen_ai.operation.name": "invoke_agent",
+		"gen_ai.agent.name":     "test-agent",
+		"gen_ai.agent.type":     "coding-agent",
+		"gen_ai.agent.id":       "agent-id-1",
+		"gen_ai.framework":      "defenseclaw",
+	} {
+		if !hasAttribute(dp.Attributes, key, val) {
+			t.Errorf("histogram data point missing %s=%s", key, val)
 		}
 	}
 }

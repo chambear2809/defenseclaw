@@ -46,6 +46,7 @@ type metricsSet struct {
 	// GenAI semconv metrics
 	genAITokenUsage        metric.Float64Histogram // gen_ai.client.token.usage
 	genAIOperationDuration metric.Float64Histogram // gen_ai.client.operation.duration
+	genAIAgentDuration     metric.Float64Histogram // gen_ai.agent.duration
 
 	// Alert metrics
 	alertCount           metric.Int64Counter
@@ -325,6 +326,15 @@ func newMetricsSet(m metric.Meter) (*metricsSet, error) {
 	ms.genAIOperationDuration, err = m.Float64Histogram("gen_ai.client.operation.duration",
 		metric.WithUnit("s"),
 		metric.WithDescription("GenAI operation duration."),
+		metric.WithExplicitBucketBoundaries(0.01, 0.02, 0.04, 0.08, 0.16, 0.32, 0.64, 1.28, 2.56, 5.12, 10.24, 20.48, 40.96, 81.92),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	ms.genAIAgentDuration, err = m.Float64Histogram("gen_ai.agent.duration",
+		metric.WithUnit("s"),
+		metric.WithDescription("GenAI agent operation duration."),
 		metric.WithExplicitBucketBoundaries(0.01, 0.02, 0.04, 0.08, 0.16, 0.32, 0.64, 1.28, 2.56, 5.12, 10.24, 20.48, 40.96, 81.92),
 	)
 	if err != nil {
@@ -1185,8 +1195,10 @@ func (p *Provider) RecordLLMTokenUsage(ctx context.Context, operationName, provi
 	}
 	commonAttrs := []attribute.KeyValue{
 		attribute.String("gen_ai.operation.name", operationName),
+		attribute.String("gen_ai.system", providerName),
 		attribute.String("gen_ai.provider.name", providerName),
 		attribute.String("gen_ai.request.model", model),
+		attribute.String("gen_ai.framework", "defenseclaw"),
 	}
 	if agentName != "" {
 		commonAttrs = append(commonAttrs, attribute.String("gen_ai.agent.name", agentName))
@@ -1210,8 +1222,10 @@ func (p *Provider) RecordLLMDuration(ctx context.Context, operationName, provide
 	}
 	attrs := []attribute.KeyValue{
 		attribute.String("gen_ai.operation.name", operationName),
+		attribute.String("gen_ai.system", providerName),
 		attribute.String("gen_ai.provider.name", providerName),
 		attribute.String("gen_ai.request.model", model),
+		attribute.String("gen_ai.framework", "defenseclaw"),
 	}
 	if agentName != "" {
 		attrs = append(attrs, attribute.String("gen_ai.agent.name", agentName))
@@ -1220,6 +1234,32 @@ func (p *Provider) RecordLLMDuration(ctx context.Context, operationName, provide
 		attrs = append(attrs, attribute.String("gen_ai.agent.id", agentID))
 	}
 	p.metrics.genAIOperationDuration.Record(ctx, durationSeconds, metric.WithAttributes(attrs...))
+}
+
+// RecordAgentDuration records agent invocation duration per Splunk GenAI utility
+// conventions. The metric is required by Splunk AI Agent Monitoring's Agents
+// views and joins back to the active agent span via the provided context.
+func (p *Provider) RecordAgentDuration(ctx context.Context, operationName, agentName, agentType, agentID string, durationSeconds float64) {
+	if !p.Enabled() || p.metrics == nil || durationSeconds <= 0 {
+		return
+	}
+	if operationName == "" {
+		operationName = "invoke_agent"
+	}
+	attrs := []attribute.KeyValue{
+		attribute.String("gen_ai.operation.name", operationName),
+	}
+	if agentName != "" {
+		attrs = append(attrs, attribute.String("gen_ai.agent.name", agentName))
+	}
+	if agentType != "" {
+		attrs = append(attrs, attribute.String("gen_ai.agent.type", agentType))
+	}
+	if agentID != "" {
+		attrs = append(attrs, attribute.String("gen_ai.agent.id", agentID))
+	}
+	attrs = append(attrs, attribute.String("gen_ai.framework", "defenseclaw"))
+	p.metrics.genAIAgentDuration.Record(ctx, durationSeconds, metric.WithAttributes(attrs...))
 }
 
 // RecordAlert records a runtime alert metric.

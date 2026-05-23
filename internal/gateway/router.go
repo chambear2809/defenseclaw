@@ -51,6 +51,81 @@ type activeAgent struct {
 	ctx        context.Context
 	startTime  time.Time
 	sessionKey string
+	agentName  string
+	agentType  string
+	agentID    string
+
+	inputContent        string
+	outputContent       string
+	inputTokens         int
+	outputTokens        int
+	tokenUsageEstimated bool
+}
+
+type sessionMessageUsage struct {
+	PromptTokens     int
+	CompletionTokens int
+}
+
+func (u *sessionMessageUsage) UnmarshalJSON(data []byte) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	u.PromptTokens = firstUsageInt(fields,
+		"prompt_tokens",
+		"input_tokens",
+		"prompt_token_count",
+		"input_token_count",
+		"promptTokens",
+		"inputTokens",
+		"input",
+		"prompt",
+	)
+	u.CompletionTokens = firstUsageInt(fields,
+		"completion_tokens",
+		"output_tokens",
+		"completion_token_count",
+		"output_token_count",
+		"completionTokens",
+		"outputTokens",
+		"generated_token_count",
+		"output",
+		"completion",
+	)
+	return nil
+}
+
+func firstUsageInt(fields map[string]json.RawMessage, keys ...string) int {
+	for _, key := range keys {
+		raw, ok := fields[key]
+		if !ok {
+			continue
+		}
+		if value, ok := usageInt(raw); ok {
+			return value
+		}
+	}
+	return 0
+}
+
+func usageInt(raw json.RawMessage) (int, bool) {
+	var n int
+	if err := json.Unmarshal(raw, &n); err == nil {
+		return n, true
+	}
+	var f float64
+	if err := json.Unmarshal(raw, &f); err == nil {
+		return int(f), true
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		var parsed int
+		if _, scanErr := fmt.Sscanf(strings.TrimSpace(s), "%d", &parsed); scanErr == nil {
+			return parsed, true
+		}
+	}
+	return 0, false
 }
 
 // EventRouter dispatches gateway events to the appropriate handlers and logs
@@ -123,6 +198,63 @@ func (r *EventRouter) getActiveAgentCtx() context.Context {
 		return aa.ctx
 	}
 	return context.Background()
+}
+
+func (r *EventRouter) latestUserMessage(sessionKey string) string {
+	if r.contextTracker == nil || sessionKey == "" {
+		return ""
+	}
+	return lastUserText(r.contextTracker.RecentMessages(sessionKey, 10))
+}
+
+func sessionLLMTokens(usage *sessionMessageUsage, input, output string) (int, int, bool) {
+	if usage != nil {
+		return usage.PromptTokens, usage.CompletionTokens, false
+	}
+	inputTokens := telemetry.EstimateTokenCount(input)
+	outputTokens := telemetry.EstimateTokenCount(output)
+	return inputTokens, outputTokens, inputTokens != 0 || outputTokens != 0
+}
+
+func agentSpanSummary(aa *activeAgent) telemetry.AgentSpanSummary {
+	if aa == nil {
+		return telemetry.AgentSpanSummary{}
+	}
+	return telemetry.AgentSpanSummary{
+		Input:               aa.inputContent,
+		Output:              aa.outputContent,
+		InputTokens:         aa.inputTokens,
+		OutputTokens:        aa.outputTokens,
+		TokenUsageEstimated: aa.tokenUsageEstimated,
+	}
+}
+
+func (r *EventRouter) addActiveAgentLLMSummary(runID, input, output string, inputTokens, outputTokens int, estimated bool) {
+	r.spanMu.Lock()
+	defer r.spanMu.Unlock()
+
+	var aa *activeAgent
+	if runID != "" {
+		aa = r.activeAgentSpans[runID]
+	}
+	if aa == nil && len(r.activeAgentSpans) == 1 {
+		for _, candidate := range r.activeAgentSpans {
+			aa = candidate
+			break
+		}
+	}
+	if aa == nil {
+		return
+	}
+	if aa.inputContent == "" {
+		aa.inputContent = input
+	}
+	if output != "" {
+		aa.outputContent = output
+	}
+	aa.inputTokens += inputTokens
+	aa.outputTokens += outputTokens
+	aa.tokenUsageEstimated = aa.tokenUsageEstimated || estimated
 }
 
 // getToolParentCtx returns the best parent context for tool/approval spans:
@@ -548,17 +680,14 @@ func (r *EventRouter) handleSessionMessage(evt EventFrame) {
 	// Format A: chat message
 	if envelope.Message != nil {
 		var msg struct {
-			Role         string          `json:"role"`
-			Content      json.RawMessage `json:"content"`
-			Timestamp    int64           `json:"timestamp"`
-			StopReason   string          `json:"stopReason"`
-			ErrorMessage string          `json:"errorMessage"`
-			Provider     string          `json:"provider"`
-			Model        string          `json:"model"`
-			Usage        *struct {
-				PromptTokens     int `json:"prompt_tokens"`
-				CompletionTokens int `json:"completion_tokens"`
-			} `json:"usage,omitempty"`
+			Role         string               `json:"role"`
+			Content      json.RawMessage      `json:"content"`
+			Timestamp    int64                `json:"timestamp"`
+			StopReason   string               `json:"stopReason"`
+			ErrorMessage string               `json:"errorMessage"`
+			Provider     string               `json:"provider"`
+			Model        string               `json:"model"`
+			Usage        *sessionMessageUsage `json:"usage,omitempty"`
 		}
 		if err := json.Unmarshal(envelope.Message, &msg); err != nil {
 			readLoopLogf("[bifrost] session.message: has message field but failed to parse: %v", err)
@@ -623,11 +752,12 @@ func (r *EventRouter) handleSessionMessage(evt EventFrame) {
 		// Stores the LLM context so subsequent tool spans become children.
 		if r.otel != nil && msg.Role == "assistant" && msg.Model != "" {
 			system := inferSystem(msg.Provider, msg.Model)
-			promptTokens, completionTokens := 0, 0
-			if msg.Usage != nil {
-				promptTokens = msg.Usage.PromptTokens
-				completionTokens = msg.Usage.CompletionTokens
+			providerName := system
+			if providerName == "" || providerName == "unknown" {
+				providerName = msg.Provider
 			}
+			inputContent := r.latestUserMessage(envelope.SessionKey)
+			promptTokens, completionTokens, tokenUsageEstimated := sessionLLMTokens(msg.Usage, inputContent, contentStr)
 			finishReasons := []string{}
 			if msg.StopReason != "" {
 				finishReasons = []string{msg.StopReason}
@@ -639,7 +769,7 @@ func (r *EventRouter) handleSessionMessage(evt EventFrame) {
 			now := time.Now()
 			llmCtx, span := r.otel.StartLLMSpan(
 				parentCtx,
-				system, msg.Model, msg.Provider,
+				system, msg.Model, providerName,
 				0, 0.0,
 			)
 			r.otel.SetRawSpanString(span, "defenseclaw.llm.response.content", contentStr)
@@ -650,12 +780,18 @@ func (r *EventRouter) handleSessionMessage(evt EventFrame) {
 				promptTokens, completionTokens,
 				finishReasons, toolCallCount,
 				"none", "",
-				system, now,
+				providerName, now,
 				r.defaultAgentName,
 				r.defaultAgentName,
 				SharedAgentRegistry().AgentID(),
 				SessionIDFromContext(parentCtx),
+				telemetry.LLMSpanContent{
+					Input:               inputContent,
+					Output:              contentStr,
+					TokenUsageEstimated: tokenUsageEstimated,
+				},
 			)
+			r.addActiveAgentLLMSummary(envelope.RunID, inputContent, contentStr, promptTokens, completionTokens, tokenUsageEstimated)
 
 			// Store LLM context so tool_call spans become children of this LLM span.
 			r.spanMu.Lock()
@@ -663,7 +799,7 @@ func (r *EventRouter) handleSessionMessage(evt EventFrame) {
 			r.spanMu.Unlock()
 
 			readLoopLogf("[bifrost] session.message: emitted LLM span model=%s provider=%s system=%s tokens=%d/%d",
-				msg.Model, msg.Provider, system, promptTokens, completionTokens)
+				msg.Model, providerName, system, promptTokens, completionTokens)
 		}
 
 		if r.contextTracker != nil && envelope.SessionKey != "" && contentStr != "" {
@@ -1050,12 +1186,14 @@ func (r *EventRouter) handleAgentStreamEvent(se struct {
 				if conversationID == "" {
 					conversationID = se.RunID
 				}
+				agentName := r.agentNameForStream("")
+				agentID := SharedAgentRegistry().AgentID()
 				agentCtx, agentSpan := r.otel.StartAgentSpan(
 					context.Background(),
-					conversationID,           // conversation.id
-					r.agentNameForStream(""), // agent name (claw mode fallback)
-					r.agentNameForStream(""), // agent type
-					SharedAgentRegistry().AgentID(),
+					conversationID, // conversation.id
+					agentName,      // agent name (claw mode fallback)
+					agentName,      // agent type
+					agentID,
 					"", // provider filled on session.message
 				)
 				r.spanMu.Lock()
@@ -1064,6 +1202,9 @@ func (r *EventRouter) handleAgentStreamEvent(se struct {
 					ctx:        agentCtx,
 					startTime:  time.Now(),
 					sessionKey: se.SessionKey,
+					agentName:  agentName,
+					agentType:  agentName,
+					agentID:    agentID,
 				}
 				r.spanMu.Unlock()
 			}
@@ -1091,7 +1232,8 @@ func (r *EventRouter) handleAgentStreamEvent(se struct {
 				if aa := r.activeAgentSpans[se.RunID]; aa != nil {
 					delete(r.activeAgentSpans, se.RunID)
 					r.spanMu.Unlock()
-					r.otel.EndAgentSpan(aa.span, truncate(redaction.ForSinkString(data.Error), 256))
+					r.otel.RecordAgentDuration(aa.ctx, "invoke_agent", aa.agentName, aa.agentType, aa.agentID, time.Since(aa.startTime).Seconds())
+					r.otel.EndAgentSpan(aa.span, truncate(redaction.ForSinkString(data.Error), 256), agentSpanSummary(aa))
 				} else {
 					r.spanMu.Unlock()
 				}
@@ -1109,7 +1251,8 @@ func (r *EventRouter) handleAgentStreamEvent(se struct {
 				if aa := r.activeAgentSpans[se.RunID]; aa != nil {
 					delete(r.activeAgentSpans, se.RunID)
 					r.spanMu.Unlock()
-					r.otel.EndAgentSpan(aa.span, "")
+					r.otel.RecordAgentDuration(aa.ctx, "invoke_agent", aa.agentName, aa.agentType, aa.agentID, time.Since(aa.startTime).Seconds())
+					r.otel.EndAgentSpan(aa.span, "", agentSpanSummary(aa))
 				} else {
 					r.spanMu.Unlock()
 				}
@@ -1319,7 +1462,7 @@ func (r *EventRouter) handleToolResult(evt EventFrame) {
 
 		if as != nil {
 			r.otel.SetRawSpanString(as.span, "defenseclaw.tool.output", payload.Output)
-			r.otel.EndToolSpan(as.span, exitCode, len(payload.Output), as.startTime, as.tool, as.provider)
+			r.otel.EndToolSpan(as.span, exitCode, len(payload.Output), as.startTime, as.tool, as.provider, payload.Output)
 		}
 	}
 }

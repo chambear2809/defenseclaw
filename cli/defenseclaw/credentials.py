@@ -188,8 +188,38 @@ def _cisco_ai_defense_key(cfg: Config) -> Requirement:
         return Requirement.NOT_USED
     # The guardrail has three scanner modes (local | remote | both).
     # Remote and both send traffic to Cisco AI Defense, so the key is
-    # required; local-only mode doesn't touch it.
+    # required unless the operator configured the OAuth client-credentials
+    # fallback. Local-only mode doesn't touch it.
     if gc.scanner_mode in ("remote", "both"):
+        cad = getattr(cfg, "cisco_ai_defense", None)
+        if cad is not None:
+            oauth_url = getattr(cad, "oauth_token_url", "") or ""
+            oauth_env = getattr(cad, "oauth_basic_env", "") or ""
+            oauth_inline = getattr(cad, "oauth_basic", "") or ""
+            if oauth_url and (oauth_env or oauth_inline):
+                return Requirement.OPTIONAL
+        return Requirement.REQUIRED
+    return Requirement.NOT_USED
+
+
+def _cisco_ai_defense_oauth_basic(cfg: Config) -> Requirement:
+    gc = getattr(cfg, "guardrail", None)
+    if gc is None or not gc.enabled or gc.scanner_mode not in ("remote", "both"):
+        return Requirement.NOT_USED
+    cad = getattr(cfg, "cisco_ai_defense", None)
+    if cad is None:
+        return Requirement.NOT_USED
+    if not (getattr(cad, "oauth_token_url", "") or ""):
+        return Requirement.NOT_USED
+    api_key_env = getattr(cad, "api_key_env", "") or ""
+    api_key_inline = getattr(cad, "api_key", "") or ""
+    if api_key_inline or (api_key_env and resolve(api_key_env, getattr(cfg, "data_dir", "") or "").is_set):
+        return Requirement.NOT_USED
+    oauth_env = getattr(cad, "oauth_basic_env", "") or ""
+    oauth_inline = getattr(cad, "oauth_basic", "") or ""
+    if oauth_inline:
+        return Requirement.OPTIONAL
+    if oauth_env:
         return Requirement.REQUIRED
     return Requirement.NOT_USED
 
@@ -249,6 +279,11 @@ def _judge_env(cfg: Config) -> str:
 def _cisco_env(cfg: Config) -> str:
     cad = getattr(cfg, "cisco_ai_defense", None)
     return cad.api_key_env if cad is not None else ""
+
+
+def _cisco_oauth_basic_env(cfg: Config) -> str:
+    cad = getattr(cfg, "cisco_ai_defense", None)
+    return cad.oauth_basic_env if cad is not None else ""
 
 
 def _virustotal_env(cfg: Config) -> str:
@@ -317,6 +352,13 @@ CREDENTIALS: tuple[CredentialSpec, ...] = (
         description="API key for Cisco AI Defense remote scanner (scanner_mode=remote|both)",
         required=_cisco_ai_defense_key,
         effective_env_name=_cisco_env,
+    ),
+    CredentialSpec(
+        env_name="CISCO_AI_DEFENSE_OAUTH_BASIC",
+        feature="guardrail.remote.oauth",
+        description="Basic credential for Cisco AI Defense OAuth client-credentials fallback",
+        required=_cisco_ai_defense_oauth_basic,
+        effective_env_name=_cisco_oauth_basic_env,
     ),
     CredentialSpec(
         env_name="VIRUSTOTAL_API_KEY",

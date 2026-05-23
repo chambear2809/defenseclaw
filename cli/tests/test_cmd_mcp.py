@@ -18,21 +18,27 @@
 
 import json
 import os
-import unittest
-from datetime import datetime, timedelta, timezone
-from unittest.mock import MagicMock, patch
-import uuid
-
 import sys
+import unittest
+import uuid
+from datetime import datetime, timezone
+from unittest.mock import MagicMock, patch
+
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from click.testing import CliRunner
-
-from defenseclaw.commands.cmd_mcp import mcp, _parse_args, _build_mcp_scan_map
+from defenseclaw.commands.cmd_mcp import (
+    _build_mcp_scan_map,
+    _openclaw_config_set,
+    _openclaw_config_unset,
+    _parse_args,
+    mcp,
+)
 from defenseclaw.config import MCPServerEntry
 from defenseclaw.enforce.policy import PolicyEngine
 from defenseclaw.models import Finding, ScanResult
-from tests.helpers import make_app_context, cleanup_app
+
+from tests.helpers import cleanup_app, make_app_context
 
 
 class MCPCommandTestBase(unittest.TestCase):
@@ -268,6 +274,70 @@ class TestMCPList(MCPCommandTestBase):
         self.assertEqual(data[0]["name"], "test-srv")
 
 
+class TestOpenClawConfigFallback(unittest.TestCase):
+    @patch("defenseclaw.commands.cmd_mcp.subprocess.run", side_effect=FileNotFoundError)
+    def test_set_falls_back_to_openclaw_json_when_cli_missing(self, _mock_run):
+        old_dc_home = os.environ.get("DEFENSECLAW_HOME")
+        try:
+            with CliRunner().isolated_filesystem():
+                os.environ["DEFENSECLAW_HOME"] = os.path.abspath(".defenseclaw")
+                oc_path = os.path.abspath("openclaw.json")
+                with open(oc_path, "w") as f:
+                    json.dump({"plugins": {"allow": ["defenseclaw"]}}, f)
+
+                _openclaw_config_set(
+                    "mcp.servers.splunk-cisco-skills",
+                    json.dumps({
+                        "command": "python3",
+                        "args": ["/repo/agent/run-splunk-cisco-skills-mcp.py"],
+                        "transport": "stdio",
+                    }),
+                    config_file=oc_path,
+                )
+
+                with open(oc_path) as f:
+                    data = json.load(f)
+                self.assertEqual(
+                    data["mcp"]["servers"]["splunk-cisco-skills"]["command"],
+                    "python3",
+                )
+                self.assertEqual(data["plugins"]["allow"], ["defenseclaw"])
+        finally:
+            if old_dc_home is None:
+                os.environ.pop("DEFENSECLAW_HOME", None)
+            else:
+                os.environ["DEFENSECLAW_HOME"] = old_dc_home
+
+    @patch("defenseclaw.commands.cmd_mcp.subprocess.run", side_effect=FileNotFoundError)
+    def test_unset_falls_back_to_openclaw_json_when_cli_missing(self, _mock_run):
+        old_dc_home = os.environ.get("DEFENSECLAW_HOME")
+        try:
+            with CliRunner().isolated_filesystem():
+                os.environ["DEFENSECLAW_HOME"] = os.path.abspath(".defenseclaw")
+                oc_path = os.path.abspath("openclaw.json")
+                with open(oc_path, "w") as f:
+                    json.dump({
+                        "mcp": {
+                            "servers": {
+                                "remove-me": {"command": "python3"},
+                                "keep-me": {"command": "node"},
+                            },
+                        },
+                    }, f)
+
+                _openclaw_config_unset("mcp.servers.remove-me", config_file=oc_path)
+
+                with open(oc_path) as f:
+                    data = json.load(f)
+                self.assertNotIn("remove-me", data["mcp"]["servers"])
+                self.assertIn("keep-me", data["mcp"]["servers"])
+        finally:
+            if old_dc_home is None:
+                os.environ.pop("DEFENSECLAW_HOME", None)
+            else:
+                os.environ["DEFENSECLAW_HOME"] = old_dc_home
+
+
 # ---------------------------------------------------------------------------
 # _parse_args
 # ---------------------------------------------------------------------------
@@ -388,7 +458,6 @@ class TestBuildMCPScanMap(MCPCommandTestBase):
 
 class TestAttachErrorHandler(unittest.TestCase):
     def test_attaches_to_three_loggers(self):
-        import logging
         from defenseclaw.scanner.mcp import _attach_error_handler, _ErrorCapture
 
         errors: list[str] = []
@@ -409,6 +478,7 @@ class TestAttachErrorHandler(unittest.TestCase):
 
     def test_captures_error_from_child_logger(self):
         import logging
+
         from defenseclaw.scanner.mcp import _attach_error_handler, _ErrorCapture
 
         errors: list[str] = []
@@ -426,6 +496,7 @@ class TestAttachErrorHandler(unittest.TestCase):
 
     def test_error_capture_filters_by_level(self):
         import logging
+
         from defenseclaw.scanner.mcp import _ErrorCapture
 
         errors: list[str] = []

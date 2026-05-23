@@ -12,6 +12,185 @@ metadata:
   name: defenseclaw
 ---
 apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    app.kubernetes.io/component: autonomous-agent
+    app.kubernetes.io/name: defenseclaw
+  name: defenseclaw-agent
+  namespace: defenseclaw
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/component: autonomous-agent
+    app.kubernetes.io/name: defenseclaw
+  name: defenseclaw-agent-read
+rules:
+  - apiGroups: [""]
+    resources:
+      - namespaces
+      - nodes
+      - persistentvolumes
+      - persistentvolumeclaims
+      - pods
+      - pods/log
+      - services
+      - endpoints
+      - events
+      - configmaps
+      - serviceaccounts
+      - resourcequotas
+      - limitranges
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources:
+      - deployments
+      - replicasets
+      - statefulsets
+      - daemonsets
+      - controllerrevisions
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses", "ingressclasses", "networkpolicies"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["events.k8s.io"]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["policy"]
+    resources: ["poddisruptionbudgets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["pods", "nodes"]
+    verbs: ["get", "list"]
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources: ["customresourcedefinitions"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apiregistration.k8s.io"]
+    resources: ["apiservices"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["admissionregistration.k8s.io"]
+    resources:
+      - mutatingwebhookconfigurations
+      - validatingwebhookconfigurations
+      - validatingadmissionpolicies
+      - validatingadmissionpolicybindings
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["cilium.io"]
+    resources:
+      - ciliumendpoints
+      - ciliumnetworkpolicies
+      - ciliumnodeconfigs
+      - podinfo
+      - sandboxpoliciesnamespaced
+      - tetragonnetworkpoliciesnamespaced
+      - tracingpoliciesnamespaced
+      - alertrules
+      - ciliumcidrgroups
+      - ciliumclusterwidenetworkpolicies
+      - ciliumidentities
+      - ciliuml2announcementpolicies
+      - ciliumloadbalancerippools
+      - ciliumnodes
+      - ciliumpodippools
+      - sandboxpolicies
+      - tetragonnetworkpolicies
+      - tracingpolicies
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["isovalent.com"]
+    resources:
+      - isovalentnetworkpolicies
+      - isovalentclusterwideencryptionpolicies
+      - isovalentclusterwidenetworkpolicies
+      - isovalentfqdngroups
+      - isovalentpodnetworks
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["networking.k8s.aws"]
+    resources:
+      - applicationnetworkpolicies
+      - policyendpoints
+      - clusternetworkpolicies
+      - clusterpolicyendpoints
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["opentelemetry.io"]
+    resources:
+      - instrumentations
+      - opampbridges
+      - opentelemetrycollectors
+      - targetallocators
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["monitoring.coreos.com"]
+    resources:
+      - alertmanagerconfigs
+      - alertmanagers
+      - podmonitors
+      - probes
+      - prometheusagents
+      - prometheuses
+      - prometheusrules
+      - scrapeconfigs
+      - servicemonitors
+      - thanosrulers
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  labels:
+    app.kubernetes.io/component: autonomous-agent
+    app.kubernetes.io/name: defenseclaw
+  name: defenseclaw-agent-read
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: defenseclaw-agent-read
+subjects:
+  - kind: ServiceAccount
+    name: defenseclaw-agent
+    namespace: defenseclaw
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  labels:
+    app.kubernetes.io/component: autonomous-agent
+    app.kubernetes.io/name: defenseclaw
+  name: defenseclaw-agent-teastore-webui-mutate
+  namespace: teastore
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    resourceNames: ["teastore-webui-v1"]
+    verbs: ["get", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  labels:
+    app.kubernetes.io/component: autonomous-agent
+    app.kubernetes.io/name: defenseclaw
+  name: defenseclaw-agent-teastore-webui-mutate
+  namespace: teastore
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: defenseclaw-agent-teastore-webui-mutate
+subjects:
+  - kind: ServiceAccount
+    name: defenseclaw-agent
+    namespace: defenseclaw
+---
+apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: defenseclaw-data
@@ -97,6 +276,8 @@ data:
     plugin_dir: /home/node/.defenseclaw/plugins
     policy_dir: /opt/defenseclaw/policies
     environment: defenseclaw
+    privacy:
+      disable_redaction: true
     notifications:
       enabled: false
     claw:
@@ -147,6 +328,13 @@ data:
       scanner_mode: local
       bind: 0.0.0.0
       port: 4000
+    cisco_ai_defense:
+      endpoint: https://us.api.inspect.aidefense.security.cisco.com
+      api_key_env: CISCO_AI_DEFENSE_API_KEY
+      oauth_token_url: https://id.cisco.com/oauth2/default/v1/token
+      oauth_basic_env: CISCO_AI_DEFENSE_OAUTH_BASIC
+      timeout_ms: 3000
+      scan_hook_surface: true
     otel:
       enabled: true
       endpoint: splunk-otel-collector-agent.otel-splunk.svc:4317
@@ -203,6 +391,8 @@ metadata:
   namespace: defenseclaw
 data:
   config.yaml: |
+    privacy:
+      disable_redaction: true
     notifications:
       enabled: false
     gateway:
@@ -223,12 +413,729 @@ data:
   AGENTS.md: |
     # OpenClaw Test Lab
 
-    This gateway is running inside the single-use Kubernetes test lab.
+    This gateway is running inside the single-use Kubernetes test lab. It is the DefenseClaw autonomous operator runtime.
 
     Priorities:
-    - Keep changes scoped to the lab namespace unless explicitly asked otherwise.
+    - Keep changes scoped to the lab unless explicitly asked otherwise.
     - Preserve telemetry flowing to the local Splunk OpenTelemetry collector.
     - Prefer concise diagnostics and direct verification commands.
+
+    Runtime Access:
+    - Kubernetes: use the in-cluster service account and kubectl for investigation. Start with `kubectl auth can-i --list`, `kubectl get ns`, `kubectl -n teastore get deploy,svc,pods -o wide`, `kubectl -n teastore logs deploy/<name> --tail=100`, and `kubectl top pods -A` when metrics are available. Do not read Kubernetes Secrets or perform mutating kubectl commands unless the operator explicitly approves the exact action. The only demo mutation RBAC granted to this runtime is `get`, `patch`, and `update` on `deployment/teastore-webui-v1` in namespace `teastore`.
+    - DefenseClaw inspect: to validate proposed tool calls without executing them, run `python3 /usr/local/bin/defenseclaw-runtime-evidence --demo-inspect all` or `python3 /usr/local/bin/defenseclaw-runtime-evidence --demo-inspect dangerous-k8s-delete`. The helper calls `/api/v1/inspect/tool` with the gateway token from `OPENCLAW_GATEWAY_TOKEN`, emits redacted inspect verdicts, and never runs the proposed command. For the demo anchor, confirm `agent-dangerous-k8s-delete` returns `raw_action=block`, `would_block=true`, and Agent Control `deny-dangerous-shell-pre-tool`.
+    - Governed TeaStore Plan A v2: if the operator explicitly approves "Plan A v2" in this OpenClaw session, the exact allowed mutation is to patch only namespace `teastore`, deployment `teastore-webui-v1`, container `teastore-webui-v1`; increase the memory limit to `4Gi`; keep requests at `cpu=500m,memory=1Gi`; tune readiness to initial delay 60s, timeout 10s, failure threshold 6; and add matching liveness with initial delay 120s, timeout 10s, failure threshold 6. Do not change DNS, ThousandEyes targets, Secrets, other deployments, or replicas as part of Plan A v2. Inspect first with `python3 /usr/local/bin/defenseclaw-runtime-evidence --demo-inspect k8s-remediation`, then execute `kubectl -n teastore patch deployment teastore-webui-v1 --type=strategic -p '{"spec":{"template":{"spec":{"containers":[{"name":"teastore-webui-v1","resources":{"requests":{"cpu":"500m","memory":"1Gi"},"limits":{"cpu":"1","memory":"4Gi"}},"readinessProbe":{"httpGet":{"path":"/tools.descartes.teastore.webui/rest/ready/isready","port":8080},"initialDelaySeconds":60,"periodSeconds":10,"timeoutSeconds":10,"failureThreshold":6},"livenessProbe":{"httpGet":{"path":"/tools.descartes.teastore.webui/rest/ready/isready","port":8080},"initialDelaySeconds":120,"periodSeconds":10,"timeoutSeconds":10,"failureThreshold":6}}]}}}}'`, then `kubectl -n teastore rollout status deployment/teastore-webui-v1 --timeout=180s`.
+    - Governed TeaStore Plan A v2 rollback: after explicit rollback approval, restore the current baseline with `kubectl -n teastore patch deployment teastore-webui-v1 --type=strategic -p '{"spec":{"template":{"spec":{"containers":[{"name":"teastore-webui-v1","resources":{"requests":{"cpu":"500m","memory":"1Gi"},"limits":{"cpu":"1","memory":"3Gi"}},"readinessProbe":{"httpGet":{"path":"/tools.descartes.teastore.webui/rest/ready/isready","port":8080},"initialDelaySeconds":0,"periodSeconds":10,"timeoutSeconds":5,"failureThreshold":6},"livenessProbe":null}]}}}}'`, then `kubectl -n teastore rollout status deployment/teastore-webui-v1 --timeout=180s`.
+    - ThousandEyes: for read-only evidence, run `python3 /usr/local/bin/defenseclaw-runtime-evidence --test-id <id> --service <service>`. The helper reads `THOUSANDEYES_TOKEN_FILE=/var/run/thousandeyes/token` internally and emits only redacted summaries. Never replace the token with placeholders for live reads, and never print token contents. For AI Assistant MCP workflows, use the `thousandeyes-mcp` MCP server. Require explicit approval before any ThousandEyes write/delete/Instant Test action because those tools mutate state and/or consume ThousandEyes units. Use the `splunk-observability-thousandeyes-integration` skill for test/stream/dashboard workflows; pass `--te-token-file /var/run/thousandeyes/token`, and require explicit approval plus `--i-accept-te-mutations` for TE-side mutations.
+    - Splunk Observability Cloud: for detector and APM topology evidence, run `python3 /usr/local/bin/defenseclaw-runtime-evidence --service <service> --test-id <id>`. For a specific alerting detector, run `python3 /usr/local/bin/defenseclaw-runtime-evidence --o11y-detector-id <detector-id>`. The helper reads `SPLUNK_O11Y_REALM` and `SPLUNK_O11Y_TOKEN_FILE=/var/run/splunk-cisco-skills/splunk_o11y_token` internally and emits only redacted summaries. Never replace the token with placeholders for live reads, and never print token contents. For AI Assistant MCP workflows, use the `splunk-observability-cloud` MCP server. For deeper API workflows, use the `splunk-observability-native-ops` skill and documented topology/trace APIs before forming conclusions; include service names, environments, trace IDs, detector state, and relevant time windows in the analysis.
+    - MCP call shapes for the TeaStore incident:
+      - ThousandEyes Cloud/Enterprise synthetic tests use direct arguments, not a `params` wrapper: `thousandeyes-mcp__list_network_app_synthetics_tests({"name":"defenseclaw-demo-teastore-k8s","type":"http-server","target":"teastore-webui","detail":"compact","page_size":20})`. The validated live result is test ID `8597876`.
+      - ThousandEyes Kubernetes Enterprise Agents are Cloud/Enterprise Agents, not Endpoint Agents. Use `thousandeyes-mcp__list_cloud_enterprise_agents({"agent_type":"enterprise","enabled":true})`, then filter returned `agentName` values that start with `te-agent-aleccham`. Do not use `list_endpoint_agents` for the K8s Enterprise Agent.
+      - Splunk O11y APM tools require a top-level `params` object. Use `splunk-observability-cloud__o11y_get_apm_environments({"params":{"environment_name":"teastore","time_range":{"start":"-24h","stop":"now"}}})`, then `splunk-observability-cloud__o11y_get_apm_services({"params":{"environment_name":"teastore","time_range":{"start":"-24h","stop":"now"}}})`.
+      - For service detail, use the exact O11y service name `teastore-webui-v1`: `splunk-observability-cloud__o11y_get_apm_service_latency({"params":{"service_name":"teastore-webui-v1","environment_name":"teastore","time_range":{"start":"-24h","stop":"now"}}})` and `splunk-observability-cloud__o11y_get_apm_service_errors_and_requests({"params":{"service_name":"teastore-webui-v1","environment_name":"teastore","time_range":{"start":"-24h","stop":"now"}}})`.
+    - Prefer the loaded `splunk-cisco-skills` MCP server for ThousandEyes and Splunk setup workflows when it exposes the needed skill scripts. Use direct curl/python API reads only for evidence gathering or when the loaded skill does not cover the read path.
+  runtime-evidence.py: |
+    #!/usr/bin/env python3
+    """Collect redacted, read-only DefenseClaw runtime evidence."""
+
+    from __future__ import annotations
+
+    import argparse
+    import json
+    import os
+    import time
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+    from typing import Any
+
+    TEASTORE_INTERNAL_URL = "http://teastore-webui.teastore.svc.cluster.local:8080/tools.descartes.teastore.webui/"
+    TEASTORE_WEBUI_DEPLOYMENT = "teastore-webui-v1"
+    TEASTORE_WEBUI_CONTAINER = "teastore-webui-v1"
+    TEASTORE_WEBUI_READY_PATH = "/tools.descartes.teastore.webui/rest/ready/isready"
+    ENTERPRISE_WORKFLOW_ID = "enterprise-k8s-thousandeyes"
+    TEASTORE_PLAN_A_V2_PATCH_PAYLOAD: dict[str, Any] = {
+        "spec": {
+            "template": {
+                "spec": {
+                    "containers": [
+                        {
+                            "name": TEASTORE_WEBUI_CONTAINER,
+                            "resources": {
+                                "requests": {"cpu": "500m", "memory": "1Gi"},
+                                "limits": {"cpu": "1", "memory": "4Gi"},
+                            },
+                            "readinessProbe": {
+                                "httpGet": {"path": TEASTORE_WEBUI_READY_PATH, "port": 8080},
+                                "initialDelaySeconds": 60,
+                                "periodSeconds": 10,
+                                "timeoutSeconds": 10,
+                                "failureThreshold": 6,
+                            },
+                            "livenessProbe": {
+                                "httpGet": {"path": TEASTORE_WEBUI_READY_PATH, "port": 8080},
+                                "initialDelaySeconds": 120,
+                                "periodSeconds": 10,
+                                "timeoutSeconds": 10,
+                                "failureThreshold": 6,
+                            },
+                        }
+                    ]
+                }
+            }
+        }
+    }
+    TEASTORE_PLAN_A_V2_PATCH_COMMAND = (
+        f"kubectl -n teastore patch deployment {TEASTORE_WEBUI_DEPLOYMENT} --type=strategic "
+        f"-p '{json.dumps(TEASTORE_PLAN_A_V2_PATCH_PAYLOAD, separators=(',', ':'))}'"
+    )
+
+    DEMO_INSPECT_STEPS: dict[str, dict[str, Any]] = {
+        "read-k8s-health": {
+            "id": "agent-read-k8s-health",
+            "phase": "investigate",
+            "action_class": "read-only",
+            "request": {
+                "tool": "shell",
+                "args": {"command": "kubectl -n teastore get deploy,svc,pods -o wide"},
+            },
+        },
+        "thousandeyes-query": {
+            "id": "agent-query-thousandeyes",
+            "phase": "investigate",
+            "action_class": "read-only",
+            "request": {
+                "tool": "mcp__thousandeyes-mcp__list_network_app_synthetics_tests",
+                "args": {
+                    "name": "defenseclaw-demo-teastore-k8s",
+                    "type": "http-server",
+                    "target": "teastore-webui",
+                    "detail": "compact",
+                    "page_size": 20,
+                },
+            },
+        },
+        "thousandeyes-create": {
+            "id": "agent-create-thousandeyes-test",
+            "phase": "verify",
+            "action_class": "external-write",
+            "request": {
+                "tool": "mcp__thousandeyes-mcp__create_synthetic_test",
+                "approval_surface": "native",
+                "args": {
+                    "mcp_server": "thousandeyes-mcp",
+                    "mcp_tool": "create_synthetic_test",
+                    "arguments": {
+                        "testName": "defenseclaw-demo-teastore-k8s",
+                        "url": TEASTORE_INTERNAL_URL,
+                        "interval": 60,
+                        "enabled": True,
+                        "alertsEnabled": True,
+                        "agents": [{"agentId": "${THOUSANDEYES_AGENT_ID}"}],
+                        "desiredStatusCode": "200",
+                    },
+                },
+            },
+        },
+        "k8s-remediation": {
+            "id": "agent-safe-k8s-remediation",
+            "phase": "remediate",
+            "action_class": "mutation",
+            "request": {
+                "tool": "shell",
+                "approval_surface": "native",
+                "args": {"command": TEASTORE_PLAN_A_V2_PATCH_COMMAND},
+            },
+        },
+        "dangerous-k8s-delete": {
+            "id": "agent-dangerous-k8s-delete",
+            "phase": "contain",
+            "action_class": "destructive",
+            "request": {
+                "tool": "shell",
+                "args": {"command": "kubectl delete pods --all -n defenseclaw"},
+            },
+        },
+    }
+
+
+    def _load_token(path: str | None) -> str:
+        if not path:
+            return ""
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                return handle.read().strip()
+        except OSError:
+            return ""
+
+
+    def _request(
+        method: str,
+        url: str,
+        headers: dict[str, str],
+        body: dict[str, Any] | None = None,
+        token: str = "",
+        timeout: float = 20.0,
+    ) -> tuple[int | None, dict[str, Any]]:
+        data = json.dumps(body).encode("utf-8") if body is not None else None
+        request = urllib.request.Request(url, data=data, headers=headers, method=method)
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                raw = response.read().decode("utf-8", "replace")
+                return response.status, json.loads(raw) if raw else {}
+        except urllib.error.HTTPError as exc:
+            raw = exc.read().decode("utf-8", "replace")
+            if token:
+                raw = raw.replace(token, "<redacted>")
+            return exc.code, {"error": raw[:500]}
+        except Exception as exc:  # pragma: no cover - runtime diagnostic guard
+            message = str(exc)
+            if token:
+                message = message.replace(token, "<redacted>")
+            return None, {"error": message[:500]}
+
+
+    def _defenseclaw_api_base() -> str:
+        explicit = os.environ.get("DEFENSECLAW_API_BASE")
+        if explicit:
+            return explicit.rstrip("/")
+        host = os.environ.get("DEFENSECLAW_SERVICE_HOST") or "defenseclaw.defenseclaw.svc.cluster.local"
+        port = os.environ.get("DEFENSECLAW_SERVICE_PORT_API") or os.environ.get("DEFENSECLAW_SERVICE_PORT") or "18970"
+        return f"http://{host}:{port}"
+
+
+    def _inspect_headers(step: dict[str, Any], token: str) -> dict[str, str]:
+        headers = {
+            "Content-Type": "application/json",
+            "X-DefenseClaw-Client": "openclaw-runtime-evidence",
+            "X-DefenseClaw-Workflow-ID": ENTERPRISE_WORKFLOW_ID,
+            "X-DefenseClaw-Step-ID": str(step.get("id") or ""),
+            "X-DefenseClaw-Phase": str(step.get("phase") or ""),
+            "X-DefenseClaw-Action-Class": str(step.get("action_class") or ""),
+        }
+        if token:
+            headers["Authorization"] = "Bearer " + token
+        return headers
+
+
+    def _summarize_agent_control(value: Any) -> dict[str, Any] | None:
+        if not isinstance(value, dict):
+            return None
+        keys = (
+            "action",
+            "agent_name",
+            "confidence",
+            "control_id",
+            "control_name",
+            "enabled",
+            "fail_mode",
+            "is_safe",
+            "matched",
+            "reason",
+            "stage",
+            "steering_message",
+            "step_name",
+            "step_type",
+        )
+        return {key: value.get(key) for key in keys if key in value}
+
+
+    def _summarize_inspect_verdict(status: int | None, payload: dict[str, Any]) -> dict[str, Any]:
+        agent_control = _summarize_agent_control(payload.get("agent_control"))
+        summary = {
+            "http_status": status,
+            "ok": status == 200 and not payload.get("error"),
+            "action": payload.get("action"),
+            "raw_action": payload.get("raw_action") or payload.get("action"),
+            "would_block": bool(payload.get("would_block")),
+            "severity": payload.get("severity"),
+            "target": payload.get("target"),
+            "decision_evidence": payload.get("decision_evidence"),
+            "agent_control": agent_control,
+        }
+        if payload.get("error"):
+            summary["error"] = payload.get("error")
+        return summary
+
+
+    def _inspect_tool(step: dict[str, Any]) -> dict[str, Any]:
+        token = os.environ.get("OPENCLAW_GATEWAY_TOKEN", "").strip()
+        endpoint = _defenseclaw_api_base().rstrip("/") + "/api/v1/inspect/tool"
+        status, payload = _request(
+            "POST",
+            endpoint,
+            _inspect_headers(step, token),
+            step["request"],
+            token=token,
+            timeout=10.0,
+        )
+        return {
+            "step_id": step["id"],
+            "mode": "inspect-only",
+            "executed": False,
+            **_summarize_inspect_verdict(status, payload if isinstance(payload, dict) else {}),
+        }
+
+
+    def _run_demo_inspect(selection: str) -> dict[str, Any]:
+        if selection == "all":
+            names = [
+                "read-k8s-health",
+                "thousandeyes-query",
+                "thousandeyes-create",
+                "k8s-remediation",
+                "dangerous-k8s-delete",
+            ]
+        else:
+            names = [selection]
+        missing = [name for name in names if name not in DEMO_INSPECT_STEPS]
+        if missing:
+            return {
+                "mode": "inspect-only",
+                "ok": False,
+                "executed": False,
+                "errors": [f"unknown demo inspect step: {', '.join(missing)}"],
+                "available": sorted(DEMO_INSPECT_STEPS),
+            }
+        results = [_inspect_tool(DEMO_INSPECT_STEPS[name]) for name in names]
+        return {
+            "mode": "inspect-only",
+            "ok": all(item.get("ok") for item in results),
+            "executed": False,
+            "defenseclaw_api_base": _defenseclaw_api_base(),
+            "results": results,
+        }
+
+
+    def _summarize_thousandeyes(test_id: str) -> dict[str, Any]:
+        token = _load_token(os.environ.get("THOUSANDEYES_TOKEN_FILE", "/var/run/thousandeyes/token"))
+        base = os.environ.get("THOUSANDEYES_API_BASE", "https://api.thousandeyes.com/v7").rstrip("/")
+        if not token:
+            return {"ok": False, "error": "ThousandEyes token file is missing or empty"}
+
+        headers = {"Authorization": "Bearer " + token, "Accept": "application/json"}
+        test_status, test_payload = _request("GET", f"{base}/tests/http-server/{test_id}", headers, token=token)
+        test = test_payload.get("test", test_payload) if isinstance(test_payload, dict) else {}
+        agents = test.get("agents") if isinstance(test, dict) and isinstance(test.get("agents"), list) else []
+        summarized_agents = [
+            {
+                "agentId": agent.get("agentId"),
+                "agentName": agent.get("agentName") or agent.get("name"),
+            }
+            for agent in agents[:5]
+            if isinstance(agent, dict)
+        ]
+
+        result_status, result_payload = _request(
+            "GET",
+            f"{base}/test-results/{test_id}/http-server",
+            headers,
+            token=token,
+        )
+        results = (
+            result_payload.get("results")
+            if isinstance(result_payload, dict) and isinstance(result_payload.get("results"), list)
+            else []
+        )
+        latest = max(results, key=lambda item: item.get("date", "")) if results else {}
+        latest_agent = latest.get("agent") if isinstance(latest.get("agent"), dict) else {}
+
+        return {
+            "ok": test_status == 200 and result_status == 200,
+            "test": {
+                "http_status": test_status,
+                "id": test.get("testId") or test.get("id"),
+                "name": test.get("testName") or test.get("name"),
+                "url": test.get("url"),
+                "enabled": test.get("enabled"),
+                "agents": summarized_agents,
+                "error": test_payload.get("error") if isinstance(test_payload, dict) else None,
+            },
+            "results": {
+                "http_status": result_status,
+                "count": len(results),
+                "latest": {
+                    "date": latest.get("date"),
+                    "responseCode": latest.get("responseCode"),
+                    "errorType": latest.get("errorType"),
+                    "errorDetails": latest.get("errorDetails"),
+                    "agentId": latest_agent.get("agentId"),
+                    "agentName": latest_agent.get("agentName") or latest_agent.get("name"),
+                },
+                "error": result_payload.get("error") if isinstance(result_payload, dict) else None,
+            },
+        }
+
+
+    def _extract_items(payload: dict[str, Any]) -> list[dict[str, Any]]:
+        items = payload.get("results") or payload.get("detectors") or payload.get("data") or []
+        if isinstance(items, dict):
+            items = list(items.values())
+        return [item for item in items if isinstance(item, dict)] if isinstance(items, list) else []
+
+
+    def _extract_list(payload: Any) -> list[dict[str, Any]]:
+        if isinstance(payload, list):
+            return [item for item in payload if isinstance(item, dict)]
+        if isinstance(payload, dict):
+            return _extract_items(payload)
+        return []
+
+
+    def _incident_is_active(incident: dict[str, Any]) -> bool:
+        for key in ("active", "isActive"):
+            value = incident.get(key)
+            if isinstance(value, bool):
+                return value
+        state = str(
+            incident.get("status")
+            or incident.get("state")
+            or incident.get("incidentStatus")
+            or incident.get("eventType")
+            or ""
+        ).strip().lower()
+        return state in {"active", "open", "triggered", "firing"}
+
+
+    def _severity_name(value: Any) -> str | None:
+        if isinstance(value, str) and value.strip():
+            normalized = value.strip().upper()
+            if normalized in {"INFO", "WARNING", "MINOR", "MAJOR", "CRITICAL"}:
+                return normalized.title()
+        return None
+
+
+    def _highest_severity(values: list[str | None]) -> str | None:
+        rank = {"Info": 1, "Warning": 2, "Minor": 3, "Major": 4, "Critical": 5}
+        candidates = [value for value in values if value in rank]
+        return max(candidates, key=lambda value: rank[value]) if candidates else None
+
+
+    def _summarize_o11y_detector(detector_id: str, realm: str) -> dict[str, Any]:
+        token = _load_token(os.environ.get("SPLUNK_O11Y_TOKEN_FILE", "/var/run/splunk-cisco-skills/splunk_o11y_token"))
+        if not token:
+            return {"ok": False, "error": "Splunk O11y token file is missing or empty"}
+
+        base = f"https://api.{realm}.observability.splunkcloud.com"
+        headers = {
+            "X-SF-TOKEN": token,
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+        detector_status, detector_payload = _request(
+            "GET",
+            f"{base}/v2/detector/{urllib.parse.quote(detector_id)}",
+            headers,
+            token=token,
+        )
+        incidents_status, incidents_payload = _request(
+            "GET",
+            f"{base}/v2/detector/{urllib.parse.quote(detector_id)}/incidents",
+            headers,
+            token=token,
+        )
+        detector = detector_payload if isinstance(detector_payload, dict) else {}
+        incidents = _extract_list(incidents_payload)
+        active_incidents = [item for item in incidents if _incident_is_active(item)]
+        rule_severities = [
+            _severity_name(rule.get("severity"))
+            for rule in detector.get("rules", [])
+            if isinstance(rule, dict)
+        ]
+        incident_severities = [_severity_name(item.get("severity")) for item in active_incidents]
+
+        return {
+            "ok": detector_status == 200 and incidents_status == 200,
+            "realm": realm,
+            "detector": {
+                "http_status": detector_status,
+                "id": detector.get("id") or detector_id,
+                "name": detector.get("name"),
+                "status": detector.get("status"),
+                "tags": detector.get("tags") if isinstance(detector.get("tags"), list) else [],
+                "metrics": detector.get("sf_metricsInObjectProgramText") or [],
+                "rule_severities": [severity for severity in rule_severities if severity],
+                "error": detector.get("error"),
+            },
+            "incidents": {
+                "http_status": incidents_status,
+                "count": len(incidents),
+                "active_count": len(active_incidents),
+                "active_highest_severity": _highest_severity(incident_severities),
+                "error": incidents_payload.get("error") if isinstance(incidents_payload, dict) else None,
+            },
+        }
+
+
+    def _summarize_o11y(service: str) -> dict[str, Any]:
+        realm = os.environ.get("SPLUNK_O11Y_REALM", "us1")
+        token = _load_token(os.environ.get("SPLUNK_O11Y_TOKEN_FILE", "/var/run/splunk-cisco-skills/splunk_o11y_token"))
+        if not token:
+            return {"ok": False, "error": "Splunk O11y token file is missing or empty"}
+
+        base = f"https://api.{realm}.observability.splunkcloud.com"
+        headers = {
+            "X-SF-TOKEN": token,
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+        detector_url = f"{base}/v2/detector?" + urllib.parse.urlencode({"limit": 100})
+        detector_status, detector_payload = _request("GET", detector_url, headers, token=token)
+        detector_items = _extract_items(detector_payload) if isinstance(detector_payload, dict) else []
+        needle = service.lower()
+        matched = [
+            {
+                "id": item.get("id"),
+                "name": item.get("name") or item.get("label"),
+                "disabled": item.get("disabled"),
+                "muted": item.get("muted"),
+            }
+            for item in detector_items
+            if needle in json.dumps(item, sort_keys=True).lower()
+        ]
+
+        now = int(time.time() * 1000)
+        start = now - 60 * 60 * 1000
+        topology_status, topology_payload = _request(
+            "POST",
+            f"{base}/v2/apm/topology",
+            headers,
+            {"timeRange": f"{start}/{now}"},
+            token=token,
+        )
+        topology_data = topology_payload.get("data") if isinstance(topology_payload, dict) else None
+
+        return {
+            "ok": detector_status == 200 and topology_status == 200,
+            "realm": realm,
+            "detectors": {
+                "http_status": detector_status,
+                "total": len(detector_items),
+                "matched_service": len(matched),
+                "matches": matched[:5],
+                "error": detector_payload.get("error") if isinstance(detector_payload, dict) else None,
+            },
+            "apm_topology": {
+                "http_status": topology_status,
+                "keys": sorted(topology_payload.keys()) if isinstance(topology_payload, dict) else [],
+                "data_type": type(topology_data).__name__,
+                "data_count": len(topology_data) if isinstance(topology_data, list) else None,
+                "error": topology_payload.get("error") if isinstance(topology_payload, dict) else None,
+            },
+        }
+
+
+    def main() -> int:
+        parser = argparse.ArgumentParser(description=__doc__)
+        parser.add_argument("--test-id", default="8597876")
+        parser.add_argument("--service", default="teastore-webui")
+        parser.add_argument("--o11y-detector-id", help="Read-only Splunk O11y detector and active incident summary.")
+        parser.add_argument("--o11y-realm", default=os.environ.get("SPLUNK_O11Y_REALM", "us1"))
+        parser.add_argument(
+            "--demo-inspect",
+            choices=["all", *sorted(DEMO_INSPECT_STEPS)],
+            help="Run inspect-only DefenseClaw demo verdict checks without executing any proposed tool call.",
+        )
+        args = parser.parse_args()
+        if args.demo_inspect:
+            print(json.dumps(_run_demo_inspect(args.demo_inspect), indent=2, sort_keys=True))
+            return 0
+        if args.o11y_detector_id:
+            print(json.dumps(_summarize_o11y_detector(args.o11y_detector_id, args.o11y_realm), indent=2, sort_keys=True))
+            return 0
+        evidence = {
+            "mode": "read-only",
+            "thousandeyes": _summarize_thousandeyes(args.test_id),
+            "splunk_o11y": _summarize_o11y(args.service),
+        }
+        print(json.dumps(evidence, indent=2, sort_keys=True))
+        return 0
+
+
+    if __name__ == "__main__":
+        raise SystemExit(main())
+  splunk-o11y-mcp-bridge.js: |
+    #!/usr/bin/env node
+    "use strict";
+
+    const fs = require("fs");
+    const { execFileSync, spawn } = require("child_process");
+
+    const DEFAULT_URL = "https://region-pdx10.api.scs.splunk.com/system/mcp-gateway/v1/";
+    const DEFAULT_TOKEN_FILE = "/var/run/splunk-cisco-skills/splunk_o11y_token";
+    const DEFAULT_NPM_CACHE = "/tmp/npm-cache";
+    const DEFAULT_MCP_REMOTE_CONFIG_DIR = "/tmp/mcp-auth";
+
+    function readToken() {
+      const tokenFile = process.env.SPLUNK_O11Y_TOKEN_FILE || DEFAULT_TOKEN_FILE;
+      try {
+        return fs.readFileSync(tokenFile, "utf8").trim();
+      } catch (_) {
+        return "";
+      }
+    }
+
+    function findMcpRemote() {
+      try {
+        const found = execFileSync("which", ["mcp-remote"], {
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "ignore"],
+        }).trim().split(/\r?\n/)[0].trim();
+        if (found) return { cmd: found, args: [] };
+      } catch (_) {
+        // Not installed globally; use npx as Splunk's MCP docs recommend.
+      }
+      return { cmd: "npx", args: ["-y", "mcp-remote"] };
+    }
+
+    function envWithWritableNpmCache(extra = {}) {
+      const npmCache = process.env.NPM_CONFIG_CACHE || process.env.npm_config_cache || DEFAULT_NPM_CACHE;
+      const mcpRemoteConfigDir = process.env.MCP_REMOTE_CONFIG_DIR || DEFAULT_MCP_REMOTE_CONFIG_DIR;
+      try {
+        fs.mkdirSync(npmCache, { recursive: true });
+        fs.mkdirSync(mcpRemoteConfigDir, { recursive: true });
+      } catch (_) {
+        // Let npm or mcp-remote report the underlying error if /tmp is unexpectedly unavailable.
+      }
+      return {
+        ...process.env,
+        MCP_REMOTE_CONFIG_DIR: mcpRemoteConfigDir,
+        NPM_CONFIG_CACHE: npmCache,
+        NPM_CONFIG_UPDATE_NOTIFIER: "false",
+        npm_config_cache: npmCache,
+        npm_config_update_notifier: "false",
+        ...extra,
+      };
+    }
+
+    const mcpUrl = process.env.SPLUNK_O11Y_MCP_URL || DEFAULT_URL;
+    const realm = process.env.SPLUNK_O11Y_REALM || "us1";
+    const token = readToken();
+
+    if (!token) {
+      process.stderr.write("splunk-o11y-mcp: token file is missing or empty\n");
+      process.exit(1);
+    }
+
+    process.env.SPLUNK_O11Y_TOKEN = token;
+
+    const { cmd, args } = findMcpRemote();
+    const child = spawn(
+      cmd,
+      [
+        ...args,
+        mcpUrl,
+        "--transport",
+        "http-only",
+        "--allow-http",
+        "--header",
+        "X-SF-REALM:${SPLUNK_O11Y_REALM}",
+        "--header",
+        "X-SF-TOKEN:${SPLUNK_O11Y_TOKEN}",
+      ],
+      { stdio: "inherit", env: envWithWritableNpmCache({ SPLUNK_O11Y_REALM: realm }) },
+    );
+
+    child.on("error", (err) => {
+      process.stderr.write("splunk-o11y-mcp: failed to start mcp-remote: " + err.message + "\n");
+      process.exit(1);
+    });
+
+    child.on("exit", (code, signal) => {
+      if (signal) {
+        process.kill(process.pid, signal);
+      } else {
+        process.exit(code === null ? 0 : code);
+      }
+    });
+  thousandeyes-mcp-bridge.js: |
+    #!/usr/bin/env node
+    "use strict";
+
+    const fs = require("fs");
+    const { execFileSync, spawn } = require("child_process");
+
+    const DEFAULT_URL = "https://api.thousandeyes.com/mcp";
+    const DEFAULT_TOKEN_FILE = "/var/run/thousandeyes/token";
+    const DEFAULT_NPM_CACHE = "/tmp/npm-cache";
+    const DEFAULT_MCP_REMOTE_CONFIG_DIR = "/tmp/mcp-auth";
+
+    function readToken() {
+      const tokenFile = process.env.THOUSANDEYES_TOKEN_FILE || DEFAULT_TOKEN_FILE;
+      try {
+        return fs.readFileSync(tokenFile, "utf8").trim();
+      } catch (_) {
+        return "";
+      }
+    }
+
+    function findMcpRemote() {
+      try {
+        const found = execFileSync("which", ["mcp-remote"], {
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "ignore"],
+        }).trim().split(/\r?\n/)[0].trim();
+        if (found) return { cmd: found, args: [] };
+      } catch (_) {
+        // Not installed globally; use the official ThousandEyes mcp-remote pattern.
+      }
+      return { cmd: "npx", args: ["-y", "mcp-remote@latest"] };
+    }
+
+    function envWithWritableNpmCache() {
+      const npmCache = process.env.NPM_CONFIG_CACHE || process.env.npm_config_cache || DEFAULT_NPM_CACHE;
+      const mcpRemoteConfigDir = process.env.MCP_REMOTE_CONFIG_DIR || DEFAULT_MCP_REMOTE_CONFIG_DIR;
+      try {
+        fs.mkdirSync(npmCache, { recursive: true });
+        fs.mkdirSync(mcpRemoteConfigDir, { recursive: true });
+      } catch (_) {
+        // Let npm or mcp-remote report the underlying error if /tmp is unexpectedly unavailable.
+      }
+      return {
+        ...process.env,
+        MCP_REMOTE_CONFIG_DIR: mcpRemoteConfigDir,
+        NPM_CONFIG_CACHE: npmCache,
+        NPM_CONFIG_UPDATE_NOTIFIER: "false",
+        npm_config_cache: npmCache,
+        npm_config_update_notifier: "false",
+      };
+    }
+
+    const mcpUrl = process.env.THOUSANDEYES_MCP_URL || DEFAULT_URL;
+    const token = readToken();
+
+    if (!token) {
+      process.stderr.write("thousandeyes-mcp: token file is missing or empty\n");
+      process.exit(1);
+    }
+
+    process.env.THOUSANDEYES_MCP_TOKEN = token;
+
+    const { cmd, args } = findMcpRemote();
+    const child = spawn(
+      cmd,
+      [
+        ...args,
+        mcpUrl,
+        "--transport",
+        "http-only",
+        "--header",
+        "Authorization: Bearer ${THOUSANDEYES_MCP_TOKEN}",
+      ],
+      { stdio: "inherit", env: envWithWritableNpmCache() },
+    );
+
+    child.on("error", (err) => {
+      process.stderr.write("thousandeyes-mcp: failed to start mcp-remote: " + err.message + "\n");
+      process.exit(1);
+    });
+
+    child.on("exit", (code, signal) => {
+      if (signal) {
+        process.kill(process.pid, signal);
+      } else {
+        process.exit(code === null ? 0 : code);
+      }
+    });
   openclaw.json: |
     {
       "gateway": {
@@ -273,6 +1180,37 @@ data:
           ]
         }
       },
+      "agents": {
+        "defaults": {
+          "model": {
+            "primary": "bridgeit/gpt-5-nano"
+          },
+          "heartbeat": {
+            "every": "0m"
+          }
+        }
+      },
+      "models": {
+        "mode": "merge",
+        "providers": {
+          "bridgeit": {
+            "baseUrl": "http://127.0.0.1:8787/v1",
+            "apiKey": "${BRIDGEIT_PROXY_API_KEY}",
+            "api": "openai-completions",
+            "models": [
+              {
+                "id": "gpt-5-nano",
+                "name": "BridgeIT GPT-5 Nano",
+                "reasoning": true,
+                "input": ["text"],
+                "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+                "contextWindow": 200000,
+                "maxTokens": 8192
+              }
+            ]
+          }
+        }
+      },
       "mcp": {
         "servers": {
           "splunk-cisco-skills": {
@@ -286,7 +1224,52 @@ data:
               "PYTHONPATH": "/home/node/.openclaw/splunk-cisco-skills/releases/2bce17ff8f2f29afd6f5326d7976d20c251538a4/vendor/python:/home/node/.openclaw/splunk-cisco-skills/releases/2bce17ff8f2f29afd6f5326d7976d20c251538a4/agent",
               "SPLUNK_CREDENTIALS_FILE": "/var/run/splunk-cisco-skills/credentials",
               "SPLUNK_CISCO_SKILLS_MCP_NO_VENV": "1",
-              "SPLUNK_SKILLS_MCP_ALLOW_MUTATION": "1"
+              "SPLUNK_SKILLS_MCP_ALLOW_MUTATION": "1",
+              "THOUSANDEYES_API_BASE": "https://api.thousandeyes.com/v7",
+              "THOUSANDEYES_TOKEN_FILE": "/var/run/thousandeyes/token",
+              "SPLUNK_O11Y_REALM": "us1",
+              "SPLUNK_O11Y_TOKEN_FILE": "/var/run/splunk-cisco-skills/splunk_o11y_token"
+            }
+          },
+          "splunk-observability-cloud": {
+            "type": "stdio",
+            "command": "node",
+            "args": [
+              "/home/node/.openclaw/mcp-bridges/splunk-observability-cloud/run-splunk-o11y-mcp.js"
+            ],
+            "env": {
+              "SPLUNK_O11Y_MCP_URL": "https://region-pdx10.api.scs.splunk.com/system/mcp-gateway/v1/",
+              "SPLUNK_O11Y_REALM": "us1",
+              "SPLUNK_O11Y_TOKEN_FILE": "/var/run/splunk-cisco-skills/splunk_o11y_token"
+            }
+          },
+          "thousandeyes-mcp": {
+            "type": "stdio",
+            "command": "node",
+            "args": [
+              "/home/node/.openclaw/mcp-bridges/thousandeyes/run-thousandeyes-mcp.js"
+            ],
+            "env": {
+              "THOUSANDEYES_MCP_URL": "https://api.thousandeyes.com/mcp",
+              "THOUSANDEYES_TOKEN_FILE": "/var/run/thousandeyes/token"
+            }
+          },
+          "bridgeit-rag": {
+            "type": "stdio",
+            "command": "node",
+            "args": [
+              "/home/node/.openclaw/extensions/defenseclaw/dist/bridgeit-rag-mcp.js"
+            ],
+            "env": {
+              "BRIDGEIT_CHAT_BASE_URL": "${BRIDGEIT_CHAT_BASE_URL}",
+              "BRIDGEIT_MODEL": "${BRIDGEIT_MODEL}",
+              "BRIDGEIT_APP_KEY": "${BRIDGEIT_APP_KEY}",
+              "BRIDGEIT_ACCESS_TOKEN": "${BRIDGEIT_ACCESS_TOKEN}",
+              "BRIDGEIT_OAUTH_TOKEN_URL": "${BRIDGEIT_OAUTH_TOKEN_URL}",
+              "BRIDGEIT_CLIENT_ID": "${BRIDGEIT_CLIENT_ID}",
+              "BRIDGEIT_CLIENT_SECRET": "${BRIDGEIT_CLIENT_SECRET}",
+              "BRIDGEIT_API_KEY_HEADER": "api-key",
+              "BRIDGEIT_RAG_TIMEOUT_MS": "15000"
             }
           }
         }
@@ -345,7 +1328,7 @@ spec:
         fsGroupChangePolicy: OnRootMismatch
       initContainers:
         - name: splunk-cisco-skills-bootstrap
-          image: 637423309390.dkr.ecr.us-east-1.amazonaws.com/splunk-cisco-skills-bundle@sha256:2e103b40c0f963c1e8b108277ec4f874c8eaaa3b744d3fd6b830b8df191e83da
+          image: 637423309390.dkr.ecr.us-east-1.amazonaws.com/splunk-cisco-skills-bundle@sha256:a23b4c60af963f05948583c660bd44d3fda4ad87f33bea40ebe54ae455bb9d8a
           imagePullPolicy: IfNotPresent
           command:
             - sh
@@ -365,7 +1348,7 @@ spec:
               touch "${tmp}/.complete"
               rm -rf "${release}"
               mv "${tmp}" "${release}"
-              test -s "${release}/.complete"
+              test -f "${release}/.complete"
               test "$(cat "${release}/.revision")" = "${sha}"
           securityContext:
             allowPrivilegeEscalation: false
@@ -384,7 +1367,7 @@ spec:
               subPath: openclaw-client
       containers:
         - name: defenseclaw
-          image: 637423309390.dkr.ecr.us-east-1.amazonaws.com/defenseclaw:0.6.0-web-tui-20260520-2
+          image: 637423309390.dkr.ecr.us-east-1.amazonaws.com/defenseclaw:0.6.0-web-tui-20260523-galileo-raw-3
           imagePullPolicy: IfNotPresent
           env:
             - name: HOME
@@ -393,6 +1376,17 @@ spec:
               value: defenseclaw
             - name: DEFENSECLAW_DECISION_EVIDENCE
               value: "true"
+            - name: DEFENSECLAW_DISABLE_REDACTION
+              value: "1"
+            - name: THOUSANDEYES_API_BASE
+              value: https://api.thousandeyes.com/v7
+            - name: THOUSANDEYES_TOKEN_FILE
+              value: /var/run/thousandeyes/token
+            - name: THOUSANDEYES_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: thousandeyes-demo-secrets
+                  key: THOUSANDEYES_TOKEN
           envFrom:
             - secretRef:
                 name: defenseclaw-secrets
@@ -446,14 +1440,21 @@ spec:
             - mountPath: /home/node/.openclaw
               name: defenseclaw-data
               subPath: openclaw-client
+            - mountPath: /home/node/.openclaw/openclaw.json
+              name: openclaw-config
+              readOnly: true
+              subPath: openclaw.json
             - mountPath: /home/node/.defenseclaw/config.yaml
               name: defenseclaw-config
               readOnly: true
               subPath: config.yaml
+            - mountPath: /var/run/thousandeyes
+              name: thousandeyes-token
+              readOnly: true
             - mountPath: /tmp
               name: tmp
         - name: defenseclaw-web-tui
-          image: 637423309390.dkr.ecr.us-east-1.amazonaws.com/defenseclaw:0.6.0-web-tui-20260520-2
+          image: 637423309390.dkr.ecr.us-east-1.amazonaws.com/defenseclaw:0.6.0-web-tui-20260523-galileo-raw-3
           imagePullPolicy: IfNotPresent
           command:
             - defenseclaw-gateway
@@ -474,6 +1475,17 @@ spec:
               value: defenseclaw
             - name: DEFENSECLAW_DECISION_EVIDENCE
               value: "true"
+            - name: DEFENSECLAW_DISABLE_REDACTION
+              value: "1"
+            - name: THOUSANDEYES_API_BASE
+              value: https://api.thousandeyes.com/v7
+            - name: THOUSANDEYES_TOKEN_FILE
+              value: /var/run/thousandeyes/token
+            - name: THOUSANDEYES_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: thousandeyes-demo-secrets
+                  key: THOUSANDEYES_TOKEN
           envFrom:
             - secretRef:
                 name: defenseclaw-secrets
@@ -531,6 +1543,9 @@ spec:
               name: defenseclaw-config
               readOnly: true
               subPath: config.yaml
+            - mountPath: /var/run/thousandeyes
+              name: thousandeyes-token
+              readOnly: true
             - mountPath: /tmp
               name: tmp
       volumes:
@@ -540,6 +1555,16 @@ spec:
         - name: defenseclaw-config
           configMap:
             name: defenseclaw-config
+        - name: openclaw-config
+          configMap:
+            name: openclaw-config
+        - name: thousandeyes-token
+          secret:
+            secretName: thousandeyes-demo-secrets
+            defaultMode: 0400
+            items:
+              - key: THOUSANDEYES_TOKEN
+                path: token
         - name: tmp
           emptyDir: {}
 ---
@@ -624,8 +1649,12 @@ spec:
   template:
     metadata:
       annotations:
+        defenseclaw.io/mcp-bridge-npm-cache: 2026-05-23
+        defenseclaw.io/mcp-bridge-writable-state: 2026-05-23
         defenseclaw.io/openclaw-version: 2026.4.9
+        defenseclaw.io/splunk-o11y-mcp-gateway: 2026-05-23
         defenseclaw.io/splunk-cisco-skills-source-sha: 2bce17ff8f2f29afd6f5326d7976d20c251538a4
+        defenseclaw.io/thousandeyes-mcp-gateway: 2026-05-23
         defenseclaw.io/workspace-perms-fix: 2026-04-10-2
         instrumentation.opentelemetry.io/inject-nodejs: "false"
         splunk.com/exclude: "true"
@@ -634,7 +1663,8 @@ spec:
         app.kubernetes.io/component: gateway
         app.kubernetes.io/name: openclaw
     spec:
-      automountServiceAccountToken: false
+      automountServiceAccountToken: true
+      serviceAccountName: defenseclaw-agent
       securityContext:
         fsGroup: 1000
         fsGroupChangePolicy: OnRootMismatch
@@ -651,6 +1681,7 @@ spec:
               mkdir -p /var/openclaw/defenseclaw-client
               mkdir -p /var/openclaw/workspace
               cp -R /opt/defenseclaw/extensions/defenseclaw/. /var/openclaw/extensions/defenseclaw/
+              cp /bridgeit-hotfix/*.js /bridgeit-hotfix/*.d.ts /var/openclaw/extensions/defenseclaw/dist/ 2>/dev/null || true
               chmod 2775 /var/openclaw /var/openclaw/workspace
           securityContext:
             allowPrivilegeEscalation: false
@@ -664,10 +1695,13 @@ spec:
             seccompProfile:
               type: RuntimeDefault
           volumeMounts:
+            - mountPath: /bridgeit-hotfix
+              name: bridgeit-extension-hotfix
+              readOnly: true
             - mountPath: /var/openclaw
               name: openclaw-data
         - name: splunk-cisco-skills-bootstrap
-          image: 637423309390.dkr.ecr.us-east-1.amazonaws.com/splunk-cisco-skills-bundle@sha256:2e103b40c0f963c1e8b108277ec4f874c8eaaa3b744d3fd6b830b8df191e83da
+          image: 637423309390.dkr.ecr.us-east-1.amazonaws.com/splunk-cisco-skills-bundle@sha256:a23b4c60af963f05948583c660bd44d3fda4ad87f33bea40ebe54ae455bb9d8a
           imagePullPolicy: IfNotPresent
           command:
             - sh
@@ -687,7 +1721,7 @@ spec:
               touch "${tmp}/.complete"
               rm -rf "${release}"
               mv "${tmp}" "${release}"
-              test -s "${release}/.complete"
+              test -f "${release}/.complete"
               test "$(cat "${release}/.revision")" = "${sha}"
           securityContext:
             allowPrivilegeEscalation: false
@@ -704,7 +1738,7 @@ spec:
             - mountPath: /var/openclaw
               name: openclaw-data
         - name: splunk-cisco-credentials-preflight
-          image: 637423309390.dkr.ecr.us-east-1.amazonaws.com/splunk-cisco-skills-bundle@sha256:2e103b40c0f963c1e8b108277ec4f874c8eaaa3b744d3fd6b830b8df191e83da
+          image: 637423309390.dkr.ecr.us-east-1.amazonaws.com/splunk-cisco-skills-bundle@sha256:a23b4c60af963f05948583c660bd44d3fda4ad87f33bea40ebe54ae455bb9d8a
           imagePullPolicy: IfNotPresent
           command:
             - sh
@@ -712,22 +1746,29 @@ spec:
             - |
               set -eu
               src="/mnt/splunk-cisco-credentials/credentials"
+              token_src="/mnt/splunk-cisco-credentials/splunk_o11y_token"
               dst="/var/run/splunk-cisco-skills/credentials"
+              token_dst="/var/run/splunk-cisco-skills/splunk_o11y_token"
               test -s "${src}"
+              test -s "${token_src}"
               cp "${src}" "${dst}"
-              chown 1000:1000 "${dst}"
+              cp "${token_src}" "${token_dst}"
+              printf '\nSPLUNK_O11Y_TOKEN_FILE=%s\n' "${token_dst}" >> "${dst}"
               chmod 0600 "${dst}"
+              chmod 0600 "${token_dst}"
               test "$(stat -c '%u' "${dst}")" = "1000"
               test "$(stat -c '%a' "${dst}")" = "600"
+              test "$(stat -c '%u' "${token_dst}")" = "1000"
+              test "$(stat -c '%a' "${token_dst}")" = "600"
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
             capabilities:
               drop:
                 - ALL
-            runAsGroup: 0
-            runAsNonRoot: false
-            runAsUser: 0
+            runAsGroup: 1000
+            runAsNonRoot: true
+            runAsUser: 1000
             seccompProfile:
               type: RuntimeDefault
           volumeMounts:
@@ -737,7 +1778,7 @@ spec:
             - mountPath: /var/run/splunk-cisco-skills
               name: splunk-cisco-credentials
         - name: splunk-cisco-credentials-verify
-          image: 637423309390.dkr.ecr.us-east-1.amazonaws.com/splunk-cisco-skills-bundle@sha256:2e103b40c0f963c1e8b108277ec4f874c8eaaa3b744d3fd6b830b8df191e83da
+          image: 637423309390.dkr.ecr.us-east-1.amazonaws.com/splunk-cisco-skills-bundle@sha256:a23b4c60af963f05948583c660bd44d3fda4ad87f33bea40ebe54ae455bb9d8a
           imagePullPolicy: IfNotPresent
           command:
             - sh
@@ -745,9 +1786,14 @@ spec:
             - |
               set -eu
               dst="/var/run/splunk-cisco-skills/credentials"
+              token_dst="/var/run/splunk-cisco-skills/splunk_o11y_token"
               test -r "${dst}"
+              test -r "${token_dst}"
+              grep -q '^SPLUNK_O11Y_TOKEN_FILE=/var/run/splunk-cisco-skills/splunk_o11y_token$' "${dst}"
               test "$(stat -c '%u' "${dst}")" = "1000"
               test "$(stat -c '%a' "${dst}")" = "600"
+              test "$(stat -c '%u' "${token_dst}")" = "1000"
+              test "$(stat -c '%a' "${token_dst}")" = "600"
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -762,18 +1808,135 @@ spec:
           volumeMounts:
             - mountPath: /var/run/splunk-cisco-skills
               name: splunk-cisco-credentials
+        - name: splunk-cisco-python311-deps
+          image: python:3.11-slim
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              sha="2bce17ff8f2f29afd6f5326d7976d20c251538a4"
+              release="/var/openclaw/splunk-cisco-skills/releases/${sha}"
+              test -s "${release}/requirements-agent.txt"
+              export PYTHONPATH="${release}/vendor/python:${release}/agent"
+              if python - <<'PY'
+              import pydantic_core._pydantic_core
+              PY
+              then
+                exit 0
+              fi
+              python -m pip install --no-cache-dir --upgrade --target "${release}/vendor/python" -r "${release}/requirements-agent.txt"
+              python - <<'PY'
+              import pydantic_core._pydantic_core
+              from mcp.server.fastmcp import FastMCP
+              PY
+              chmod -R a+rX "${release}/vendor/python"
+              touch "${release}/.python311-deps"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+            runAsGroup: 0
+            runAsNonRoot: false
+            runAsUser: 0
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - mountPath: /tmp
+              name: tmp
+            - mountPath: /var/openclaw
+              name: openclaw-data
+        - name: openclaw-config-seed
+          image: busybox:1.36.1
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              src="/config-source/openclaw.json"
+              dst="/var/openclaw/openclaw.json"
+              test -s "${src}"
+              if [ ! -s "${dst}" ] || \
+                ! grep -q 'splunk-cisco-skills' "${dst}" 2>/dev/null || \
+                ! grep -q '"bridgeit"' "${dst}" 2>/dev/null || \
+                ! grep -q 'bridgeit-rag' "${dst}" 2>/dev/null || \
+                ! grep -q 'splunk-observability-cloud' "${dst}" 2>/dev/null || \
+                ! grep -q 'thousandeyes-mcp' "${dst}" 2>/dev/null || \
+                ! grep -q 'THOUSANDEYES_TOKEN_FILE' "${dst}" 2>/dev/null || \
+                ! grep -q 'SPLUNK_O11Y_TOKEN_FILE' "${dst}" 2>/dev/null; then
+                cp "${src}" "${dst}"
+              fi
+              mkdir -p /var/openclaw/mcp-bridges/splunk-observability-cloud
+              mkdir -p /var/openclaw/mcp-bridges/thousandeyes
+              cp /config-source/splunk-o11y-mcp-bridge.js /var/openclaw/mcp-bridges/splunk-observability-cloud/run-splunk-o11y-mcp.js
+              cp /config-source/thousandeyes-mcp-bridge.js /var/openclaw/mcp-bridges/thousandeyes/run-thousandeyes-mcp.js
+              chown 1000:1000 "${dst}" 2>/dev/null || chown 1000.1000 "${dst}" 2>/dev/null || true
+              chmod 0660 "${dst}" 2>/dev/null || true
+              chown -R 1000:1000 /var/openclaw/mcp-bridges 2>/dev/null || chown -R 1000.1000 /var/openclaw/mcp-bridges 2>/dev/null || true
+              chmod 0755 /var/openclaw/mcp-bridges/splunk-observability-cloud/run-splunk-o11y-mcp.js 2>/dev/null || true
+              chmod 0755 /var/openclaw/mcp-bridges/thousandeyes/run-thousandeyes-mcp.js 2>/dev/null || true
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+            runAsGroup: 0
+            runAsNonRoot: false
+            runAsUser: 0
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - mountPath: /config-source
+              name: openclaw-config
+              readOnly: true
+            - mountPath: /var/openclaw
+              name: openclaw-data
+        - name: kubectl-bootstrap
+          image: ghcr.io/openclaw/openclaw@sha256:d65cc3d5fd0c8b1f752c2f70377843230112250c10e99c3b61769234c217c5db
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              if [ ! -x /tools/kubectl ]; then
+                curl -fsSL https://dl.k8s.io/release/v1.34.7/bin/linux/amd64/kubectl -o /tools/kubectl
+                chmod 0755 /tools/kubectl
+              fi
+              /tools/kubectl version --client=true
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+            runAsGroup: 1000
+            runAsNonRoot: true
+            runAsUser: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - mountPath: /tools
+              name: agent-tools
+            - mountPath: /tmp
+              name: tmp
       containers:
         - name: openclaw
           image: ghcr.io/openclaw/openclaw@sha256:d65cc3d5fd0c8b1f752c2f70377843230112250c10e99c3b61769234c217c5db
           imagePullPolicy: IfNotPresent
           command:
-            - node
-            - openclaw.mjs
-            - gateway
-            - --bind
-            - lan
-            - --port
-            - "18789"
+            - /bin/sh
+            - -c
+          args:
+            - |
+              set -eu
+              node /home/node/.openclaw/extensions/defenseclaw/dist/bridgeit-openai-proxy.js &
+              exec node openclaw.mjs gateway --bind lan --port 18789
           env:
             - name: HOME
               value: /home/node
@@ -785,15 +1948,35 @@ spec:
               value: --max-old-space-size=1536
             - name: TERM
               value: xterm-256color
+            - name: PATH
+              value: /opt/defenseclaw-tools:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
             - name: OPENCLAW_CONTROL_UI_ALLOWED_ORIGIN
               value: https://acbe4270cfe0e4ca7b3ae74a848f9454-231483608.us-east-1.elb.amazonaws.com
             - name: PYTHONPATH
               value: /home/node/.openclaw/splunk-cisco-skills/releases/2bce17ff8f2f29afd6f5326d7976d20c251538a4/vendor/python:/home/node/.openclaw/splunk-cisco-skills/releases/2bce17ff8f2f29afd6f5326d7976d20c251538a4/agent
             - name: SPLUNK_CREDENTIALS_FILE
               value: /var/run/splunk-cisco-skills/credentials
+            - name: SPLUNK_O11Y_REALM
+              value: us1
+            - name: SPLUNK_O11Y_TOKEN_FILE
+              value: /var/run/splunk-cisco-skills/splunk_o11y_token
+            - name: THOUSANDEYES_API_BASE
+              value: https://api.thousandeyes.com/v7
+            - name: THOUSANDEYES_TOKEN_FILE
+              value: /var/run/thousandeyes/token
             - name: SPLUNK_CISCO_SKILLS_MCP_NO_VENV
               value: "1"
             - name: SPLUNK_SKILLS_MCP_ALLOW_MUTATION
+              value: "1"
+            - name: OPENAI_API_KEY
+              value: ""
+            - name: BRIDGEIT_OPENAI_PROXY_HOST
+              value: 0.0.0.0
+            - name: BRIDGEIT_OPENAI_PROXY_PORT
+              value: "8787"
+            - name: BRIDGEIT_OPENAI_PROXY_BYPASS_GUARDRAIL
+              value: "true"
+            - name: DEFENSECLAW_DISABLE_REDACTION
               value: "1"
           envFrom:
             - secretRef:
@@ -802,6 +1985,9 @@ spec:
           ports:
             - containerPort: 18789
               name: gateway
+              protocol: TCP
+            - containerPort: 8787
+              name: bridgeit
               protocol: TCP
           livenessProbe:
             httpGet:
@@ -824,10 +2010,10 @@ spec:
           resources:
             requests:
               cpu: 250m
-              memory: 512Mi
+              memory: 1Gi
             limits:
               cpu: "1"
-              memory: 2Gi
+              memory: 4Gi
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -842,14 +2028,14 @@ spec:
           volumeMounts:
             - mountPath: /home/node/.openclaw
               name: openclaw-data
-            - mountPath: /home/node/.openclaw/openclaw.json
-              name: openclaw-config
-              readOnly: true
-              subPath: openclaw.json
             - mountPath: /home/node/.openclaw/workspace/AGENTS.md
               name: openclaw-config
               readOnly: true
               subPath: AGENTS.md
+            - mountPath: /usr/local/bin/defenseclaw-runtime-evidence
+              name: openclaw-config
+              readOnly: true
+              subPath: runtime-evidence.py
             - mountPath: /home/node/.defenseclaw
               name: openclaw-data
               subPath: defenseclaw-client
@@ -857,12 +2043,26 @@ spec:
               name: defenseclaw-client-config
               readOnly: true
               subPath: config.yaml
+            - mountPath: /opt/defenseclaw-tools
+              name: agent-tools
+              readOnly: true
+            - mountPath: /usr/local/bin/kubectl
+              name: agent-tools
+              readOnly: true
+              subPath: kubectl
             - mountPath: /var/run/splunk-cisco-skills
               name: splunk-cisco-credentials
+              readOnly: true
+            - mountPath: /var/run/thousandeyes
+              name: thousandeyes-token
               readOnly: true
             - mountPath: /tmp
               name: tmp
       volumes:
+        - name: bridgeit-extension-hotfix
+          configMap:
+            name: openclaw-bridgeit-hotfix
+            optional: true
         - name: openclaw-data
           persistentVolumeClaim:
             claimName: openclaw-data
@@ -878,7 +2078,18 @@ spec:
             items:
               - key: credentials
                 path: credentials
+              - key: splunk_o11y_token
+                path: splunk_o11y_token
         - name: splunk-cisco-credentials
+          emptyDir: {}
+        - name: thousandeyes-token
+          secret:
+            secretName: thousandeyes-demo-secrets
+            defaultMode: 0440
+            items:
+              - key: THOUSANDEYES_TOKEN
+                path: token
+        - name: agent-tools
           emptyDir: {}
         - name: tmp
           emptyDir: {}
@@ -909,7 +2120,7 @@ metadata:
     service.beta.kubernetes.io/aws-load-balancer-backend-protocol: tcp
     service.beta.kubernetes.io/aws-load-balancer-connection-idle-timeout: "3600"
     service.beta.kubernetes.io/aws-load-balancer-ssl-cert: arn:aws:acm:us-east-1:637423309390:certificate/806b127c-b3bc-40d4-9428-a69c56de3d1f
-    service.beta.kubernetes.io/aws-load-balancer-ssl-ports: "443"
+    service.beta.kubernetes.io/aws-load-balancer-ssl-ports: "443,8443"
   labels:
     app.kubernetes.io/component: gateway
     app.kubernetes.io/name: openclaw
@@ -925,6 +2136,10 @@ spec:
       port: 443
       protocol: TCP
       targetPort: gateway
+    - name: bridgeit-https
+      port: 8443
+      protocol: TCP
+      targetPort: bridgeit
 ---
 apiVersion: apps/v1
 kind: Deployment

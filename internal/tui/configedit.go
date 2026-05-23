@@ -623,6 +623,12 @@ func applyConfigField(c *config.Config, key, val string) {
 		c.CiscoAIDefense.APIKey = val
 	case "cisco_ai_defense.api_key_env":
 		c.CiscoAIDefense.APIKeyEnv = val
+	case "cisco_ai_defense.oauth_token_url":
+		c.CiscoAIDefense.OAuthTokenURL = val
+	case "cisco_ai_defense.oauth_basic_env":
+		c.CiscoAIDefense.OAuthBasicEnv = val
+	case "cisco_ai_defense.oauth_basic":
+		c.CiscoAIDefense.OAuthBasic = val
 	case "cisco_ai_defense.timeout_ms":
 		c.CiscoAIDefense.TimeoutMs = intVal
 	case "cisco_ai_defense.enabled_rules":

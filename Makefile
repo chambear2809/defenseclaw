@@ -626,14 +626,21 @@ go-lint: sync-openclaw-extension
 		echo "Run 'gofmt -w \$$(git ls-files '*.go')' to fix."; \
 		exit 1; \
 	fi
-	@tmp=$$(mktemp); \
+	@PATH="$(GOBIN):$(PATH)"; export PATH; \
+	if ! command -v golangci-lint >/dev/null 2>&1; then \
+		echo "golangci-lint is unavailable; falling back to 'go vet ./...'"; \
+		go vet ./...; \
+		exit $$?; \
+	fi; \
+	tmp=$$(mktemp); \
 	status=0; \
-	if PATH="$(GOBIN):$(PATH)" golangci-lint run >"$$tmp" 2>&1; then \
+	if golangci-lint run >"$$tmp" 2>&1; then \
 		cat "$$tmp"; \
 		rm -f "$$tmp"; \
 		exit 0; \
+	else \
+		status=$$?; \
 	fi; \
-	status=$$?; \
 	if [ $$status -eq 127 ] || grep -qE "used to build golangci-lint is lower than the targeted Go version|package requires newer Go version" "$$tmp"; then \
 		cat "$$tmp"; \
 		echo "golangci-lint is unavailable or does not yet support this repo's Go toolchain; falling back to 'go vet ./...'"; \

@@ -18,6 +18,7 @@ package audit
 
 import (
 	"database/sql"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -48,6 +49,22 @@ const legacySchemaWithoutRunID = `
 		raw_json TEXT
 	);
 	`
+
+func TestNewStoreCreatesParentDirectory(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "nested", ".defenseclaw", "audit.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	if err := store.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if _, err := os.Stat(dbPath); err != nil {
+		t.Fatalf("audit db not created: %v", err)
+	}
+}
 
 func TestStoreInitMigratesRunIDColumns(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "audit.db")

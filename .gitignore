@@ -4,6 +4,7 @@
 .env
 .env.*
 !.env.example
+.env.bridgeit.local
 
 # Generated config copies (canonical source: internal/configs/providers.json)
 extensions/defenseclaw/src/providers.json

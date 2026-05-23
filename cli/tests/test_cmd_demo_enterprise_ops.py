@@ -25,7 +25,10 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from defenseclaw.commands.cmd_demo import demo
 from defenseclaw.enterprise_ops_demo import (
+    SPLUNK_O11Y_MCP_SERVER_NAME,
     TEASTORE_INTERNAL_URL,
+    TEASTORE_PLAN_A_V2_PATCH_COMMAND,
+    THOUSANDEYES_MCP_SERVER_NAME,
     build_autonomy_slo_report,
     build_teastore_o11y_mcp_evidence,
     build_thousandeyes_http_test_payload,
@@ -37,6 +40,7 @@ from defenseclaw.enterprise_ops_demo import (
     inspect_steps,
     log_live_galileo_session,
     resolve_thousandeyes_agent,
+    run_hosted_mcp_tools_list,
     run_live_inspect,
     run_splunk_o11y_detector_poll,
     run_thousandeyes_live_checks,
@@ -62,9 +66,28 @@ class FakeResponse:
 
 class EnterpriseOpsDemoTests(unittest.TestCase):
     def test_default_workflow_validates(self):
-        result = validate_workflow(default_workflow())
+        workflow = default_workflow()
+        result = validate_workflow(workflow)
         self.assertTrue(result["ok"], result)
         self.assertEqual(result["errors"], [])
+        step_ids = [step["id"] for step in workflow["steps"]]
+        self.assertEqual(step_ids[0], "galileo-define-behavior-contract")
+        self.assertIn("galileo-evaluate-governance-contract", step_ids)
+        self.assertEqual(workflow["galileo_governance"]["dataset"], "defenseclaw-enterprise-ops-thousandeyes")
+        self.assertIn("deny-evidence-tampering", workflow["galileo_governance"]["decision_controls"])
+
+    def test_default_workflow_includes_openclaw_mcp_servers(self):
+        workflow = default_workflow()
+        servers = workflow["mcp"]["servers"]
+
+        self.assertIn(SPLUNK_O11Y_MCP_SERVER_NAME, servers)
+        self.assertIn(THOUSANDEYES_MCP_SERVER_NAME, servers)
+        self.assertEqual(servers[SPLUNK_O11Y_MCP_SERVER_NAME]["command"], "node")
+        self.assertEqual(
+            servers[THOUSANDEYES_MCP_SERVER_NAME]["env"]["THOUSANDEYES_MCP_URL"],
+            "https://api.thousandeyes.com/mcp",
+        )
+        self.assertIn("THOUSANDEYES_TOKEN_FILE", servers[THOUSANDEYES_MCP_SERVER_NAME]["env"])
 
     def test_mutations_require_approval_or_deny(self):
         workflow = default_workflow()
@@ -83,6 +106,33 @@ class EnterpriseOpsDemoTests(unittest.TestCase):
         for step in steps:
             self.assertIn("tool", step["inspect_request"])
             self.assertNotIn("execute", step["inspect_request"])
+
+    def test_thousandeyes_inventory_inspect_uses_mcp_tool_shape(self):
+        step = next(item for item in default_workflow()["steps"] if item["id"] == "agent-query-thousandeyes")
+        args = step["inspect_request"]["args"]
+
+        self.assertEqual(
+            step["inspect_request"]["tool"],
+            f"mcp__{THOUSANDEYES_MCP_SERVER_NAME}__list_network_app_synthetics_tests",
+        )
+        self.assertEqual(args["name"], "defenseclaw-demo-teastore-k8s")
+        self.assertEqual(args["type"], "http-server")
+        self.assertEqual(args["detail"], "compact")
+        self.assertEqual(args["page_size"], 20)
+        self.assertNotIn("filters", args)
+        self.assertNotIn("mcp_server", args)
+
+    def test_k8s_remediation_inspect_uses_teastore_plan_a_v2_patch(self):
+        step = next(item for item in default_workflow()["steps"] if item["id"] == "agent-safe-k8s-remediation")
+        command = step["inspect_request"]["args"]["command"]
+
+        self.assertEqual(command, TEASTORE_PLAN_A_V2_PATCH_COMMAND)
+        self.assertIn("patch deployment teastore-webui-v1", command)
+        self.assertIn('"name":"teastore-webui-v1"', command)
+        self.assertIn('"memory":"4Gi"', command)
+        self.assertIn('"livenessProbe"', command)
+        self.assertNotIn("scale deployment", command)
+        self.assertEqual(step["expected_decision"]["control"], "require-approval-k8s-mutation")
 
     def test_live_verdict_allows_expected_block_in_observe_mode(self):
         step = next(item for item in default_workflow()["steps"] if item["id"] == "agent-dangerous-k8s-delete")
@@ -163,6 +213,9 @@ class EnterpriseOpsDemoTests(unittest.TestCase):
         result = runner.invoke(demo, ["enterprise-ops"], catch_exceptions=False)
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertIn("Governed AI Change Controller", result.output)
+        self.assertIn("Galileo Governance Contract", result.output)
+        self.assertIn("enterprise-ops-agent-flow", result.output)
+        self.assertIn("deny-evidence-tampering", result.output)
         self.assertIn("thousandeyes", result.output.lower())
         self.assertIn("splunk_o11y", result.output)
         self.assertIn("teastore", result.output.lower())
@@ -174,6 +227,7 @@ class EnterpriseOpsDemoTests(unittest.TestCase):
         self.assertIn("Control Room", result.output)
         self.assertIn("Saved Playground", result.output)
         self.assertIn("e969b856-9d5d-48a4-90af-b33e20fe6fab", result.output)
+        self.assertIn("Galileo behavior contract", result.output)
         self.assertIn("Autonomy SLO", result.output)
 
     def test_default_workflow_returns_copy(self):
@@ -238,10 +292,84 @@ class EnterpriseOpsDemoTests(unittest.TestCase):
             )
 
         self.assertTrue(result["ok"], result)
-        self.assertEqual(result["mcp_server"], "splunk-o11y")
+        self.assertEqual(result["mcp_server"], SPLUNK_O11Y_MCP_SERVER_NAME)
         self.assertEqual(result["findings"][0]["status"], "degraded")
         self.assertEqual(result["findings"][0]["http_status"], 503)
         self.assertEqual(result["findings"][1]["status"], "needs_external_verification")
+
+    def test_hosted_mcp_tools_list_collects_o11y_and_te_catalogs(self):
+        calls = []
+
+        def fake_post(url, headers, json, timeout):
+            calls.append({"url": url, "headers": headers, "json": json, "timeout": timeout})
+            if "thousandeyes" in url:
+                return FakeResponse(
+                    200,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "tools",
+                        "result": {
+                            "tools": [
+                                {"name": "get_account_groups"},
+                                {"name": "get_anomalies"},
+                                {"name": "list_network_app_synthetics_tests"},
+                                {"name": "get_network_app_synthetics_test"},
+                                {"name": "search_outages"},
+                                {"name": "list_events"},
+                                {"name": "get_event"},
+                                {"name": "list_alerts"},
+                                {"name": "get_alert"},
+                                {"name": "list_cloud_enterprise_agents"},
+                                {"name": "run_http_server_instant_test"},
+                            ]
+                        },
+                    },
+                )
+            return FakeResponse(
+                200,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "tools",
+                    "result": {
+                        "tools": [
+                            {"name": "o11y_get_apm_services"},
+                            {"name": "o11y_get_apm_service_latency"},
+                            {"name": "o11y_get_apm_service_errors_and_requests"},
+                            {"name": "o11y_get_metric_names"},
+                            {"name": "o11y_search_alerts_or_incidents"},
+                            {"name": "o11y_run_network_app_impact"},
+                        ]
+                    },
+                },
+            )
+
+        with patch("defenseclaw.enterprise_ops_demo.requests.post", side_effect=fake_post):
+            result = run_hosted_mcp_tools_list(
+                splunk_o11y_token="splunk-secret",
+                thousandeyes_token="te-secret",
+                timeout=3,
+            )
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(calls[0]["json"]["method"], "tools/list")
+        self.assertEqual(calls[0]["headers"]["X-SF-TOKEN"], "splunk-secret")
+        self.assertEqual(calls[1]["headers"]["Authorization"], "Bearer te-secret")
+        self.assertEqual(result["servers"][SPLUNK_O11Y_MCP_SERVER_NAME]["tool_count"], 6)
+        self.assertIn(
+            "run_http_server_instant_test",
+            result["servers"][THOUSANDEYES_MCP_SERVER_NAME]["mutation_or_unit_tools_seen"],
+        )
+        self.assertNotIn("splunk-secret", json.dumps(result))
+        self.assertNotIn("te-secret", json.dumps(result))
+
+    def test_hosted_mcp_tools_list_missing_tokens_is_safe(self):
+        with patch("defenseclaw.enterprise_ops_demo.requests.post") as mock_post:
+            result = run_hosted_mcp_tools_list(splunk_o11y_token=None, thousandeyes_token=None)
+
+        self.assertFalse(result["ok"])
+        self.assertIn(SPLUNK_O11Y_MCP_SERVER_NAME, result["servers"])
+        self.assertIn(THOUSANDEYES_MCP_SERVER_NAME, result["servers"])
+        mock_post.assert_not_called()
 
     def test_splunk_o11y_detector_poll_filters_teastore_detectors_and_redacts_token(self):
         calls = []
@@ -285,6 +413,48 @@ class EnterpriseOpsDemoTests(unittest.TestCase):
         self.assertEqual(result["highest_severity"], "Critical")
         self.assertEqual(calls[0]["headers"]["X-SF-TOKEN"], "secret-token")
         self.assertEqual(calls[0]["params"], {"limit": 100})
+        self.assertNotIn("secret-token", json.dumps(result))
+
+    def test_splunk_o11y_detector_poll_counts_active_incidents_when_list_has_no_alert_count(self):
+        calls = []
+
+        def fake_get(url, headers, timeout, params=None):
+            calls.append({"url": url, "headers": headers, "params": params, "timeout": timeout})
+            if url.endswith("/v2/detector"):
+                return FakeResponse(
+                    200,
+                    {
+                        "results": [
+                            {
+                                "id": "detector-1",
+                                "name": "DefenseClaw TeaStore Demo - Active Alert",
+                                "tags": ["teastore", "defenseclaw"],
+                                "rules": [{"severity": "Major"}],
+                            }
+                        ]
+                    },
+                )
+            if url.endswith("/v2/detector/detector-1/incidents"):
+                return FakeResponse(200, [{"active": True, "severity": "Major"}])
+            raise AssertionError(f"unexpected URL: {url}")
+
+        with patch("defenseclaw.enterprise_ops_demo.requests.get", side_effect=fake_get):
+            result = run_splunk_o11y_detector_poll(
+                token="secret-token",
+                realm="us1",
+                service_name="teastore-webui",
+                detector_tags=("teastore",),
+                query="teastore",
+                timeout=3,
+            )
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["matched"], 1)
+        self.assertEqual(result["active_alerts"], 1)
+        self.assertEqual(result["highest_severity"], "Major")
+        self.assertEqual(result["detectors"][0]["active_incidents"], 1)
+        self.assertEqual(calls[0]["params"], {"limit": 100})
+        self.assertIsNone(calls[1]["params"])
         self.assertNotIn("secret-token", json.dumps(result))
 
     def test_splunk_o11y_detector_poll_missing_token(self):
@@ -485,6 +655,103 @@ class EnterpriseOpsDemoTests(unittest.TestCase):
         self.assertEqual(mock_get.call_count, 2)
         self.assertEqual(mock_post.call_count, 1)
 
+    def test_execute_thousandeyes_create_reuses_when_results_verify_agent(self):
+        get_payloads = [
+            FakeResponse(
+                200,
+                {
+                    "agents": [
+                        {
+                            "agentId": "1666117",
+                            "agentName": "te-agent-aleccham-live",
+                            "agentType": "enterprise",
+                            "agentState": "online",
+                            "hostname": "te-agent-aleccham",
+                            "enabled": True,
+                        }
+                    ]
+                },
+            ),
+            FakeResponse(
+                200,
+                {
+                    "tests": [
+                        {
+                            "testId": "8597876",
+                            "testName": "defenseclaw-demo-teastore-k8s",
+                            "url": TEASTORE_INTERNAL_URL,
+                            "enabled": True,
+                            "interval": 60,
+                            "agents": None,
+                        }
+                    ]
+                },
+            ),
+            FakeResponse(
+                200,
+                {
+                    "testId": "8597876",
+                    "testName": "defenseclaw-demo-teastore-k8s",
+                    "url": TEASTORE_INTERNAL_URL,
+                    "enabled": True,
+                    "interval": 60,
+                    "agents": None,
+                },
+            ),
+            FakeResponse(
+                200,
+                {
+                    "results": [
+                        {
+                            "date": "2026-05-22T22:54:00Z",
+                            "agent": {
+                                "agentId": "1666117",
+                                "agentName": "te-agent-aleccham-live",
+                            },
+                            "responseCode": 0,
+                            "errorType": "DNS",
+                            "errorDetails": "Unable to resolve cluster-local target",
+                        }
+                    ]
+                },
+            ),
+        ]
+        post_payloads = [
+            FakeResponse(
+                200,
+                {
+                    "action": "allow",
+                    "raw_action": "alert",
+                    "severity": "MEDIUM",
+                    "mode": "observe",
+                    "would_block": False,
+                    "agent_control": {"matched": True, "control_name": "require-approval-thousandeyes-test-change"},
+                },
+            ),
+        ]
+
+        with patch("defenseclaw.enterprise_ops_demo.requests.get", side_effect=get_payloads) as mock_get, patch(
+            "defenseclaw.enterprise_ops_demo.requests.post",
+            side_effect=post_payloads,
+        ) as mock_post:
+            result = execute_thousandeyes_create(
+                token="secret-token",
+                approved=True,
+                inspect_api_base="http://defenseclaw.test",
+                inspect_token="gateway-token",
+                api_base="https://te.example/v7",
+            )
+
+        self.assertTrue(result["ok"], result)
+        self.assertFalse(result["executed"])
+        self.assertTrue(result["reused_existing"])
+        self.assertEqual(result["test"]["testId"], "8597876")
+        self.assertEqual(result["test"]["agents"], [{"agentId": "1666117", "agentName": "te-agent-aleccham-live"}])
+        self.assertEqual(result["test"]["agent_verification"], "test-results")
+        self.assertEqual(result["test"]["latest_result"]["errorType"], "DNS")
+        self.assertEqual(mock_get.call_count, 4)
+        self.assertEqual(mock_post.call_count, 1)
+
     def test_execute_thousandeyes_create_does_not_reuse_name_only_mismatch(self):
         get_payloads = [
             FakeResponse(
@@ -656,6 +923,39 @@ class EnterpriseOpsDemoTests(unittest.TestCase):
         )
         self.assertNotIn("secret-token", result.output)
 
+    def test_demo_command_json_with_live_mcp_tools(self):
+        mcp_result = {
+            "ok": True,
+            "mode": "read-only",
+            "servers": {
+                SPLUNK_O11Y_MCP_SERVER_NAME: {"ok": True, "tool_count": 13, "sample_tools": ["o11y_get_metric_names"]},
+                THOUSANDEYES_MCP_SERVER_NAME: {"ok": True, "tool_count": 58, "sample_tools": ["get_account_groups"]},
+            },
+            "errors": [],
+        }
+
+        with patch("defenseclaw.commands.cmd_demo.run_hosted_mcp_tools_list", return_value=mcp_result) as mock_tools:
+            runner = CliRunner()
+            result = runner.invoke(
+                demo,
+                ["enterprise-ops", "--format", "json", "--live-mcp-tools"],
+                env={"SPLUNK_O11Y_TOKEN": "splunk-secret", "THOUSANDEYES_TOKEN": "te-secret"},
+                catch_exceptions=False,
+            )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        payload = json.loads(result.output)
+        self.assertEqual(payload["mcp_tools"], mcp_result)
+        mock_tools.assert_called_once_with(
+            splunk_o11y_token="splunk-secret",
+            thousandeyes_token="te-secret",
+            o11y_realm="us1",
+            thousandeyes_mcp_url="https://api.thousandeyes.com/mcp",
+            timeout=10.0,
+        )
+        self.assertNotIn("splunk-secret", result.output)
+        self.assertNotIn("te-secret", result.output)
+
     def test_live_galileo_session_logs_expected_tool_spans(self):
         class FakeLogger:
             instances = []
@@ -706,6 +1006,7 @@ class EnterpriseOpsDemoTests(unittest.TestCase):
         self.assertEqual(
             result["tool_spans"],
             [
+                "Galileo behavior contract",
                 "O11y detect",
                 "K8s read",
                 "ThousandEyes inventory",
@@ -714,6 +1015,7 @@ class EnterpriseOpsDemoTests(unittest.TestCase):
                 "Remediation proposal",
                 "Unsafe action block",
                 "Splunk audit closure",
+                "Galileo evaluation",
                 "Autonomy SLO",
             ],
         )
@@ -729,6 +1031,7 @@ class EnterpriseOpsDemoTests(unittest.TestCase):
             "session_name": "INC-TEASTORE-001 TeaStore incident",
             "session_id": "session-123",
             "tool_spans": [
+                "Galileo behavior contract",
                 "O11y detect",
                 "K8s read",
                 "ThousandEyes inventory",
@@ -737,6 +1040,7 @@ class EnterpriseOpsDemoTests(unittest.TestCase):
                 "Remediation proposal",
                 "Unsafe action block",
                 "Splunk audit closure",
+                "Galileo evaluation",
                 "Autonomy SLO",
             ],
             "errors": [],

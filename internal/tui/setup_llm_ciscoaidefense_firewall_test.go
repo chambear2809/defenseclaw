@@ -155,11 +155,14 @@ func TestSetupSections_CiscoAIDefenseEditable(t *testing.T) {
 		return
 	}
 	want := map[string]string{
-		"cisco_ai_defense.endpoint":      "string",
-		"cisco_ai_defense.api_key":       "password",
-		"cisco_ai_defense.api_key_env":   "string",
-		"cisco_ai_defense.timeout_ms":    "int",
-		"cisco_ai_defense.enabled_rules": "string",
+		"cisco_ai_defense.endpoint":        "string",
+		"cisco_ai_defense.api_key":         "password",
+		"cisco_ai_defense.api_key_env":     "string",
+		"cisco_ai_defense.oauth_token_url": "string",
+		"cisco_ai_defense.oauth_basic_env": "string",
+		"cisco_ai_defense.oauth_basic":     "password",
+		"cisco_ai_defense.timeout_ms":      "int",
+		"cisco_ai_defense.enabled_rules":   "string",
 	}
 	seen := map[string]bool{}
 	for _, f := range cisco.Fields {
@@ -262,11 +265,17 @@ func TestApplyConfigField_CiscoAIDefenseWrites(t *testing.T) {
 	applyConfigField(c, "cisco_ai_defense.endpoint", "https://example.test")
 	applyConfigField(c, "cisco_ai_defense.api_key", "new-secret")
 	applyConfigField(c, "cisco_ai_defense.api_key_env", "CISCO_TEST_KEY")
+	applyConfigField(c, "cisco_ai_defense.oauth_token_url", "https://id.example.test/token")
+	applyConfigField(c, "cisco_ai_defense.oauth_basic_env", "CISCO_TEST_OAUTH_BASIC")
+	applyConfigField(c, "cisco_ai_defense.oauth_basic", "Basic redacted")
 	applyConfigField(c, "cisco_ai_defense.timeout_ms", "4500")
 	applyConfigField(c, "cisco_ai_defense.enabled_rules", "pii,exfil")
 	if c.CiscoAIDefense.Endpoint != "https://example.test" ||
 		c.CiscoAIDefense.APIKey != "new-secret" ||
 		c.CiscoAIDefense.APIKeyEnv != "CISCO_TEST_KEY" ||
+		c.CiscoAIDefense.OAuthTokenURL != "https://id.example.test/token" ||
+		c.CiscoAIDefense.OAuthBasicEnv != "CISCO_TEST_OAUTH_BASIC" ||
+		c.CiscoAIDefense.OAuthBasic != "Basic redacted" ||
 		c.CiscoAIDefense.TimeoutMs != 4500 ||
 		strings.Join(c.CiscoAIDefense.EnabledRules, ",") != "pii,exfil" {
 		t.Fatalf("Cisco AI Defense edits did not land: %+v", c.CiscoAIDefense)

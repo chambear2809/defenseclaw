@@ -34,6 +34,8 @@
   },
   "license": "Apache-2.0",
   "permissions": [
-    "net:connect:localhost"
+    "net:connect:localhost",
+    "net:connect:chat-ai.cisco.com",
+    "net:connect:id.cisco.com"
   ]
 }

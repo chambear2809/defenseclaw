@@ -23,7 +23,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -57,7 +59,18 @@ type CiscoInspectClient struct {
 	timeout      time.Duration
 	enabledRules []map[string]string
 	client       *http.Client
+	tokenSource  *ciscoOAuthTokenSource
 	tel          *telemetry.Provider
+}
+
+type ciscoOAuthTokenSource struct {
+	tokenURL  string
+	basicAuth string
+	client    *http.Client
+
+	mu     sync.Mutex
+	token  string
+	expiry time.Time
 }
 
 // SetTelemetry wires OTel metrics (optional). Called from NewGuardrailProxy.
@@ -99,7 +112,8 @@ func NewCiscoInspectClient(cfg *config.CiscoAIDefenseConfig, dotenvPath string) 
 	if apiKey == "" {
 		apiKey = ResolveAPIKey(cfg.APIKeyEnv, dotenvPath)
 	}
-	if apiKey == "" {
+	tokenSource := newCiscoOAuthTokenSource(cfg, dotenvPath, nil)
+	if apiKey == "" && tokenSource == nil {
 		return nil
 	}
 
@@ -128,13 +142,118 @@ func NewCiscoInspectClient(cfg *config.CiscoAIDefenseConfig, dotenvPath string) 
 		timeout:      timeout,
 		enabledRules: rules,
 		client:       &http.Client{Timeout: timeout},
+		tokenSource:  tokenSource,
 	}
+}
+
+func newCiscoOAuthTokenSource(cfg *config.CiscoAIDefenseConfig, dotenvPath string, client *http.Client) *ciscoOAuthTokenSource {
+	if cfg == nil || strings.TrimSpace(cfg.OAuthTokenURL) == "" {
+		return nil
+	}
+	basicAuth := strings.TrimSpace(cfg.OAuthBasic)
+	if cfg.OAuthBasicEnv != "" {
+		if envVal := strings.TrimSpace(ResolveAPIKey(cfg.OAuthBasicEnv, dotenvPath)); envVal != "" {
+			basicAuth = envVal
+		}
+	}
+	if basicAuth == "" {
+		return nil
+	}
+	if client == nil {
+		timeout := time.Duration(cfg.TimeoutMs) * time.Millisecond
+		if timeout <= 0 {
+			timeout = 3 * time.Second
+		}
+		client = &http.Client{Timeout: timeout}
+	}
+	return &ciscoOAuthTokenSource{
+		tokenURL:  strings.TrimSpace(cfg.OAuthTokenURL),
+		basicAuth: basicAuth,
+		client:    client,
+	}
+}
+
+func (s *ciscoOAuthTokenSource) apiKey(ctx context.Context) (string, error) {
+	if s == nil {
+		return "", nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.token != "" && time.Until(s.expiry) > time.Minute {
+		return s.token, nil
+	}
+	return s.fetchLocked(ctx)
+}
+
+func (s *ciscoOAuthTokenSource) fetchLocked(ctx context.Context) (string, error) {
+	form := url.Values{"grant_type": []string{"client_credentials"}}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.tokenURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Accept", "*/*")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Authorization", normalizeCiscoBasicAuthHeader(s.basicAuth))
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	if resp.StatusCode != http.StatusOK {
+		bodySnippet := string(respBody[:minInt(len(respBody), 200)])
+		return "", fmt.Errorf("oauth token HTTP %d: %s", resp.StatusCode, redaction.MessageContent(bodySnippet))
+	}
+
+	var data struct {
+		AccessToken string `json:"access_token"`
+		ExpiresIn   int64  `json:"expires_in"`
+		TokenType   string `json:"token_type"`
+	}
+	if err := json.Unmarshal(respBody, &data); err != nil {
+		return "", fmt.Errorf("oauth token json: %w", err)
+	}
+	token := strings.TrimSpace(data.AccessToken)
+	if token == "" {
+		return "", fmt.Errorf("oauth token response missing access_token")
+	}
+
+	expiresIn := data.ExpiresIn
+	if expiresIn <= 0 {
+		expiresIn = 300
+	}
+	s.token = token
+	s.expiry = time.Now().Add(time.Duration(expiresIn) * time.Second)
+	return s.token, nil
+}
+
+func normalizeCiscoBasicAuthHeader(value string) string {
+	value = strings.TrimSpace(value)
+	if strings.HasPrefix(strings.ToLower(value), "basic ") {
+		return value
+	}
+	return "Basic " + value
+}
+
+func (c *CiscoInspectClient) inspectAPIKey(ctx context.Context) (string, error) {
+	if c == nil {
+		return "", nil
+	}
+	if c.apiKey != "" {
+		return c.apiKey, nil
+	}
+	if c.tokenSource == nil {
+		return "", nil
+	}
+	return c.tokenSource.apiKey(ctx)
 }
 
 // Inspect sends messages to Cisco AI Defense and returns a normalized verdict.
 // Returns nil on any error so the caller can fall back to local-only scanning.
 func (c *CiscoInspectClient) Inspect(messages []ChatMessage) *ScanVerdict {
-	if c == nil || c.apiKey == "" {
+	if c == nil {
 		return nil
 	}
 
@@ -164,6 +283,16 @@ func (c *CiscoInspectClient) Inspect(messages []ChatMessage) *ScanVerdict {
 		}
 	}()
 
+	apiKey, err := c.inspectAPIKey(ctx)
+	if err != nil {
+		fmt.Fprintf(defaultLogWriter, "  [cisco-ai-defense] oauth error: %v\n", err)
+		EmitCiscoError(ctx, c.tel, gatewaylog.ErrCodeUpstreamError, err.Error())
+		return nil
+	}
+	if apiKey == "" {
+		return nil
+	}
+
 	// Retry once without rules config if the key has pre-configured rules.
 	triedWithoutRules := false
 	for attempt := 0; attempt < 2; attempt++ {
@@ -178,7 +307,7 @@ func (c *CiscoInspectClient) Inspect(messages []ChatMessage) *ScanVerdict {
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Accept", "application/json")
-		req.Header.Set("X-Cisco-AI-Defense-API-Key", c.apiKey)
+		req.Header.Set("X-Cisco-AI-Defense-API-Key", apiKey)
 
 		start := time.Now()
 		resp, err := c.client.Do(req)

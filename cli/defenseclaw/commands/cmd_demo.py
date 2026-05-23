@@ -20,15 +20,17 @@ from defenseclaw.enterprise_ops_demo import (
     TEASTORE_INTERNAL_URL,
     TEASTORE_PUBLIC_URL,
     THOUSANDEYES_API_BASE,
+    THOUSANDEYES_MCP_URL,
     build_autonomy_slo_report,
     build_report,
     build_teastore_o11y_mcp_evidence,
-    derive_autonomy_slo_evidence,
     default_workflow,
+    derive_autonomy_slo_evidence,
     log_live_galileo_session,
     render_control_room,
     render_markdown,
     report_to_json,
+    run_hosted_mcp_tools_list,
     run_live_inspect,
     run_splunk_o11y_detector_poll,
     run_thousandeyes_live_checks,
@@ -68,6 +70,12 @@ def demo() -> None:
 )
 @click.option("--thousandeyes-api-base", default=THOUSANDEYES_API_BASE, show_default=True)
 @click.option("--thousandeyes-token-env", default="THOUSANDEYES_TOKEN", show_default=True)
+@click.option(
+    "--live-mcp-tools",
+    is_flag=True,
+    help="Run read-only tools/list validation against hosted Splunk O11y and ThousandEyes MCP servers.",
+)
+@click.option("--thousandeyes-mcp-url", default=THOUSANDEYES_MCP_URL, show_default=True)
 @click.option(
     "--live-o11y-mcp",
     is_flag=True,
@@ -156,6 +164,8 @@ def enterprise_ops_cmd(
     live_thousandeyes: bool,
     thousandeyes_api_base: str,
     thousandeyes_token_env: str,
+    live_mcp_tools: bool,
+    thousandeyes_mcp_url: str,
     live_o11y_mcp: bool,
     ticket_id: str,
     service_name: str,
@@ -203,6 +213,15 @@ def enterprise_ops_cmd(
         thousandeyes_results = run_thousandeyes_live_checks(
             token=os.environ.get(thousandeyes_token_env),
             api_base=thousandeyes_api_base,
+            timeout=timeout,
+        )
+    mcp_tools_results = None
+    if live_mcp_tools:
+        mcp_tools_results = run_hosted_mcp_tools_list(
+            splunk_o11y_token=os.environ.get(o11y_token_env),
+            thousandeyes_token=os.environ.get(thousandeyes_token_env),
+            o11y_realm=o11y_realm,
+            thousandeyes_mcp_url=thousandeyes_mcp_url,
             timeout=timeout,
         )
     o11y_mcp_results = None
@@ -258,6 +277,7 @@ def enterprise_ops_cmd(
                 raise click.ClickException("autonomy evidence must be a JSON object")
         derived_evidence = derive_autonomy_slo_evidence(
             live_results=live_results,
+            mcp_tools_results=mcp_tools_results,
             o11y_mcp_results=o11y_mcp_results,
             o11y_detector_results=o11y_detector_results,
             thousandeyes_create_results=thousandeyes_create_results,
@@ -273,6 +293,7 @@ def enterprise_ops_cmd(
         workflow,
         validation=validation,
         live_results=live_results,
+        mcp_tools_results=mcp_tools_results,
         thousandeyes_results=thousandeyes_results,
         o11y_mcp_results=o11y_mcp_results,
         o11y_detector_results=o11y_detector_results,
@@ -315,6 +336,8 @@ def enterprise_ops_cmd(
         raise click.ClickException(f"{len(failed_live)} live inspect step(s) failed")
     if thousandeyes_results and not thousandeyes_results.get("ok"):
         raise click.ClickException("ThousandEyes live readiness failed")
+    if mcp_tools_results and not mcp_tools_results.get("ok"):
+        raise click.ClickException("Hosted MCP tools/list validation failed")
     if o11y_mcp_results and not o11y_mcp_results.get("ok"):
         raise click.ClickException("Splunk O11y MCP evidence collection failed")
     if o11y_detector_results and not o11y_detector_results.get("ok"):

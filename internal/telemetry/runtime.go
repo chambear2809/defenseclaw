@@ -47,10 +47,29 @@ var spanContextResourceKeys = map[string]struct{}{
 }
 
 const (
-	redactedUserMessage      = `[{"role":"user","content":"<redacted by DefenseClaw>"}]`
-	redactedAssistantMessage = `[{"role":"assistant","content":"<redacted by DefenseClaw>"}]`
-	redactedToolMessage      = `[{"role":"tool","content":"<redacted by DefenseClaw>"}]`
+	redactedUserMessage      = `[{"role":"user","parts":[{"type":"text","content":"<redacted by DefenseClaw>"}]}]`
+	redactedAssistantMessage = `[{"role":"assistant","parts":[{"type":"text","content":"<redacted by DefenseClaw>"}]}]`
+	redactedToolMessage      = `[{"role":"tool","parts":[{"type":"text","content":"<redacted by DefenseClaw>"}]}]`
 )
+
+// LLMSpanContent carries the prompt and response text available at the call
+// site. The text is only exported on spans/logs when DefenseClaw's explicit
+// all-sinks redaction opt-out is enabled.
+type LLMSpanContent struct {
+	Input               string
+	Output              string
+	TokenUsageEstimated bool
+}
+
+// AgentSpanSummary is the root invoke_agent rollup Galileo uses for trace-list
+// columns. Child LLM spans still carry the precise call details.
+type AgentSpanSummary struct {
+	Input               string
+	Output              string
+	InputTokens         int
+	OutputTokens        int
+	TokenUsageEstimated bool
+}
 
 func redactedToolArguments(argsLen int) string {
 	return fmt.Sprintf(`{"redacted":true,"args_length":%d}`, argsLen)
@@ -58,6 +77,103 @@ func redactedToolArguments(argsLen int) string {
 
 func redactedToolResult(exitCode, outputLen int) string {
 	return fmt.Sprintf(`{"redacted":true,"exit_code":%d,"output_length":%d}`, exitCode, outputLen)
+}
+
+func rawToolResult(exitCode int, output string) string {
+	result := struct {
+		ExitCode int    `json:"exit_code"`
+		Output   string `json:"output"`
+	}{
+		ExitCode: exitCode,
+		Output:   output,
+	}
+	b, err := json.Marshal(result)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+func genAITextMessageSpanValue(role, content, finishReason string) string {
+	msg := map[string]interface{}{
+		"role": role,
+		"parts": []map[string]string{{
+			"type":    "text",
+			"content": content,
+		}},
+	}
+	if finishReason != "" {
+		msg["finish_reason"] = finishReason
+	}
+	b, err := json.Marshal([]map[string]interface{}{msg})
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+func genAIInputMessage(content string) string {
+	if redaction.DisableAll() && content != "" {
+		return genAITextMessageSpanValue("user", content, "")
+	}
+	return redactedUserMessage
+}
+
+func genAIOutputMessage(content string, finishReasons []string) string {
+	if redaction.DisableAll() && content != "" {
+		return genAITextMessageSpanValue("assistant", content, firstString(finishReasons))
+	}
+	return redactedAssistantMessage
+}
+
+func genAIContentAttrs(input, output string, finishReasons []string) []attribute.KeyValue {
+	rawContent := redaction.DisableAll() && (input != "" || output != "")
+	attrs := []attribute.KeyValue{
+		attribute.String("gen_ai.input.messages", genAIInputMessage(input)),
+		attribute.String("gen_ai.output.messages", genAIOutputMessage(output, finishReasons)),
+		attribute.Bool("defenseclaw.content.redacted", !rawContent),
+	}
+	if redaction.DisableAll() {
+		if input != "" {
+			attrs = append(attrs, attribute.String("input.value", input))
+		}
+		if output != "" {
+			attrs = append(attrs, attribute.String("output.value", output))
+		}
+	}
+	return attrs
+}
+
+func genAITokenUsageAttrs(inputTokens, outputTokens int) []attribute.KeyValue {
+	totalTokens := inputTokens + outputTokens
+	return []attribute.KeyValue{
+		attribute.Int("gen_ai.usage.input_tokens", inputTokens),
+		attribute.Int("gen_ai.usage.output_tokens", outputTokens),
+		attribute.Int("gen_ai.usage.prompt_tokens", inputTokens),
+		attribute.Int("gen_ai.usage.completion_tokens", outputTokens),
+		attribute.Int("gen_ai.usage.total_tokens", totalTokens),
+		attribute.Int("input_token_count", inputTokens),
+		attribute.Int("output_token_count", outputTokens),
+		attribute.Int("llm.token_count.prompt", inputTokens),
+		attribute.Int("llm.token_count.completion", outputTokens),
+		attribute.Int("llm.token_count.total", totalTokens),
+	}
+}
+
+// EstimateTokenCount is a conservative fallback for runtimes that omit model
+// usage. It is marked on telemetry with defenseclaw.usage.estimated=true by
+// call sites that use it.
+func EstimateTokenCount(text string) int {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return 0
+	}
+	runes := len([]rune(text))
+	tokens := (runes + 3) / 4
+	if tokens < 1 {
+		return 1
+	}
+	return tokens
 }
 
 func (p *Provider) resourceSpanContextAttrs() []attribute.KeyValue {
@@ -112,6 +228,7 @@ func (p *Provider) EmitStartupSpan(ctx context.Context) {
 	span.SetAttributes(
 		attribute.String("defenseclaw.event", "sidecar_start"),
 		attribute.String("gen_ai.system", "galileo-otel"),
+		attribute.String("gen_ai.framework", "defenseclaw"),
 		attribute.String("gen_ai.input.messages", redactedUserMessage),
 		attribute.String("gen_ai.output.messages", redactedAssistantMessage),
 		attribute.Bool("defenseclaw.content.redacted", true),
@@ -266,7 +383,7 @@ func (p *Provider) StartAgentSpan(
 	}
 
 	ctx, span := p.tracer.Start(ctx, spanName,
-		trace.WithSpanKind(trace.SpanKindInternal),
+		trace.WithSpanKind(trace.SpanKindClient),
 		trace.WithTimestamp(time.Now()),
 	)
 
@@ -274,8 +391,10 @@ func (p *Provider) StartAgentSpan(
 	span.SetAttributes(
 		attribute.String("gen_ai.operation.name", "invoke_agent"),
 		attribute.String("gen_ai.system", "galileo-otel"),
+		attribute.String("gen_ai.framework", "defenseclaw"),
 		attribute.String("gen_ai.agent.name", agentName),
 		attribute.String("gen_ai.conversation.id", conversationID),
+		attribute.Bool("gen_ai.conversation_root", true),
 		attribute.String("gen_ai.input.messages", redactedUserMessage),
 		attribute.Bool("defenseclaw.content.redacted", true),
 	)
@@ -301,16 +420,26 @@ func (p *Provider) StartAgentSpan(
 }
 
 // EndAgentSpan ends an active agent invocation span.
-func (p *Provider) EndAgentSpan(span trace.Span, errMsg string) {
+func (p *Provider) EndAgentSpan(span trace.Span, errMsg string, summaries ...AgentSpanSummary) {
 	if span == nil {
 		return
 	}
+	summary := AgentSpanSummary{}
+	if len(summaries) > 0 {
+		summary = summaries[0]
+	}
+	if summary.InputTokens != 0 || summary.OutputTokens != 0 {
+		span.SetAttributes(genAITokenUsageAttrs(summary.InputTokens, summary.OutputTokens)...)
+	}
+	if summary.TokenUsageEstimated {
+		span.SetAttributes(attribute.Bool("defenseclaw.usage.estimated", true))
+	}
+	span.SetAttributes(genAIContentAttrs(summary.Input, summary.Output, nil)...)
 	if errMsg != "" {
 		span.SetStatus(codes.Error, errMsg)
 	} else {
 		span.SetStatus(codes.Ok, "")
 	}
-	span.SetAttributes(attribute.String("gen_ai.output.messages", redactedAssistantMessage))
 	span.End()
 }
 
@@ -398,17 +527,27 @@ func (p *Provider) StartToolSpan(
 		attribute.String("gen_ai.system", "galileo-otel"),
 		attribute.String("gen_ai.tool.name", tool),
 		attribute.String("gen_ai.tool.type", "function"),
-		attribute.String("gen_ai.tool.call.arguments", redactedToolArguments(len(args))),
-		attribute.String("gen_ai.input.messages", redactedUserMessage),
-		attribute.Bool("defenseclaw.content.redacted", true),
 		// DefenseClaw-specific attributes
 		attribute.String("defenseclaw.tool.status", status),
 		attribute.Int("defenseclaw.tool.args_length", len(args)),
 		attribute.Bool("defenseclaw.tool.dangerous", dangerous),
 		attribute.String("defenseclaw.tool.provider", toolProvider),
 	)
-	if redaction.DisableAll() && len(args) > 0 {
-		span.SetAttributes(attribute.String("defenseclaw.tool.args", string(args)))
+	if redaction.DisableAll() {
+		rawArgs := string(args)
+		span.SetAttributes(
+			attribute.String("gen_ai.tool.call.arguments", rawArgs),
+			attribute.String("gen_ai.input.messages", genAITextMessageSpanValue("user", rawArgs, "")),
+			attribute.String("input.value", rawArgs),
+			attribute.String("defenseclaw.tool.args", rawArgs),
+			attribute.Bool("defenseclaw.content.redacted", false),
+		)
+	} else {
+		span.SetAttributes(
+			attribute.String("gen_ai.tool.call.arguments", redactedToolArguments(len(args))),
+			attribute.String("gen_ai.input.messages", redactedUserMessage),
+			attribute.Bool("defenseclaw.content.redacted", true),
+		)
 	}
 
 	if skillKey != "" {
@@ -476,9 +615,16 @@ func (p *Provider) SetRawSpanStringSlice(span trace.Span, key string, values []s
 // EndToolSpan ends an active tool call span with result data.
 // Metrics are always recorded when OTel is enabled, even if the span is nil
 // (traces disabled).
-func (p *Provider) EndToolSpan(span trace.Span, exitCode, outputLen int, startTime time.Time, tool, toolProvider string) {
+func (p *Provider) EndToolSpan(span trace.Span, exitCode, outputLen int, startTime time.Time, tool, toolProvider string, outputs ...string) {
 	ctx := context.Background()
 	durationMs := float64(time.Since(startTime).Milliseconds())
+	output := ""
+	if len(outputs) > 0 {
+		output = outputs[0]
+		if outputLen == 0 {
+			outputLen = len(output)
+		}
+	}
 
 	if exitCode != 0 {
 		p.RecordToolError(ctx, tool, exitCode)
@@ -492,9 +638,21 @@ func (p *Provider) EndToolSpan(span trace.Span, exitCode, outputLen int, startTi
 	span.SetAttributes(
 		attribute.Int("defenseclaw.tool.exit_code", exitCode),
 		attribute.Int("defenseclaw.tool.output_length", outputLen),
-		attribute.String("gen_ai.tool.call.result", redactedToolResult(exitCode, outputLen)),
-		attribute.String("gen_ai.output.messages", redactedToolMessage),
 	)
+	if redaction.DisableAll() {
+		span.SetAttributes(
+			attribute.String("gen_ai.tool.call.result", rawToolResult(exitCode, output)),
+			attribute.String("gen_ai.output.messages", genAITextMessageSpanValue("tool", output, "")),
+			attribute.String("output.value", output),
+			attribute.String("defenseclaw.tool.output", output),
+			attribute.Bool("defenseclaw.content.redacted", false),
+		)
+	} else {
+		span.SetAttributes(
+			attribute.String("gen_ai.tool.call.result", redactedToolResult(exitCode, outputLen)),
+			attribute.String("gen_ai.output.messages", redactedToolMessage),
+		)
+	}
 
 	if exitCode != 0 {
 		span.SetStatus(codes.Error, fmt.Sprintf("exit_code=%d", exitCode))
@@ -625,6 +783,7 @@ func (p *Provider) StartLLMSpan(
 		attribute.String("gen_ai.operation.name", "chat"),
 		attribute.String("gen_ai.system", system),
 		attribute.String("gen_ai.provider.name", provider),
+		attribute.String("gen_ai.framework", "defenseclaw"),
 		attribute.String("gen_ai.request.model", model),
 		attribute.Int("gen_ai.request.max_tokens", maxTokens),
 		attribute.Float64("gen_ai.request.temperature", temperature),
@@ -656,7 +815,12 @@ func (p *Provider) EndLLMSpan(
 	agentType string,
 	agentID string,
 	sessionID string,
+	contents ...LLMSpanContent,
 ) {
+	content := LLMSpanContent{}
+	if len(contents) > 0 {
+		content = contents[0]
+	}
 	// Use the span's context so the SDK attaches exemplars (trace ID + span ID)
 	// to the histogram data points, linking metrics to traces.
 	if span != nil {
@@ -673,12 +837,14 @@ func (p *Provider) EndLLMSpan(
 	spanAttrs := []attribute.KeyValue{
 		attribute.String("gen_ai.response.model", responseModel),
 		attribute.StringSlice("gen_ai.response.finish_reasons", finishReasons),
-		attribute.Int("gen_ai.usage.input_tokens", promptTokens),
-		attribute.Int("gen_ai.usage.output_tokens", completionTokens),
-		attribute.String("gen_ai.output.messages", redactedAssistantMessage),
 		attribute.Int("defenseclaw.llm.tool_calls", toolCallCount),
 		attribute.String("defenseclaw.llm.guardrail", guardrail),
 		attribute.String("defenseclaw.llm.guardrail.result", guardrailResult),
+	}
+	spanAttrs = append(spanAttrs, genAITokenUsageAttrs(promptTokens, completionTokens)...)
+	spanAttrs = append(spanAttrs, genAIContentAttrs(content.Input, content.Output, finishReasons)...)
+	if content.TokenUsageEstimated {
+		spanAttrs = append(spanAttrs, attribute.Bool("defenseclaw.usage.estimated", true))
 	}
 	// Stamp agent identity onto the LLM span so traces in o11y join
 	// cleanly with metrics by the same labels. Metrics omit empty,
@@ -693,6 +859,7 @@ func (p *Provider) EndLLMSpan(
 		spanAttrs = append(spanAttrs, attribute.String("gen_ai.agent.id", agentID))
 	}
 	span.SetAttributes(spanAttrs...)
+	p.EmitGenAIInferenceDetailsLog(ctx, providerName, responseModel, responseModel, promptTokens, completionTokens, finishReasons, agentName, agentID, content)
 
 	if guardrailResult == "blocked" {
 		span.SetStatus(codes.Error, "guardrail blocked")

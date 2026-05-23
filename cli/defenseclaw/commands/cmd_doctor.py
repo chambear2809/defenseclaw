@@ -26,6 +26,7 @@ import json
 import os
 import shutil
 import urllib.error
+import urllib.parse
 import urllib.request
 
 import click
@@ -252,6 +253,51 @@ def _http_probe(url: str, *, method: str = "GET", headers: dict | None = None,
         return exc.code, body_text
     except (urllib.error.URLError, OSError, ValueError) as exc:
         return 0, str(exc)
+
+
+def _normalize_basic_auth_header(value: str) -> str:
+    value = (value or "").strip()
+    if not value:
+        return ""
+    if value.lower().startswith("basic "):
+        return value
+    return f"Basic {value}"
+
+
+def _fetch_cisco_oauth_token(cfg, dotenv_path: str) -> tuple[str, str]:
+    aid = cfg.cisco_ai_defense
+    token_url = (getattr(aid, "oauth_token_url", "") or "").strip()
+    basic = (getattr(aid, "oauth_basic", "") or "").strip()
+    basic_env = (getattr(aid, "oauth_basic_env", "") or "").strip()
+    if basic_env:
+        resolved = _resolve_api_key(basic_env, dotenv_path)
+        if resolved:
+            basic = resolved
+    if not token_url or not basic:
+        return "", ""
+
+    body = urllib.parse.urlencode({"grant_type": "client_credentials"}).encode("utf-8")
+    code, resp_body = _http_probe(
+        token_url,
+        method="POST",
+        headers={
+            "Accept": "*/*",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Authorization": _normalize_basic_auth_header(basic),
+        },
+        body=body,
+        timeout=float(aid.timeout_ms) / 1000.0,
+    )
+    if code != 200:
+        return "", f"oauth token HTTP {code}"
+    try:
+        data = json.loads(resp_body)
+    except json.JSONDecodeError:
+        return "", "oauth token response was not JSON"
+    token = str(data.get("access_token", "") or "").strip()
+    if not token:
+        return "", "oauth token response missing access_token"
+    return token, "oauth token"
 
 
 # ---------------------------------------------------------------------------
@@ -835,8 +881,14 @@ def _check_cisco_ai_defense(cfg, r: _DoctorResult) -> None:
 
     dotenv_path = os.path.join(cfg.data_dir, ".env")
     api_key = _resolve_api_key(key_env, dotenv_path) if key_env else ""
+    token_detail = ""
+    if not api_key:
+        api_key, token_detail = _fetch_cisco_oauth_token(cfg, dotenv_path)
 
     if not api_key:
+        if token_detail:
+            _emit("fail", "Cisco AI Defense", token_detail, r=r)
+            return
         display = key_env if key_env.isupper() and len(key_env) < 50 else "(env var not configured properly)"
         _emit("fail", "Cisco AI Defense", f"{display} not set", r=r)
         return

@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -153,6 +154,14 @@ type Store struct {
 }
 
 func NewStore(dbPath string) (*Store, error) {
+	if dbPath != "" && dbPath != ":memory:" && !strings.HasPrefix(dbPath, "file:") {
+		if dir := filepath.Dir(dbPath); dir != "." && dir != "" {
+			if err := os.MkdirAll(dir, 0o700); err != nil {
+				return nil, fmt.Errorf("audit: create db dir %s: %w", dir, err)
+			}
+		}
+	}
+
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("audit: open db %s: %w", dbPath, err)

@@ -49,6 +49,19 @@ gateway:
           name: splunk-otel-collector
           key: splunk_observability_access_token_secondary
   config:
+    connectors:
+      routing/logs:
+        default_pipelines:
+          - logs
+        table:
+          - condition: attributes["event.name"] == "gen_ai.client.inference.operation.details"
+            context: log
+            pipelines:
+              - logs/entities
+          - condition: instrumentation_scope.attributes["otel.entity.event_as_log"] == true
+            context: log
+            pipelines:
+              - logs/entities
     exporters:
       otlphttp/entities_secondary:
         headers:
@@ -67,6 +80,14 @@ gateway:
         ingest_url: https://ingest.us1.signalfx.com
         sending_queue:
           num_consumers: 32
+      splunk_hec/o11y:
+        disable_compression: true
+        endpoint: https://ingest.us1.signalfx.com/v1/log
+        log_data_enabled: false
+        profiling_data_enabled: true
+        sending_queue:
+          num_consumers: 32
+        token: ${SPLUNK_OBSERVABILITY_ACCESS_TOKEN}
       splunk_hec/o11y_secondary:
         disable_compression: true
         endpoint: https://ingest.us1.signalfx.com/v1/log

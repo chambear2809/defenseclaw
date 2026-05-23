@@ -573,15 +573,19 @@ Configuration in `config.yaml`:
 ```yaml
 guardrail:
   scanner_mode: both
-  cisco_ai_defense:
-    endpoint: "https://us.api.inspect.aidefense.security.cisco.com"
-    api_key_env: "CISCO_AI_DEFENSE_API_KEY"
-    timeout_ms: 3000
-    enabled_rules: []  # empty = send 12 default rules (see below)
+cisco_ai_defense:
+  endpoint: "https://us.api.inspect.aidefense.security.cisco.com"
+  api_key_env: "CISCO_AI_DEFENSE_API_KEY"
+  oauth_token_url: "https://id.cisco.com/oauth2/default/v1/token"
+  oauth_basic_env: "CISCO_AI_DEFENSE_OAUTH_BASIC"
+  timeout_ms: 3000
+  enabled_rules: []  # empty = send 12 default rules (see below)
 ```
 
-The API key is **never hardcoded** — it is read from the environment
-variable specified in `api_key_env`.
+The API key or OAuth Basic credential is **never hardcoded** — use the
+environment variables specified in `api_key_env` or `oauth_basic_env`. If
+`api_key_env` is unset, DefenseClaw exchanges `oauth_basic_env` for an access
+token with the configured token URL.
 
 ### Default Enabled Rules
 

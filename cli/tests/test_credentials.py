@@ -28,6 +28,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from defenseclaw import credentials as C
 from defenseclaw.config import (
+    CiscoAIDefenseConfig,
     Config,
     GatewayConfig,
     GuardrailConfig,
@@ -130,6 +131,32 @@ class RequirementPredicateTests(unittest.TestCase):
                     guardrail=GuardrailConfig(enabled=True, scanner_mode=mode),
                 )
                 self.assertEqual(C._cisco_ai_defense_key(cfg), expected)
+
+    def test_cisco_api_key_optional_when_oauth_fallback_configured(self):
+        cfg = _make_cfg(
+            "/tmp/dc-test",
+            guardrail=GuardrailConfig(enabled=True, scanner_mode="remote"),
+            cisco_ai_defense=CiscoAIDefenseConfig(
+                oauth_token_url="https://id.example.test/token",
+                oauth_basic_env="CISCO_TEST_OAUTH_BASIC",
+            ),
+        )
+        self.assertEqual(C._cisco_ai_defense_key(cfg), C.Requirement.OPTIONAL)
+        self.assertEqual(C._cisco_ai_defense_oauth_basic(cfg), C.Requirement.REQUIRED)
+
+    def test_cisco_oauth_not_required_when_api_key_is_set(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = _make_cfg(
+                tmp,
+                guardrail=GuardrailConfig(enabled=True, scanner_mode="both"),
+                cisco_ai_defense=CiscoAIDefenseConfig(
+                    api_key_env="CISCO_TEST_KEY",
+                    oauth_token_url="https://id.example.test/token",
+                    oauth_basic_env="CISCO_TEST_OAUTH_BASIC",
+                ),
+            )
+            with patch.dict(os.environ, {"CISCO_TEST_KEY": "aid-key"}, clear=True):
+                self.assertEqual(C._cisco_ai_defense_oauth_basic(cfg), C.Requirement.NOT_USED)
 
     def test_virustotal_respects_use_virustotal_flag(self):
         off = _make_cfg("/tmp/dc-test")
@@ -273,6 +300,25 @@ class ClassifyTests(unittest.TestCase):
                 missing = {s.spec.env_name for s in C.missing_required(cfg)}
                 self.assertIn("OPENCLAW_GATEWAY_TOKEN", missing)
                 self.assertIn("CISCO_AI_DEFENSE_API_KEY", missing)
+
+    def test_missing_required_uses_oauth_basic_when_configured(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = _make_cfg(
+                tmp,
+                guardrail=GuardrailConfig(enabled=True, scanner_mode="remote"),
+                cisco_ai_defense=CiscoAIDefenseConfig(
+                    oauth_token_url="https://id.example.test/token",
+                    oauth_basic_env="CISCO_TEST_OAUTH_BASIC",
+                ),
+            )
+            env = {
+                k: v for k, v in os.environ.items()
+                if k not in ("OPENCLAW_GATEWAY_TOKEN", "CISCO_AI_DEFENSE_API_KEY", "CISCO_TEST_OAUTH_BASIC")
+            }
+            with patch.dict(os.environ, env, clear=True):
+                missing = {s.resolution.env_name for s in C.missing_required(cfg)}
+                self.assertIn("CISCO_TEST_OAUTH_BASIC", missing)
+                self.assertNotIn("CISCO_AI_DEFENSE_API_KEY", missing)
 
 
 if __name__ == "__main__":

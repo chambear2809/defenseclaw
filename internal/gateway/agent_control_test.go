@@ -29,30 +29,40 @@ func TestAgentControlEvaluateDeny(t *testing.T) {
 	t.Setenv("AGENT_CONTROL_API_KEY", "test-key")
 
 	var got agentControlEvaluationRequest
+	var gotEvents agentControlEventsRequest
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != agentControlEvaluationPath {
-			t.Fatalf("path = %q, want %q", r.URL.Path, agentControlEvaluationPath)
-		}
 		if r.Header.Get("X-API-Key") != "test-key" {
 			t.Fatalf("X-API-Key = %q, want test-key", r.Header.Get("X-API-Key"))
 		}
-		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
-			t.Fatalf("decode request: %v", err)
+		switch r.URL.Path {
+		case agentControlEvaluationPath:
+			if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+				t.Fatalf("decode request: %v", err)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+				"is_safe": false,
+				"confidence": 0.98,
+				"reason": "matched deny control",
+				"matches": [{
+					"control_execution_id": "exec-2",
+					"control_id": 2,
+					"control_name": "deny-dangerous-shell-pre-tool",
+					"action": "deny",
+					"result": {"matched": true, "confidence": 0.99, "message": "dangerous command"}
+				}],
+				"errors": [],
+				"non_matches": []
+			}`))
+		case agentControlEventsPath:
+			if err := json.NewDecoder(r.Body).Decode(&gotEvents); err != nil {
+				t.Fatalf("decode events: %v", err)
+			}
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"received":1,"processed":1,"dropped":0}`))
+		default:
+			t.Fatalf("path = %q, want %q or %q", r.URL.Path, agentControlEvaluationPath, agentControlEventsPath)
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{
-			"is_safe": false,
-			"confidence": 0.98,
-			"reason": "matched deny control",
-			"matches": [{
-				"control_id": 2,
-				"control_name": "deny-dangerous-shell-pre-tool",
-				"action": "deny",
-				"result": {"matched": true, "confidence": 0.99, "message": "dangerous command"}
-			}],
-			"errors": [],
-			"non_matches": []
-		}`))
 	}))
 	defer server.Close()
 
@@ -80,6 +90,16 @@ func TestAgentControlEvaluateDeny(t *testing.T) {
 	}
 	if got.AgentName != "defenseclaw-openclaw" || got.Stage != "pre" || got.Step.Type != "tool" || got.Step.Name != "shell" {
 		t.Fatalf("request = %+v", got)
+	}
+	if len(gotEvents.Events) != 1 {
+		t.Fatalf("events = %+v, want one control execution event", gotEvents)
+	}
+	ev := gotEvents.Events[0]
+	if ev.ControlExecutionID != "exec-2" || ev.AgentName != "defenseclaw-openclaw" || ev.ControlID != 2 || ev.Action != "deny" || !ev.Matched {
+		t.Fatalf("event = %+v, want matched deny control event", ev)
+	}
+	if ev.CheckStage != "pre" || ev.AppliesTo != "tool_call" || ev.TraceID == "" || ev.SpanID == "" {
+		t.Fatalf("event correlation/scope = %+v", ev)
 	}
 }
 

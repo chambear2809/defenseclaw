@@ -38,8 +38,9 @@ interface SidecarConfig {
 let cached: SidecarConfig | undefined;
 
 /**
- * Read gateway.host, gateway.api_port, and gateway token from
- * ~/.defenseclaw/config.yaml. Token resolution mirrors the Go sidecar:
+ * Read gateway.api_host, gateway.api_port, and gateway token from
+ * ~/.defenseclaw/config.yaml. Older local configs only have gateway.host,
+ * so that remains the fallback. Token resolution mirrors the Go sidecar:
  * env var (gateway.token_env, default OPENCLAW_GATEWAY_TOKEN) wins over
  * the direct gateway.token value. Falls back to defaults if the file is
  * missing or malformed. Result is cached for the lifetime of the process.
@@ -60,7 +61,13 @@ export function loadSidecarConfig(): SidecarConfig {
     if (raw && typeof raw === "object") {
       const gw = raw["gateway"] as Record<string, unknown> | undefined;
       if (gw && typeof gw === "object") {
-        if (typeof gw["host"] === "string" && gw["host"]) host = gw["host"];
+        const apiHost = gw["api_host"];
+        const gatewayHost = gw["host"];
+        if (typeof apiHost === "string" && apiHost) {
+          host = apiHost;
+        } else if (typeof gatewayHost === "string" && gatewayHost) {
+          host = gatewayHost;
+        }
         if (typeof gw["api_port"] === "number") apiPort = gw["api_port"];
         if (typeof gw["approval_timeout_s"] === "number" && gw["approval_timeout_s"] > 0) {
           approvalTimeoutS = gw["approval_timeout_s"];

@@ -53,7 +53,7 @@ describe("loadSidecarConfig", () => {
     expect(cfg.baseUrl).toBe("http://127.0.0.1:18970");
   });
 
-  it("reads host and api_port from config.yaml", () => {
+  it("reads host and api_port from legacy local config.yaml", () => {
     mockReadFileSync.mockReturnValue(
       "gateway:\n  host: 10.0.0.5\n  api_port: 9999\n"
     );
@@ -65,6 +65,25 @@ describe("loadSidecarConfig", () => {
     expect(mockReadFileSync).toHaveBeenCalledWith(
       join("/mock-home", ".defenseclaw", "config.yaml"),
       "utf8"
+    );
+  });
+
+  it("prefers api_host for the sidecar API when gateway host points at OpenClaw", () => {
+    mockReadFileSync.mockReturnValue(
+      [
+        "gateway:",
+        "  host: openclaw.defenseclaw.svc.cluster.local",
+        "  port: 18789",
+        "  api_host: defenseclaw.defenseclaw.svc.cluster.local",
+        "  api_port: 18970",
+      ].join("\n")
+    );
+
+    const cfg = loadSidecarConfig();
+    expect(cfg.host).toBe("defenseclaw.defenseclaw.svc.cluster.local");
+    expect(cfg.apiPort).toBe(18970);
+    expect(cfg.baseUrl).toBe(
+      "http://defenseclaw.defenseclaw.svc.cluster.local:18970"
     );
   });
 

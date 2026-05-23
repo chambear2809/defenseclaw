@@ -224,7 +224,7 @@ The sidecar **runs the guardrail proxy in-process** (`internal/gateway/sidecar.g
 |---|---|
 | **`guardrail.mode`**, **`guardrail.scanner_mode`** | YAML at startup; hot-reload from `guardrail_runtime.json` (`reloadRuntimeConfig` / `applyRuntime`, `internal/gateway/proxy.go:550–592`). |
 | **Upstream LLM API key** | Resolved via `Config.ResolveLLM("guardrail").ResolvedAPIKey()` (`internal/config/config.go`). The unified top-level `llm.api_key_env` (default `DEFENSECLAW_LLM_KEY`) is read from `~/.defenseclaw/.env` via `loadDotEnv` (`internal/gateway/dotenv.go:28`) and consumed in `NewGuardrailProxy` (`internal/gateway/proxy.go`). A `guardrail.llm` override block can set a different key/model per component. The legacy `guardrail.api_key_env` field remains as a read-only fallback until operators run `defenseclaw setup migrate-llm`. |
-| **Cisco AI Defense** | `cisco_ai_defense` on the loaded `config.Config`; `NewCiscoInspectClient` (`internal/gateway/cisco_inspect.go:53–88`) resolves the API key with the same `dotenvPath` as the proxy. |
+| **Cisco AI Defense** | `cisco_ai_defense` on the loaded `config.Config`; `NewCiscoInspectClient` resolves either `api_key_env` directly or exchanges `oauth_basic_env` at `oauth_token_url`, using the same `dotenvPath` as the proxy. |
 | **LLM judge** | `guardrail.judge` (strategy/thresholds) + `Config.ResolveLLM("guardrail.judge")` (model, key, base URL) feed `NewLLMJudge` (`internal/gateway/llm_judge.go`). The judge inherits every field from the top-level `llm:` block unless `guardrail.judge.llm` overrides it. |
 | **Bearer auth (clients → proxy)** | `deriveMasterKey` from `device.key` (`internal/gateway/proxy.go:521–535`; checked in `authenticateRequest`, `510–518`). |
 

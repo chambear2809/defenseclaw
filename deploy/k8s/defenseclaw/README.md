@@ -18,16 +18,62 @@ kubectl -n defenseclaw create secret generic defenseclaw-secrets \
   --from-literal=OPENCLAW_GATEWAY_TOKEN="$OPENCLAW_GATEWAY_TOKEN" \
   --from-literal=OPENAI_API_KEY="$OPENAI_API_KEY" \
   --from-literal=GALILEO_API_KEY="$GALILEO_API_KEY" \
+  --from-literal=CISCO_AI_DEFENSE_API_KEY="$CISCO_AI_DEFENSE_API_KEY" \
+  --from-literal=CISCO_AI_DEFENSE_OAUTH_BASIC="$CISCO_AI_DEFENSE_OAUTH_BASIC" \
   --dry-run=client -o yaml | kubectl apply -f -
+
+# CISCO_AI_DEFENSE_API_KEY is the AI Defense app/API key used by the
+# Inspection API. CISCO_AI_DEFENSE_OAUTH_BASIC is optional fallback material
+# for minting a short-lived access token when the direct key is absent. Store
+# either the full "Basic ..." value or the bare base64 payload.
 
 kubectl -n defenseclaw create secret generic openclaw-secrets \
   --from-literal=OPENCLAW_GATEWAY_TOKEN="$OPENCLAW_GATEWAY_TOKEN" \
-  --from-literal=OPENAI_API_KEY="$OPENAI_API_KEY" \
+  --from-literal=BRIDGEIT_CHAT_BASE_URL="${BRIDGEIT_CHAT_BASE_URL:-https://chat-ai.cisco.com}" \
+  --from-literal=BRIDGEIT_MODEL="${BRIDGEIT_MODEL:-gpt-5-nano}" \
+  --from-literal=BRIDGEIT_APP_KEY="$BRIDGEIT_APP_KEY" \
+  --from-literal=BRIDGEIT_ACCESS_TOKEN="${BRIDGEIT_ACCESS_TOKEN:-}" \
+  --from-literal=BRIDGEIT_OAUTH_TOKEN_URL="${BRIDGEIT_OAUTH_TOKEN_URL:-https://id.cisco.com/oauth2/default/v1/token}" \
+  --from-literal=BRIDGEIT_CLIENT_ID="${BRIDGEIT_CLIENT_ID:-}" \
+  --from-literal=BRIDGEIT_CLIENT_SECRET="${BRIDGEIT_CLIENT_SECRET:-}" \
+  --from-literal=BRIDGEIT_PROXY_API_KEY="${BRIDGEIT_PROXY_API_KEY:-bridgeit-local}" \
   --dry-run=client -o yaml | kubectl apply -f -
+
+# BridgeIT is wired two ways for OpenClaw:
+# - The default OpenClaw model provider is `bridgeit/gpt-5-nano`, routed
+#   through a local OpenAI-compatible proxy that mints short-lived Cisco
+#   OAuth tokens and calls `chat-ai.cisco.com`.
+# - The MCP server also exposes `bridgeit_chat_completion` for explicit tool
+#   calls. `bridgeit_rag_search` remains as a compatibility alias.
+# Prefer `BRIDGEIT_CLIENT_ID` + `BRIDGEIT_CLIENT_SECRET`; `BRIDGEIT_ACCESS_TOKEN`
+# is only for manual short-lived testing.
+# OpenClaw intentionally does not receive `OPENAI_API_KEY`; chat should stay on
+# BridgeIT and must not auto-discover OpenAI from the environment.
 
 kubectl -n defenseclaw create secret generic splunk-cisco-skills-credentials \
   --from-file=credentials=/path/to/chmod-600/splunk-cisco-credentials \
+  --from-file=splunk_o11y_token=/path/to/chmod-600/splunk-o11y-api-token \
   --dry-run=client -o yaml | kubectl apply -f -
+
+# The OpenClaw init container copies `splunk_o11y_token` to
+# /var/run/splunk-cisco-skills/splunk_o11y_token and appends
+# SPLUNK_O11Y_TOKEN_FILE=/var/run/splunk-cisco-skills/splunk_o11y_token to the
+# runtime credentials file. This must be an Observability Cloud API/access
+# token; Splunk Cloud stack tokens are not valid for api.<realm>.observability.
+# The same file-backed token is used by the `splunk-observability-cloud` MCP
+# bridge for the hosted Splunk MCP Gateway. Do not commit the token or put it in
+# the OpenClaw ConfigMap.
+
+kubectl -n defenseclaw create secret generic thousandeyes-demo-secrets \
+  --from-literal=THOUSANDEYES_TOKEN="$THOUSANDEYES_TOKEN" \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+# OpenClaw mounts the ThousandEyes token as /var/run/thousandeyes/token and
+# exposes only the file path to the autonomous operator runtime and the
+# `thousandeyes-mcp` bridge for the official ThousandEyes MCP endpoint
+# https://api.thousandeyes.com/mcp. Do not commit the token or put it in the
+# OpenClaw ConfigMap. ThousandEyes MCP write/delete/Instant Test actions require
+# explicit operator approval because they mutate state and/or consume units.
 
 kubectl -n defenseclaw create secret generic splunk-local-secrets \
   --from-literal=SPLUNK_PASSWORD="$SPLUNK_PASSWORD" \
@@ -104,7 +150,15 @@ kubectl -n defenseclaw-tokenomics rollout status deploy/c3-agent-tokenomics-mfe
 helm -n otel-splunk status splunk-otel-collector
 
 kubectl -n defenseclaw exec deploy/openclaw -- \
-  sh -c 'release=/home/node/.openclaw/splunk-cisco-skills/releases/2bce17ff8f2f29afd6f5326d7976d20c251538a4; test -s "$release/.complete" && test "$(cat "$release/.revision")" = "2bce17ff8f2f29afd6f5326d7976d20c251538a4"'
+  sh -c 'release=/home/node/.openclaw/splunk-cisco-skills/releases/2bce17ff8f2f29afd6f5326d7976d20c251538a4; test -f "$release/.complete" && test "$(cat "$release/.revision")" = "2bce17ff8f2f29afd6f5326d7976d20c251538a4"'
+
+kubectl -n defenseclaw exec deploy/openclaw -- \
+  sh -c 'kubectl version --client=true && kubectl auth can-i get pods -n teastore && test -s "$THOUSANDEYES_TOKEN_FILE" && test -s "$SPLUNK_O11Y_TOKEN_FILE"'
+
+kubectl -n defenseclaw exec deploy/openclaw -- \
+  python3 /usr/local/bin/defenseclaw-runtime-evidence \
+    --test-id 8597876 \
+    --service teastore-webui
 ```
 
 ## K8 Demo Surface
@@ -119,7 +173,7 @@ Agent Watch flow.
 | Surface | Demo use | Entry point |
 | --- | --- | --- |
 | DefenseClaw API | Live `/api/v1/inspect/tool` policy decision | `kubectl -n defenseclaw port-forward svc/defenseclaw 18970:18970` |
-| DefenseClaw Browser TUI | Live DefenseClaw TUI over a PTY-backed WebSocket | `kubectl -n defenseclaw get svc defenseclaw-tui` |
+| DefenseClaw Browser TUI | Live DefenseClaw TUI over a PTY-backed WebSocket | `http://a246f73430d334d7ea0360d19c827954-26b8542129d36765.elb.us-east-1.amazonaws.com` (`kubectl -n defenseclaw get svc defenseclaw-tui`) |
 | Agent Control | Active runtime controls and matched policy | `kubectl -n defenseclaw get svc agent-control-ui` |
 | Splunk Local | Searchable audit, verdict, gateway, and OTel evidence | `kubectl -n defenseclaw get svc splunk-local-ui` |
 | Galileo | Prompt, datasets, and completed runtime-evidence experiments | `https://app.galileo.ai/project/0ba7b20d-8262-44c4-b230-547a0cd74b2b` |

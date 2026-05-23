@@ -45,6 +45,7 @@ from defenseclaw.context import AppContext, pass_ctx
 # ``JUDGE_API_KEY``), not the secret values themselves.
 _SECRET_FIELDS = (
     "api_key",
+    "oauth_basic",
     "token",
     "secret",
     "password",
@@ -226,6 +227,8 @@ def validate_config() -> ValidationResult:
         res.warnings.append("inspect_llm.api_key is stored in plaintext; prefer api_key_env")
     if getattr(cfg, "cisco_ai_defense", None) and cfg.cisco_ai_defense.api_key:
         res.warnings.append("cisco_ai_defense.api_key is stored in plaintext; prefer api_key_env")
+    if getattr(cfg, "cisco_ai_defense", None) and cfg.cisco_ai_defense.oauth_basic:
+        res.warnings.append("cisco_ai_defense.oauth_basic is stored in plaintext; prefer oauth_basic_env")
     if getattr(cfg, "scanners", None):
         ss = cfg.scanners.skill_scanner
         if ss.virustotal_api_key:

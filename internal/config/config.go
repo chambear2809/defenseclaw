@@ -1027,11 +1027,14 @@ type GatewayWatcherConfig struct {
 }
 
 type CiscoAIDefenseConfig struct {
-	Endpoint     string   `mapstructure:"endpoint"       yaml:"endpoint"`
-	APIKey       string   `mapstructure:"api_key"        yaml:"api_key"`
-	APIKeyEnv    string   `mapstructure:"api_key_env"    yaml:"api_key_env"`
-	TimeoutMs    int      `mapstructure:"timeout_ms"     yaml:"timeout_ms"`
-	EnabledRules []string `mapstructure:"enabled_rules"  yaml:"enabled_rules"`
+	Endpoint      string   `mapstructure:"endpoint"        yaml:"endpoint"`
+	APIKey        string   `mapstructure:"api_key"         yaml:"api_key"`
+	APIKeyEnv     string   `mapstructure:"api_key_env"     yaml:"api_key_env"`
+	OAuthTokenURL string   `mapstructure:"oauth_token_url" yaml:"oauth_token_url,omitempty"`
+	OAuthBasicEnv string   `mapstructure:"oauth_basic_env" yaml:"oauth_basic_env,omitempty"`
+	OAuthBasic    string   `mapstructure:"oauth_basic"     yaml:"oauth_basic,omitempty"`
+	TimeoutMs     int      `mapstructure:"timeout_ms"      yaml:"timeout_ms"`
+	EnabledRules  []string `mapstructure:"enabled_rules"   yaml:"enabled_rules"`
 
 	// ScanHookSurface controls whether the hook lane (PreToolUse +
 	// PostToolUse + UserPromptSubmit on hook-only connectors like
@@ -2036,6 +2039,9 @@ func warnPlaintextSecrets(cfg *Config) {
 	if cfg.CiscoAIDefense.APIKey != "" {
 		warn("cisco_ai_defense", "api_key", "CISCO_AI_DEFENSE_API_KEY")
 	}
+	if cfg.CiscoAIDefense.OAuthBasic != "" {
+		warn("cisco_ai_defense", "oauth_basic", "CISCO_AI_DEFENSE_OAUTH_BASIC")
+	}
 	if cfg.Scanners.SkillScanner.VirusTotalKey != "" {
 		warn("scanners.skill_scanner", "virustotal_api_key", "VIRUSTOTAL_API_KEY")
 	}
@@ -2147,6 +2153,9 @@ func setDefaults(dataDir string) {
 	viper.SetDefault("cisco_ai_defense.endpoint", "https://us.api.inspect.aidefense.security.cisco.com")
 	viper.SetDefault("cisco_ai_defense.api_key", "")
 	viper.SetDefault("cisco_ai_defense.api_key_env", "CISCO_AI_DEFENSE_API_KEY")
+	viper.SetDefault("cisco_ai_defense.oauth_token_url", "")
+	viper.SetDefault("cisco_ai_defense.oauth_basic_env", "")
+	viper.SetDefault("cisco_ai_defense.oauth_basic", "")
 	viper.SetDefault("cisco_ai_defense.timeout_ms", 3000)
 	viper.SetDefault("cisco_ai_defense.enabled_rules", []string{})
 

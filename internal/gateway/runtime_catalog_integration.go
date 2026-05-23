@@ -50,11 +50,13 @@ type runtimeCatalogState struct {
 
 var (
 	runtimeCatalogMu          sync.Mutex
-	runtimeCatalogOnce        sync.Once
+	runtimeCatalogOnce        = &sync.Once{}
 	runtimeCatalogGlobalState runtimeCatalogState
 )
 
 func runtimeCatalogForRequest() runtimeCatalogState {
+	runtimeCatalogMu.Lock()
+	defer runtimeCatalogMu.Unlock()
 	runtimeCatalogOnce.Do(func() {
 		runtimeCatalogGlobalState = loadRuntimeCatalogFromEnv()
 	})
@@ -81,7 +83,7 @@ func setRuntimeCatalogForTesting(c runtimecatalog.Catalog, source string) func()
 	prevState := runtimeCatalogGlobalState
 	prevOnce := runtimeCatalogOnce
 	runtimeCatalogGlobalState = runtimeCatalogState{catalog: c, source: source}
-	runtimeCatalogOnce = sync.Once{}
+	runtimeCatalogOnce = &sync.Once{}
 	runtimeCatalogOnce.Do(func() {})
 	return func() {
 		runtimeCatalogMu.Lock()

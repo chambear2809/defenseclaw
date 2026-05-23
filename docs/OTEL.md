@@ -362,8 +362,14 @@ Uses [OTEL GenAI semantic conventions](https://opentelemetry.io/docs/specs/semco
 | `gen_ai.request.max_tokens` | int | max tokens parameter |
 | `gen_ai.request.temperature` | float | temperature parameter |
 | `gen_ai.response.finish_reasons` | string[] | `["stop"]` \| `["tool_calls"]` |
+| `gen_ai.input.messages` | string | JSON message envelope; raw only when `privacy.disable_redaction=true` or `DEFENSECLAW_DISABLE_REDACTION=1` |
+| `gen_ai.output.messages` | string | JSON message envelope; raw only when `privacy.disable_redaction=true` or `DEFENSECLAW_DISABLE_REDACTION=1` |
+| `input.value` | string | OpenInference-compatible raw input alias; emitted only when redaction is disabled |
+| `output.value` | string | OpenInference-compatible raw output alias; emitted only when redaction is disabled |
 | `gen_ai.usage.input_tokens` | int | input tokens |
 | `gen_ai.usage.output_tokens` | int | output tokens |
+| `input_token_count` | int | input token alias for OpenInference-compatible backends |
+| `output_token_count` | int | output token alias for OpenInference-compatible backends |
 | `defenseclaw.llm.tool_calls` | int | number of tool_use blocks |
 | `defenseclaw.llm.guardrail` | string | `none` \| `local` \| `ai-defense` |
 | `defenseclaw.llm.guardrail.result` | string | `pass` \| `flagged` \| `blocked` |

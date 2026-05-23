@@ -19,6 +19,7 @@ package gateway
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -35,6 +36,7 @@ import (
 )
 
 const agentControlEvaluationPath = "/api/v1/evaluation"
+const agentControlEventsPath = "/api/v1/observability/events"
 
 type agentControlClient struct {
 	baseURL    string
@@ -65,6 +67,30 @@ type agentControlEvaluationResponse struct {
 	Matches    []agentControlMatch `json:"matches"`
 	Errors     []agentControlMatch `json:"errors"`
 	NonMatches []agentControlMatch `json:"non_matches"`
+}
+
+type agentControlEventsRequest struct {
+	Events []agentControlExecutionEvent `json:"events"`
+}
+
+type agentControlExecutionEvent struct {
+	ControlExecutionID string                 `json:"control_execution_id,omitempty"`
+	TraceID            string                 `json:"trace_id"`
+	SpanID             string                 `json:"span_id"`
+	AgentName          string                 `json:"agent_name"`
+	ControlID          int                    `json:"control_id"`
+	ControlName        string                 `json:"control_name"`
+	CheckStage         string                 `json:"check_stage"`
+	AppliesTo          string                 `json:"applies_to"`
+	Action             string                 `json:"action"`
+	Matched            bool                   `json:"matched"`
+	Confidence         float64                `json:"confidence"`
+	Timestamp          string                 `json:"timestamp,omitempty"`
+	ExecutionDuration  *float64               `json:"execution_duration_ms,omitempty"`
+	EvaluatorName      string                 `json:"evaluator_name,omitempty"`
+	SelectorPath       string                 `json:"selector_path,omitempty"`
+	ErrorMessage       string                 `json:"error_message,omitempty"`
+	Metadata           map[string]interface{} `json:"metadata,omitempty"`
 }
 
 type agentControlMatch struct {
@@ -212,7 +238,123 @@ func (c *agentControlClient) evaluate(ctx context.Context, stage string, step ag
 	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
 		return c.errorDecision(stage, step, time.Since(start), err)
 	}
-	return c.decisionFromResponse(stage, step, &parsed, time.Since(start))
+	elapsed := time.Since(start)
+	c.emitObservabilityEvents(ctx, stage, step, &parsed, elapsed)
+	return c.decisionFromResponse(stage, step, &parsed, elapsed)
+}
+
+func (c *agentControlClient) emitObservabilityEvents(ctx context.Context, stage string, step agentControlStep, resp *agentControlEvaluationResponse, elapsed time.Duration) {
+	if c == nil || resp == nil {
+		return
+	}
+	events := c.controlExecutionEvents(ctx, stage, step, resp, elapsed)
+	if len(events) == 0 {
+		return
+	}
+	payload, err := json.Marshal(agentControlEventsRequest{Events: events})
+	if err != nil {
+		return
+	}
+	endpoint := c.baseURL + agentControlEventsPath
+	if _, parseErr := url.ParseRequestURI(endpoint); parseErr != nil {
+		return
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.apiKey != "" {
+		req.Header.Set("X-API-Key", c.apiKey)
+	}
+	respHTTP, err := c.httpClient.Do(req)
+	if err != nil {
+		return
+	}
+	defer respHTTP.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(respHTTP.Body, 4096))
+}
+
+func (c *agentControlClient) controlExecutionEvents(ctx context.Context, stage string, step agentControlStep, resp *agentControlEvaluationResponse, elapsed time.Duration) []agentControlExecutionEvent {
+	traceID, spanID := agentControlTraceAndSpanIDs(ctx)
+	appliesTo := "tool_call"
+	if step.Type == "llm" {
+		appliesTo = "llm_call"
+	}
+	duration := float64(elapsed.Milliseconds())
+	timestamp := time.Now().UTC().Format(time.RFC3339Nano)
+	events := make([]agentControlExecutionEvent, 0, len(resp.Matches)+len(resp.NonMatches)+len(resp.Errors))
+	appendEvent := func(match agentControlMatch, matched bool, errMsg string) {
+		if match.ControlID == 0 || strings.TrimSpace(match.ControlName) == "" {
+			return
+		}
+		action := normalizedAgentControlAction(match.Action)
+		if action == "" || action == "error" {
+			action = "observe"
+		}
+		confidence := match.Result.Confidence
+		if confidence <= 0 {
+			confidence = resp.Confidence
+		}
+		if confidence <= 0 {
+			confidence = 1
+		}
+		events = append(events, agentControlExecutionEvent{
+			ControlExecutionID: match.ControlExecutionID,
+			TraceID:            traceID,
+			SpanID:             spanID,
+			AgentName:          c.agentName,
+			ControlID:          match.ControlID,
+			ControlName:        match.ControlName,
+			CheckStage:         stage,
+			AppliesTo:          appliesTo,
+			Action:             action,
+			Matched:            matched,
+			Confidence:         confidence,
+			Timestamp:          timestamp,
+			ExecutionDuration:  &duration,
+			ErrorMessage:       redaction.ForSinkReason(errMsg),
+			Metadata: map[string]interface{}{
+				"step_type": step.Type,
+				"step_name": step.Name,
+				"reason":    redaction.ForSinkReason(firstNonEmpty(match.Result.Message, resp.Reason)),
+			},
+		})
+	}
+	for _, match := range resp.Matches {
+		appendEvent(match, true, "")
+	}
+	for _, match := range resp.NonMatches {
+		appendEvent(match, false, "")
+	}
+	for _, match := range resp.Errors {
+		appendEvent(match, false, match.Result.Error)
+	}
+	return events
+}
+
+func agentControlTraceAndSpanIDs(ctx context.Context) (string, string) {
+	if sp := trace.SpanFromContext(ctx); sp != nil {
+		sc := sp.SpanContext()
+		if sc.IsValid() {
+			return sc.TraceID().String(), sc.SpanID().String()
+		}
+	}
+	if tid := TraceIDFromContext(ctx); tid != "" {
+		return tid, randomHexString(8)
+	}
+	return randomHexString(16), randomHexString(8)
+}
+
+func randomHexString(byteLen int) string {
+	if byteLen <= 0 {
+		return ""
+	}
+	buf := make([]byte, byteLen)
+	if _, err := rand.Read(buf); err != nil {
+		return strings.Repeat("0", byteLen*2)
+	}
+	return fmt.Sprintf("%x", buf)
 }
 
 func (c *agentControlClient) decisionFromResponse(stage string, step agentControlStep, resp *agentControlEvaluationResponse, elapsed time.Duration) *agentControlDecision {

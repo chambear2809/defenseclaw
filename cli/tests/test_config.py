@@ -780,13 +780,21 @@ class TestMergeCiscoAIDefense(unittest.TestCase):
         aid = _merge_cisco_ai_defense({
             "endpoint": "https://eu.api.example.com",
             "api_key": "aid-key-123",
+            "oauth_token_url": "https://id.example.test/token",
+            "oauth_basic_env": "CISCO_TEST_OAUTH_BASIC",
+            "oauth_basic": "Basic redacted",
             "timeout_ms": 5000,
             "enabled_rules": ["rule1", "rule2"],
+            "scan_hook_surface": False,
         })
         self.assertEqual(aid.endpoint, "https://eu.api.example.com")
         self.assertEqual(aid.api_key, "aid-key-123")
+        self.assertEqual(aid.oauth_token_url, "https://id.example.test/token")
+        self.assertEqual(aid.oauth_basic_env, "CISCO_TEST_OAUTH_BASIC")
+        self.assertEqual(aid.oauth_basic, "Basic redacted")
         self.assertEqual(aid.timeout_ms, 5000)
         self.assertEqual(aid.enabled_rules, ["rule1", "rule2"])
+        self.assertFalse(aid.scan_hook_surface)
 
 
 class TestMergeMCPScannerClean(unittest.TestCase):
@@ -866,6 +874,7 @@ class TestConfigTopLevelSections(unittest.TestCase):
                 cisco_ai_defense=CiscoAIDefenseConfig(
                     endpoint="https://eu.api.example.com",
                     api_key="aid-456",
+                    scan_hook_surface=False,
                     timeout_ms=5000,
                 ),
             )
@@ -882,6 +891,7 @@ class TestConfigTopLevelSections(unittest.TestCase):
             self.assertEqual(raw["cisco_ai_defense"]["endpoint"], "https://eu.api.example.com")
             self.assertEqual(raw["cisco_ai_defense"]["api_key"], "aid-456")
             self.assertEqual(raw["cisco_ai_defense"]["timeout_ms"], 5000)
+            self.assertFalse(raw["cisco_ai_defense"]["scan_hook_surface"])
 
     def test_save_and_reload_guardrail_openshell(self):
         import yaml

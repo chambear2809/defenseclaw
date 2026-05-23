@@ -11,8 +11,8 @@
   "prompt": {
     "name": "defenseclaw-runtime-governance",
     "id": "096341e8-05c8-4c8f-9e39-12155a61a8ad",
-    "selected_version": 1,
-    "selected_version_id": "fc6eed9c-01a4-42fb-9103-d7a7e5bd2d17",
+    "selected_version": 2,
+    "selected_version_id": "8ebe7696-a235-49f7-88bf-1d5abb3645d7",
     "source": "prompts/galileo/defenseclaw-runtime-governance.md",
     "variables": [
       "user_prompt",
@@ -24,8 +24,8 @@
   "agent_flow_prompt": {
     "name": "defenseclaw-enterprise-ops-agent-flow",
     "id": "ce2a5908-bc6c-45e0-89e7-cd498d6ed870",
-    "selected_version": 1,
-    "selected_version_id": "73c70a94-10c7-4765-b1ec-47c4d59bbfa9",
+    "selected_version": 2,
+    "selected_version_id": "4400f9ef-699f-4812-b6a3-ae39cc35a08d",
     "source": "prompts/galileo/enterprise-ops-agent-flow.md"
   },
   "model": {

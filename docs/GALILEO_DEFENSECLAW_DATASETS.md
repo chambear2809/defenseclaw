@@ -43,7 +43,8 @@ Install the Galileo SDK in a temporary environment, then upload the datasets and
 python3 -m venv /tmp/defenseclaw-galileo-upload
 /tmp/defenseclaw-galileo-upload/bin/python -m pip install --upgrade pip galileo
 
-GALILEO_API_KEY="$(kubectl -n defenseclaw get secret defenseclaw-secrets -o jsonpath='{.data.GALILEO_API_KEY}' | base64 --decode)" \
+export GALILEO_SECRET_KEY="${GALILEO_SECRET_KEY:-GALILEO_DEMO_V2_API_KEY}"
+export GALILEO_API_KEY="$(kubectl -n defenseclaw get secret defenseclaw-secrets -o "jsonpath={.data.${GALILEO_SECRET_KEY}}" | base64 --decode)"
 GALILEO_CONSOLE_URL="https://console.demo-v2.galileocloud.io" \
 GALILEO_API_URL="https://api.demo-v2.galileocloud.io" \
 /tmp/defenseclaw-galileo-upload/bin/python scripts/upload_galileo_demo_datasets.py \
@@ -80,17 +81,17 @@ Log stream ID: `7d3fa020-621d-4164-aa4a-96b600663c92`
 | `defenseclaw-runtime-governance` prompt | `096341e8-05c8-4c8f-9e39-12155a61a8ad` | Runtime governance prompt template. |
 | `defenseclaw-enterprise-ops-agent-flow` prompt | `ce2a5908-bc6c-45e0-89e7-cd498d6ed870` | Agent Flow metric/test block for the TeaStore incident flow. |
 
-Selected runtime-governance prompt version: `1`
+Selected runtime-governance prompt version: `2`
 
-Selected runtime-governance prompt version ID: `fc6eed9c-01a4-42fb-9103-d7a7e5bd2d17`
+Selected runtime-governance prompt version ID: `8ebe7696-a235-49f7-88bf-1d5abb3645d7`
 
-Selected enterprise agent-flow prompt version: `1`
+Selected enterprise agent-flow prompt version: `2`
 
-Selected enterprise agent-flow prompt version ID: `73c70a94-10c7-4765-b1ec-47c4d59bbfa9`
+Selected enterprise agent-flow prompt version ID: `4400f9ef-699f-4812-b6a3-ae39cc35a08d`
 
 Prompt variables: `user_prompt`, `cluster_context`, `agent_name`, `guardrail_mode`
 
-The upload artifact is `artifacts/galileo_enterprise_ops_20260515_upload.json`.
+The latest upload artifact is `artifacts/galileo_enterprise_ops_sync_20260523T041607Z.json`.
 
 ## Previous Hosted Galileo SaaS Upload
 
@@ -249,7 +250,7 @@ Current demo-v2 Enterprise Ops experiment:
 
 | Dataset | Experiment ID | Console link |
 | --- | --- | --- |
-| `defenseclaw-enterprise-ops-thousandeyes` | `8509a9dc-c2aa-4494-a537-b97d05a05d65` | `https://console.demo-v2.galileocloud.io/project/ef0960e1-8744-4019-9faa-103b13f94e0d/experiments/8509a9dc-c2aa-4494-a537-b97d05a05d65` |
+| `defenseclaw-enterprise-ops-thousandeyes` | `b1d20128-4e55-4f3f-999b-f4962491c5e5` | `https://console.demo-v2.galileocloud.io/project/ef0960e1-8744-4019-9faa-103b13f94e0d/experiments/b1d20128-4e55-4f3f-999b-f4962491c5e5` |
 
 Completed experiment set:
 
@@ -264,8 +265,8 @@ Completed experiment set:
 | `defenseclaw-enterprise-ops-thousandeyes` | `a8ac7be0-6431-449b-a089-c8431d99de70` | `https://app.galileo.ai/project/0ba7b20d-8262-44c4-b230-547a0cd74b2b/experiments/a8ac7be0-6431-449b-a089-c8431d99de70` |
 | `defenseclaw-enterprise-ops-thousandeyes` latest SaaS 15-row sync | `f74208cd-462a-4f56-b1e4-51f1cda991d7` | `https://app.galileo.ai/project/0ba7b20d-8262-44c4-b230-547a0cd74b2b/experiments/f74208cd-462a-4f56-b1e4-51f1cda991d7` |
 
-The enterprise ThousandEyes experiment was created during E2E validation on
-May 14, 2026.
+The current demo-v2 enterprise ThousandEyes experiment was refreshed during
+live validation on May 23, 2026.
 
 ## Live TeaStore Validation
 
@@ -273,11 +274,11 @@ The current TeaStore enterprise incident run anchors the executive demo:
 
 | Artifact | ID |
 | --- | --- |
-| Live Galileo experiment | `f74208cd-462a-4f56-b1e4-51f1cda991d7` |
+| Demo-v2 runtime-evidence experiment | `b1d20128-4e55-4f3f-999b-f4962491c5e5` |
 | Prior 5-row Galileo experiment | `a8ac7be0-6431-449b-a089-c8431d99de70` |
 | ThousandEyes HTTP Server test | `8597876` |
-| Galileo project | `clus-demo` / `0ba7b20d-8262-44c4-b230-547a0cd74b2b` |
-| Galileo log stream | `82b893bd-fa1f-411e-81e8-e12ca66692ad` |
+| Galileo project | `defenseclaw-enterprise-ops-20260515` / `ef0960e1-8744-4019-9faa-103b13f94e0d` |
+| Galileo log stream | `7d3fa020-621d-4164-aa4a-96b600663c92` |
 
 The test name is `defenseclaw-demo-teastore-k8s`, and the target URL is:
 

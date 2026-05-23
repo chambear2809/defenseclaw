@@ -48,7 +48,7 @@ spec:
               touch "${tmp}/.complete"
               rm -rf "${release}"
               mv "${tmp}" "${release}"
-              test -s "${release}/.complete"
+              test -f "${release}/.complete"
               test "$(cat "${release}/.revision")" = "${sha}"
           securityContext:
             allowPrivilegeEscalation: false

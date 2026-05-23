@@ -412,8 +412,12 @@ class CiscoAIDefenseConfig:
     endpoint: str = "https://us.api.inspect.aidefense.security.cisco.com"
     api_key: str = ""
     api_key_env: str = ""
+    oauth_token_url: str = ""
+    oauth_basic_env: str = ""
+    oauth_basic: str = ""
     timeout_ms: int = 3000
     enabled_rules: list[str] = field(default_factory=list)
+    scan_hook_surface: bool = True
 
     def resolved_api_key(self) -> str:
         """Return api_key from env var (if set) or direct value."""
@@ -1766,8 +1770,12 @@ def _merge_cisco_ai_defense(raw: dict[str, Any] | None) -> CiscoAIDefenseConfig:
         endpoint=raw.get("endpoint", "https://us.api.inspect.aidefense.security.cisco.com"),
         api_key=raw.get("api_key", ""),
         api_key_env=raw.get("api_key_env", ""),
+        oauth_token_url=raw.get("oauth_token_url", ""),
+        oauth_basic_env=raw.get("oauth_basic_env", ""),
+        oauth_basic=raw.get("oauth_basic", ""),
         timeout_ms=raw.get("timeout_ms", 3000),
         enabled_rules=raw.get("enabled_rules", []),
+        scan_hook_surface=bool(raw.get("scan_hook_surface", True)),
     )
 
 
@@ -2037,6 +2045,8 @@ def _warn_plaintext_secrets(cfg: Config) -> None:
         _warn("inspect_llm", "api_key", "LLM_API_KEY")
     if cfg.cisco_ai_defense.api_key:
         _warn("cisco_ai_defense", "api_key", "CISCO_AI_DEFENSE_API_KEY")
+    if cfg.cisco_ai_defense.oauth_basic:
+        _warn("cisco_ai_defense", "oauth_basic", "CISCO_AI_DEFENSE_OAUTH_BASIC")
     if cfg.scanners.skill_scanner.virustotal_api_key:
         _warn("scanners.skill_scanner", "virustotal_api_key", "VIRUSTOTAL_API_KEY")
     if cfg.splunk.hec_token:

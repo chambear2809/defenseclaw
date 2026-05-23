@@ -306,6 +306,19 @@ function isAlreadyProxied(url: string, guardrailPort: number): boolean {
   );
 }
 
+function isBridgeITOpenAIProxyUrl(url: string): boolean {
+  const bypass = process.env.BRIDGEIT_OPENAI_PROXY_BYPASS_GUARDRAIL ?? "true";
+  if (bypass.toLowerCase() === "false" || bypass === "0") return false;
+  const port = process.env.BRIDGEIT_OPENAI_PROXY_PORT?.trim() || "8787";
+  try {
+    const u = new URL(url);
+    if (u.port !== port) return false;
+    return u.hostname === "127.0.0.1" || u.hostname === "localhost" || u.hostname === "::1";
+  } catch {
+    return false;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Layer 1: request-shape detection
 //
@@ -785,6 +798,9 @@ export function createFetchInterceptor(
       if (isAlreadyProxied(urlStr, guardrailPort)) {
         return originalFetch!(input, init);
       }
+      if (isBridgeITOpenAIProxyUrl(urlStr)) {
+        return originalFetch!(input, init);
+      }
 
       // Layer 0: the known-provider allowlist is cheap and path-free.
       const knownLLM = isLLMUrl(urlStr, guardrailPort);
@@ -963,10 +979,14 @@ export function createFetchInterceptor(
         urlStr &&
           !isKnownSafeDomain(urlStr) &&
           !isAlreadyProxied(urlStr, guardrailPort) &&
+          !isBridgeITOpenAIProxyUrl(urlStr) &&
           hasLLMPathSuffix(urlStr),
       );
       const knownForHTTPS = Boolean(
-        urlStr && isLLMUrl(urlStr, guardrailPort) && !isAlreadyProxied(urlStr, guardrailPort),
+        urlStr &&
+          isLLMUrl(urlStr, guardrailPort) &&
+          !isAlreadyProxied(urlStr, guardrailPort) &&
+          !isBridgeITOpenAIProxyUrl(urlStr),
       );
 
       if (urlStr && (knownForHTTPS || shapedForHTTPS)) {

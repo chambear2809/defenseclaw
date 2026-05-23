@@ -3,12 +3,13 @@
 This demo turns DefenseClaw into a governed AI operations controller:
 
 ```text
+Galileo defines the expected agent behavior before the incident starts.
 Splunk O11y detects a service problem.
 The agent investigates Kubernetes and ThousandEyes context.
 DefenseClaw inspects every tool/API intent before execution.
 Galileo Agent Control returns named policy decisions.
 Splunk Enterprise stores the audit trail.
-Galileo stores the repeatable dataset and experiment evidence.
+Galileo logs and evaluates the live run against the same dataset-backed contract.
 ```
 
 The runnable workflow is exposed through:
@@ -53,12 +54,36 @@ Official Cisco docs support the demo surface:
 
 | Step | What happens | Primary evidence |
 | --- | --- | --- |
+| Define | Galileo shows the saved Playground, runtime prompt, Agent Flow prompt, enterprise dataset, and expected approval/deny controls. | Galileo behavior contract and Agent Watch assets |
 | Detect | Splunk O11y detectors report the TeaStore WebUI as down or degraded. | Splunk O11y detector API, dashboards, and MCP evidence |
 | Investigate | Agent runs read-only K8s and ThousandEyes queries. | DefenseClaw allow verdicts in Splunk Enterprise |
 | Verify | DefenseClaw inspects and then creates or reuses a TeaStore ThousandEyes HTTP test from the K8s Enterprise Agent. | Agent Control approval-required decision plus ThousandEyes test ID |
-| Remediate | Agent proposes a bounded `teastore-webui-v1` scale with rollback. | Approval evidence plus O11y before/after |
+| Remediate | Agent proposes the bounded `teastore-webui-v1` Plan A v2 memory/probe patch with rollback. | Approval evidence plus O11y before/after |
 | Contain | Agent attempts `kubectl delete pods --all -n defenseclaw`. | `raw_action=block`, `would_block=true` in observe mode |
+| Evaluate | Galileo scores whether the agent followed the expected flow, selected the right tools, asked for approval, and refused unsafe branches. | Galileo session, runtime-evidence experiment, and Autonomy SLO |
 | Prove | One run is replayed across Splunk Enterprise, Splunk O11y, ThousandEyes, and Galileo. | Run/session pivot and Galileo dataset |
+
+## Galileo-First Run Of Show
+
+Start the enterprise version in Galileo, not in Kubernetes. The first screen
+should establish the behavior contract before the audience sees any live tool
+request.
+
+| Galileo asset | What to show | Why it matters |
+| --- | --- | --- |
+| Saved Playground | Runtime prompt `defenseclaw-runtime-governance` and variables such as `user_prompt`, `cluster_context`, `agent_name`, and `guardrail_mode`. | The agent has a declared operating contract before the incident begins. |
+| Agent Flow prompt | `prompts/galileo/enterprise-ops-agent-flow.md`. | The expected sequence is testable: detect, investigate, approve writes, deny unsafe branches, close evidence. |
+| Enterprise dataset | `defenseclaw-enterprise-ops-thousandeyes`. | Success, failure, approval, and abuse branches are repeatable. |
+| Runtime controls | `require-approval-thousandeyes-test-change`, `require-approval-k8s-mutation`, `deny-dangerous-shell-pre-tool`, and `deny-evidence-tampering`. | Galileo Agent Control is the named decision authority. |
+| Evaluation metrics | Agent Flow, Action Advancement, Action Completion, Context Adherence, Prompt Injection, Tool Error Rate, and Tool Selection Quality. | The demo evaluates behavior quality, not just whether a command was blocked once. |
+
+Speaker note:
+
+```text
+Galileo is the contract and evaluation layer. Splunk tells us what happened
+operationally; Galileo tells us whether the agent followed the behavior we
+expected and whether the scenario is safe enough to promote.
+```
 
 ## TeaStore Target
 
@@ -193,6 +218,35 @@ uses `steer` for approval-required steps, which DefenseClaw renders as an
 inspect `alert` with the named control and approval guidance. Destructive
 actions still use `deny`, which renders as `block`.
 
+## Governed TeaStore Plan A v2
+
+OpenClaw originally could not execute the Plan A v2 remediation because its
+`defenseclaw-agent` service account was intentionally read-only. The demo now
+adds a narrow RoleBinding in namespace `teastore` that permits only `get`,
+`patch`, and `update` on `deployment/teastore-webui-v1`.
+
+After the operator approves the exact Plan A v2 action in OpenClaw, the allowed
+mutation is the WebUI memory/probe patch only:
+
+```bash
+kubectl -n teastore patch deployment teastore-webui-v1 --type=strategic \
+  -p '{"spec":{"template":{"spec":{"containers":[{"name":"teastore-webui-v1","resources":{"requests":{"cpu":"500m","memory":"1Gi"},"limits":{"cpu":"1","memory":"4Gi"}},"readinessProbe":{"httpGet":{"path":"/tools.descartes.teastore.webui/rest/ready/isready","port":8080},"initialDelaySeconds":60,"periodSeconds":10,"timeoutSeconds":10,"failureThreshold":6},"livenessProbe":{"httpGet":{"path":"/tools.descartes.teastore.webui/rest/ready/isready","port":8080},"initialDelaySeconds":120,"periodSeconds":10,"timeoutSeconds":10,"failureThreshold":6}}]}}}}'
+
+kubectl -n teastore rollout status deployment/teastore-webui-v1 --timeout=180s
+```
+
+Rollback restores the current baseline:
+
+```bash
+kubectl -n teastore patch deployment teastore-webui-v1 --type=strategic \
+  -p '{"spec":{"template":{"spec":{"containers":[{"name":"teastore-webui-v1","resources":{"requests":{"cpu":"500m","memory":"1Gi"},"limits":{"cpu":"1","memory":"3Gi"}},"readinessProbe":{"httpGet":{"path":"/tools.descartes.teastore.webui/rest/ready/isready","port":8080},"initialDelaySeconds":0,"periodSeconds":10,"timeoutSeconds":5,"failureThreshold":6},"livenessProbe":null}]}}}}'
+
+kubectl -n teastore rollout status deployment/teastore-webui-v1 --timeout=180s
+```
+
+Plan A v2 does not change DNS, ThousandEyes targets, Secrets, other
+deployments, or replicas.
+
 ## Live ThousandEyes Readiness
 
 This path verifies the real ThousandEyes account without creating, updating, or
@@ -235,6 +289,51 @@ controls are configured and attached to `defenseclaw-openclaw`:
 
 - `require-approval-thousandeyes-test-change`
 - `require-approval-k8s-mutation`
+
+The ThousandEyes control must cover both legacy HTTP-shaped writes and the
+OpenClaw MCP tool names used by this demo. In particular,
+`mcp__thousandeyes-mcp__create_synthetic_test` must match
+`require-approval-thousandeyes-test-change`; otherwise the live approval step
+will be incorrectly allowed instead of steered for operator approval.
+
+For OpenClaw chat, use the hosted MCP tool argument shapes exactly:
+
+```text
+thousandeyes-mcp__list_network_app_synthetics_tests({
+  "name": "defenseclaw-demo-teastore-k8s",
+  "type": "http-server",
+  "target": "teastore-webui",
+  "detail": "compact",
+  "page_size": 20
+})
+
+thousandeyes-mcp__list_cloud_enterprise_agents({
+  "agent_type": "enterprise",
+  "enabled": true
+})
+```
+
+The ThousandEyes Kubernetes agent is a Cloud/Enterprise Agent, so do not use
+`list_endpoint_agents` for `te-agent-aleccham`. Endpoint Agent filters are for
+endpoint/laptop agents and require array-valued fields.
+
+Splunk O11y APM MCP tools require a top-level `params` object:
+
+```text
+splunk-observability-cloud__o11y_get_apm_environments({
+  "params": {
+    "environment_name": "teastore",
+    "time_range": {"start": "-24h", "stop": "now"}
+  }
+})
+
+splunk-observability-cloud__o11y_get_apm_services({
+  "params": {
+    "environment_name": "teastore",
+    "time_range": {"start": "-24h", "stop": "now"}
+  }
+})
+```
 
 ## Live Splunk O11y MCP Evidence
 
@@ -321,15 +420,18 @@ reuses that test on repeated runs instead of creating a duplicate.
 
 ## Live Galileo Session
 
-Use this path to log one live Galileo Session named from the incident ticket.
-The CLI writes the full operator path: O11y detection, K8s read, ThousandEyes
-inventory, DefenseClaw inspect, TE create/reuse, remediation proposal, unsafe
-action block, Splunk audit closure, and Autonomy SLO:
+Use this path as the mainline when Galileo credentials are available. It logs
+one live Galileo Session named from the incident ticket. The CLI writes the full
+operator path: Galileo behavior contract, O11y detection, K8s read,
+ThousandEyes inventory, DefenseClaw inspect, TE create/reuse, remediation
+proposal, unsafe action block, Splunk audit closure, Galileo evaluation, and
+Autonomy SLO:
 
 ```bash
+export GALILEO_SECRET_KEY="${GALILEO_SECRET_KEY:-GALILEO_DEMO_V2_API_KEY}"
 export GALILEO_API_KEY="$(
   kubectl -n defenseclaw get secret defenseclaw-secrets \
-    -o jsonpath='{.data.GALILEO_API_KEY}' | base64 --decode
+    -o "jsonpath={.data.${GALILEO_SECRET_KEY}}" | base64 --decode
 )"
 export GALILEO_PROJECT="defenseclaw-enterprise-ops-20260515"
 export GALILEO_LOG_STREAM="defenseclaw-enterprise-ops-20260515"
@@ -352,7 +454,13 @@ PYTHONPATH=cli python -m defenseclaw.main demo enterprise-ops \
 
 The session is intentionally incident-shaped rather than chat-shaped: one trace
 contains the tool spans an operator would expect to review during the executive
-demo.
+demo. The first span anchors the expected behavior contract; the later Galileo
+evaluation span ties the live run back to the same dataset, controls, and
+metrics.
+
+For the demo-v2 Galileo tenant, `GALILEO_DEMO_V2_API_KEY` is the validated
+Kubernetes secret key. It is exported as `GALILEO_API_KEY` because the Galileo
+SDK reads that environment variable.
 
 For the single-screen executive view, render the same report data as the
 control room:
@@ -486,7 +594,8 @@ metric enums.
 Upload it with the existing uploader when Galileo credentials are available:
 
 ```bash
-GALILEO_API_KEY="$(kubectl -n defenseclaw get secret defenseclaw-secrets -o jsonpath='{.data.GALILEO_API_KEY}' | base64 --decode)" \
+export GALILEO_SECRET_KEY="${GALILEO_SECRET_KEY:-GALILEO_DEMO_V2_API_KEY}"
+export GALILEO_API_KEY="$(kubectl -n defenseclaw get secret defenseclaw-secrets -o "jsonpath={.data.${GALILEO_SECRET_KEY}}" | base64 --decode)"
 GALILEO_CONSOLE_URL="https://console.demo-v2.galileocloud.io" \
 GALILEO_API_URL="https://api.demo-v2.galileocloud.io" \
 python3 scripts/upload_galileo_demo_datasets.py \
@@ -498,7 +607,8 @@ python3 scripts/upload_galileo_demo_datasets.py \
 Run deterministic runtime-evidence experiments without an external LLM call:
 
 ```bash
-GALILEO_API_KEY="$(kubectl -n defenseclaw get secret defenseclaw-secrets -o jsonpath='{.data.GALILEO_API_KEY}' | base64 --decode)" \
+export GALILEO_SECRET_KEY="${GALILEO_SECRET_KEY:-GALILEO_DEMO_V2_API_KEY}"
+export GALILEO_API_KEY="$(kubectl -n defenseclaw get secret defenseclaw-secrets -o "jsonpath={.data.${GALILEO_SECRET_KEY}}" | base64 --decode)"
 GALILEO_CONSOLE_URL="https://console.demo-v2.galileocloud.io" \
 GALILEO_API_URL="https://api.demo-v2.galileocloud.io" \
 python3 scripts/run_galileo_runtime_evidence_experiment.py \
@@ -510,13 +620,14 @@ python3 scripts/run_galileo_runtime_evidence_experiment.py \
 Live TeaStore validation artifacts:
 
 ```text
-Galileo experiment ID: 8509a9dc-c2aa-4494-a537-b97d05a05d65
+Galileo experiment ID: b1d20128-4e55-4f3f-999b-f4962491c5e5
 Prior 5-row experiment ID: a8ac7be0-6431-449b-a089-c8431d99de70
 ThousandEyes test ID: 8597876
 Galileo project: defenseclaw-enterprise-ops-20260515 / ef0960e1-8744-4019-9faa-103b13f94e0d
 Galileo log stream ID: 7d3fa020-621d-4164-aa4a-96b600663c92
-Runtime prompt version: 1 / fc6eed9c-01a4-42fb-9103-d7a7e5bd2d17
+Runtime prompt version: 2 / 8ebe7696-a235-49f7-88bf-1d5abb3645d7
 Agent Flow prompt ID: ce2a5908-bc6c-45e0-89e7-cd498d6ed870
+Agent Flow prompt version: 2 / 4400f9ef-699f-4812-b6a3-ae39cc35a08d
 ```
 
 ## Optional Intersight Angle

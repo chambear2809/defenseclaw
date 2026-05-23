@@ -1804,23 +1804,38 @@ func (p *GuardrailProxy) handleChatCompletion(w http.ResponseWriter, r *http.Req
 	// --- Create invoke_agent root span for this request ---
 	var agentCtx context.Context
 	var agentSpan trace.Span
+	agentStartTime := time.Now()
+	agentName := ""
+	agentID := ""
 	if p.otel != nil {
 		conversationID := r.Header.Get("X-Conversation-ID")
 		if conversationID == "" {
 			conversationID = fmt.Sprintf("proxy-%d", time.Now().UnixNano())
 		}
-		agentName := p.agentNameForRequest(r.Header.Get("X-Agent-Name"))
+		agentName = p.agentNameForRequest(r.Header.Get("X-Agent-Name"))
+		agentID = p.agentIDForRequest()
 		agentCtx, agentSpan = p.otel.StartAgentSpan(
-			context.Background(),
-			conversationID, agentName, agentName, p.agentIDForRequest(), "",
+			context.Background(), conversationID, agentName, agentName, agentID, "",
 		)
 	}
 	if agentCtx == nil {
 		agentCtx = context.Background()
 	}
+	userText := lastUserText(req.Messages)
+	agentEnded := false
+	agentSummary := telemetry.AgentSpanSummary{
+		Input: userText,
+	}
+	endAgentSpan := func(errMsg string) {
+		if p.otel == nil || agentSpan == nil || agentEnded {
+			return
+		}
+		agentEnded = true
+		p.otel.RecordAgentDuration(agentCtx, "invoke_agent", agentName, agentName, agentID, time.Since(agentStartTime).Seconds())
+		p.otel.EndAgentSpan(agentSpan, errMsg, agentSummary)
+	}
 
 	// --- Pre-call inspection (apply_guardrail input, child of invoke_agent) ---
-	userText := lastUserText(req.Messages)
 	_, promptProviderName := p.llmSystemAndProvider(req.Model)
 	promptID := ""
 	inspectionText := promptInspectionText(userText)
@@ -1874,9 +1889,7 @@ func (p *GuardrailProxy) handleChatCompletion(w http.ResponseWriter, r *http.Req
 			rawTelemetryField{key: "raw_request_body", raw: req.RawBody})
 
 		if verdict.Action == "block" && mode == "action" {
-			if p.otel != nil && agentSpan != nil {
-				p.otel.EndAgentSpan(agentSpan, "guardrail blocked")
-			}
+			endAgentSpan("guardrail blocked")
 			msg := blockMessage(customBlockMsg, "prompt", verdict.Reason)
 			p.enqueueBlockNotification(verdict, "prompt", req.Model)
 			if req.Stream {
@@ -1890,6 +1903,7 @@ func (p *GuardrailProxy) handleChatCompletion(w http.ResponseWriter, r *http.Req
 
 	// --- Forward to upstream provider ---
 	if p.resolveProviderFn == nil {
+		endAgentSpan("proxy misconfigured")
 		writeOpenAIError(w, http.StatusInternalServerError, "proxy misconfigured: no provider resolver")
 		return
 	}
@@ -1902,23 +1916,47 @@ func (p *GuardrailProxy) handleChatCompletion(w http.ResponseWriter, r *http.Req
 		} else {
 			p.writeBlockedResponse(w, req.Model, msg)
 		}
+		endAgentSpan("provider unsupported")
 		return
 	}
 
 	if req.Stream {
-		p.handleStreamingRequest(w, r, &req, mode, customBlockMsg, upstream, agentCtx, promptID)
+		p.handleStreamingRequest(w, r, &req, mode, customBlockMsg, upstream, agentCtx, promptID, &agentSummary)
 	} else {
-		p.handleNonStreamingRequest(w, r, &req, mode, customBlockMsg, upstream, agentCtx, promptID)
+		p.handleNonStreamingRequest(w, r, &req, mode, customBlockMsg, upstream, agentCtx, promptID, &agentSummary)
 	}
 
 	// End invoke_agent span after the full request completes.
-	if p.otel != nil && agentSpan != nil {
-		p.otel.EndAgentSpan(agentSpan, "")
-	}
+	endAgentSpan("")
 }
 
-func (p *GuardrailProxy) handleNonStreamingRequest(w http.ResponseWriter, r *http.Request, req *ChatRequest, mode, customBlockMsg string, upstream LLMProvider, agentCtx context.Context, promptID string) {
+func chatUsageTokens(usage *ChatUsage, input, output string) (int, int, bool) {
+	if usage != nil {
+		return int(usage.PromptTokens), int(usage.CompletionTokens), false
+	}
+	inputTokens := telemetry.EstimateTokenCount(input)
+	outputTokens := telemetry.EstimateTokenCount(output)
+	return inputTokens, outputTokens, inputTokens != 0 || outputTokens != 0
+}
+
+func updateAgentSpanSummary(summary *telemetry.AgentSpanSummary, input, output string, inputTokens, outputTokens int, estimated bool) {
+	if summary == nil {
+		return
+	}
+	if summary.Input == "" {
+		summary.Input = input
+	}
+	if output != "" {
+		summary.Output = output
+	}
+	summary.InputTokens += inputTokens
+	summary.OutputTokens += outputTokens
+	summary.TokenUsageEstimated = summary.TokenUsageEstimated || estimated
+}
+
+func (p *GuardrailProxy) handleNonStreamingRequest(w http.ResponseWriter, r *http.Request, req *ChatRequest, mode, customBlockMsg string, upstream LLMProvider, agentCtx context.Context, promptID string, agentSummary *telemetry.AgentSpanSummary) {
 	aliasModel := req.Model
+	inputContent := lastUserText(req.Messages)
 	fmt.Fprintf(os.Stderr, "[guardrail] → upstream (non-streaming) model=%q messages=%d\n", req.Model, len(req.Messages))
 
 	// Start LLM span as child of invoke_agent.
@@ -1947,7 +1985,12 @@ func (p *GuardrailProxy) handleNonStreamingRequest(w http.ResponseWriter, r *htt
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[guardrail] upstream error: %v\n", err)
 		if p.otel != nil && llmSpan != nil {
-			p.otel.EndLLMSpan(r.Context(), llmSpan, aliasModel, 0, 0, []string{"error"}, 0, "none", "", system, llmStartTime, p.connectorName(), p.connectorName(), p.agentIDForRequest(), SessionIDFromContext(r.Context()))
+			promptTok, completionTok, estimated := chatUsageTokens(nil, inputContent, "")
+			updateAgentSpanSummary(agentSummary, inputContent, "", promptTok, completionTok, estimated)
+			p.otel.EndLLMSpan(r.Context(), llmSpan, aliasModel, promptTok, completionTok, []string{"error"}, 0, "none", "", providerName, llmStartTime, p.connectorName(), p.connectorName(), p.agentIDForRequest(), SessionIDFromContext(r.Context()), telemetry.LLMSpanContent{
+				Input:               inputContent,
+				TokenUsageEstimated: estimated,
+			})
 		}
 		writeOpenAIError(w, http.StatusBadGateway, "upstream provider error: "+err.Error())
 		return
@@ -2038,12 +2081,13 @@ func (p *GuardrailProxy) handleNonStreamingRequest(w http.ResponseWriter, r *htt
 
 		if verdict.Action == "block" && mode == "action" {
 			if p.otel != nil && llmSpan != nil {
-				promptTok, completionTok := 0, 0
-				if resp.Usage != nil {
-					promptTok = int(resp.Usage.PromptTokens)
-					completionTok = int(resp.Usage.CompletionTokens)
-				}
-				p.otel.EndLLMSpan(r.Context(), llmSpan, aliasModel, promptTok, completionTok, finishReasons, toolCallCount, guardrail, "blocked", system, llmStartTime, p.connectorName(), p.connectorName(), p.agentIDForRequest(), SessionIDFromContext(r.Context()))
+				promptTok, completionTok, estimated := chatUsageTokens(resp.Usage, inputContent, content)
+				updateAgentSpanSummary(agentSummary, inputContent, content, promptTok, completionTok, estimated)
+				p.otel.EndLLMSpan(r.Context(), llmSpan, aliasModel, promptTok, completionTok, finishReasons, toolCallCount, guardrail, "blocked", providerName, llmStartTime, p.connectorName(), p.connectorName(), p.agentIDForRequest(), SessionIDFromContext(r.Context()), telemetry.LLMSpanContent{
+					Input:               inputContent,
+					Output:              content,
+					TokenUsageEstimated: estimated,
+				})
 			}
 			msg := blockMessage(customBlockMsg, "completion", verdict.Reason)
 			p.enqueueBlockNotification(verdict, "completion", aliasModel)
@@ -2060,12 +2104,13 @@ func (p *GuardrailProxy) handleNonStreamingRequest(w http.ResponseWriter, r *htt
 				rawTelemetryField{key: "raw_tool_calls", raw: resp.Choices[0].Message.ToolCalls})
 			if verdict.Action == "block" && mode == "action" {
 				if p.otel != nil && llmSpan != nil {
-					promptTok, completionTok := 0, 0
-					if resp.Usage != nil {
-						promptTok = int(resp.Usage.PromptTokens)
-						completionTok = int(resp.Usage.CompletionTokens)
-					}
-					p.otel.EndLLMSpan(r.Context(), llmSpan, aliasModel, promptTok, completionTok, finishReasons, toolCallCount, "local", "blocked", system, llmStartTime, p.connectorName(), p.connectorName(), p.agentIDForRequest(), SessionIDFromContext(r.Context()))
+					promptTok, completionTok, estimated := chatUsageTokens(resp.Usage, inputContent, content)
+					updateAgentSpanSummary(agentSummary, inputContent, content, promptTok, completionTok, estimated)
+					p.otel.EndLLMSpan(r.Context(), llmSpan, aliasModel, promptTok, completionTok, finishReasons, toolCallCount, "local", "blocked", providerName, llmStartTime, p.connectorName(), p.connectorName(), p.agentIDForRequest(), SessionIDFromContext(r.Context()), telemetry.LLMSpanContent{
+						Input:               inputContent,
+						Output:              content,
+						TokenUsageEstimated: estimated,
+					})
 				}
 				msg := blockMessage(customBlockMsg, "completion",
 					fmt.Sprintf("tool call blocked — %s", verdict.Reason))
@@ -2088,12 +2133,13 @@ func (p *GuardrailProxy) handleNonStreamingRequest(w http.ResponseWriter, r *htt
 
 	// End LLM span with response data.
 	if p.otel != nil && llmSpan != nil {
-		promptTok, completionTok := 0, 0
-		if resp.Usage != nil {
-			promptTok = int(resp.Usage.PromptTokens)
-			completionTok = int(resp.Usage.CompletionTokens)
-		}
-		p.otel.EndLLMSpan(r.Context(), llmSpan, aliasModel, promptTok, completionTok, finishReasons, toolCallCount, guardrail, guardrailResult, system, llmStartTime, p.connectorName(), p.connectorName(), p.agentIDForRequest(), SessionIDFromContext(r.Context()))
+		promptTok, completionTok, estimated := chatUsageTokens(resp.Usage, inputContent, content)
+		updateAgentSpanSummary(agentSummary, inputContent, content, promptTok, completionTok, estimated)
+		p.otel.EndLLMSpan(r.Context(), llmSpan, aliasModel, promptTok, completionTok, finishReasons, toolCallCount, guardrail, guardrailResult, providerName, llmStartTime, p.connectorName(), p.connectorName(), p.agentIDForRequest(), SessionIDFromContext(r.Context()), telemetry.LLMSpanContent{
+			Input:               inputContent,
+			Output:              content,
+			TokenUsageEstimated: estimated,
+		})
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -2110,7 +2156,7 @@ func (p *GuardrailProxy) handleNonStreamingRequest(w http.ResponseWriter, r *htt
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
-func (p *GuardrailProxy) handleStreamingRequest(w http.ResponseWriter, r *http.Request, req *ChatRequest, mode, customBlockMsg string, upstream LLMProvider, agentCtx context.Context, promptID string) {
+func (p *GuardrailProxy) handleStreamingRequest(w http.ResponseWriter, r *http.Request, req *ChatRequest, mode, customBlockMsg string, upstream LLMProvider, agentCtx context.Context, promptID string, agentSummary *telemetry.AgentSpanSummary) {
 	const sseRoute = "/v1/chat/completions"
 	var sseBytes int64
 	if _, ok := w.(http.Flusher); !ok {
@@ -2151,6 +2197,7 @@ func (p *GuardrailProxy) handleStreamingRequest(w http.ResponseWriter, r *http.R
 	}()
 
 	aliasModel := req.Model
+	inputContent := lastUserText(req.Messages)
 	fmt.Fprintf(os.Stderr, "[guardrail] → upstream (streaming) model=%q messages=%d\n", req.Model, len(req.Messages))
 
 	// Start LLM span as child of invoke_agent.
@@ -2295,7 +2342,13 @@ func (p *GuardrailProxy) handleStreamingRequest(w http.ResponseWriter, r *http.R
 			fmt.Sprintf("upstream stream error: %v", err), err)
 		fmt.Fprintf(os.Stderr, "[guardrail] stream error: %v\n", err)
 		if p.otel != nil && llmSpan != nil {
-			p.otel.EndLLMSpan(r.Context(), llmSpan, aliasModel, 0, 0, []string{"error"}, 0, "none", "", system, llmStartTime, p.connectorName(), p.connectorName(), p.agentIDForRequest(), SessionIDFromContext(r.Context()))
+			promptTok, completionTok, estimated := chatUsageTokens(nil, inputContent, accumulated.String())
+			updateAgentSpanSummary(agentSummary, inputContent, accumulated.String(), promptTok, completionTok, estimated)
+			p.otel.EndLLMSpan(r.Context(), llmSpan, aliasModel, promptTok, completionTok, []string{"error"}, 0, "none", "", providerName, llmStartTime, p.connectorName(), p.connectorName(), p.agentIDForRequest(), SessionIDFromContext(r.Context()), telemetry.LLMSpanContent{
+				Input:               inputContent,
+				Output:              accumulated.String(),
+				TokenUsageEstimated: estimated,
+			})
 			llmSpan = nil
 		}
 	}
@@ -2310,7 +2363,13 @@ func (p *GuardrailProxy) handleStreamingRequest(w http.ResponseWriter, r *http.R
 		blockedMeta.ResponseID = stableLLMEventID("response", blockedMeta.Source, blockedMeta.SessionID, blockedMeta.RequestID, req.Model, "blocked")
 		emitLLMResponseEvent(r.Context(), blockedMeta, accumulated.String(), accumulated.String(), append(streamFinishReasons, "blocked"))
 		if p.otel != nil && llmSpan != nil {
-			p.otel.EndLLMSpan(r.Context(), llmSpan, aliasModel, 0, 0, append(streamFinishReasons, "blocked"), 0, "local", "block", system, llmStartTime, p.connectorName(), p.connectorName(), p.agentIDForRequest(), SessionIDFromContext(r.Context()))
+			promptTok, completionTok, estimated := chatUsageTokens(nil, inputContent, accumulated.String())
+			updateAgentSpanSummary(agentSummary, inputContent, accumulated.String(), promptTok, completionTok, estimated)
+			p.otel.EndLLMSpan(r.Context(), llmSpan, aliasModel, promptTok, completionTok, append(streamFinishReasons, "blocked"), 0, "local", "block", providerName, llmStartTime, p.connectorName(), p.connectorName(), p.agentIDForRequest(), SessionIDFromContext(r.Context()), telemetry.LLMSpanContent{
+				Input:               inputContent,
+				Output:              accumulated.String(),
+				TokenUsageEstimated: estimated,
+			})
 		}
 		msg := blockMessage(customBlockMsg, "completion", "content blocked mid-stream by guardrail")
 		blockChunk := StreamChunk{
@@ -2425,14 +2484,15 @@ func (p *GuardrailProxy) handleStreamingRequest(w http.ResponseWriter, r *http.R
 	}
 
 	if p.otel != nil && llmSpan != nil {
-		promptTok, completionTok := 0, 0
-		if usage != nil {
-			promptTok = int(usage.PromptTokens)
-			completionTok = int(usage.CompletionTokens)
-		}
+		promptTok, completionTok, estimated := chatUsageTokens(usage, inputContent, accumulated.String())
+		updateAgentSpanSummary(agentSummary, inputContent, accumulated.String(), promptTok, completionTok, estimated)
 		p.otel.SetRawSpanString(llmSpan, "defenseclaw.llm.response.content", accumulated.String())
 		p.otel.SetRawSpanString(llmSpan, "defenseclaw.llm.tool_calls", string(assembledTC))
-		p.otel.EndLLMSpan(r.Context(), llmSpan, aliasModel, promptTok, completionTok, streamFinishReasons, toolCallCount, guardrail, guardrailResult, system, llmStartTime, p.connectorName(), p.connectorName(), p.agentIDForRequest(), SessionIDFromContext(r.Context()))
+		p.otel.EndLLMSpan(r.Context(), llmSpan, aliasModel, promptTok, completionTok, streamFinishReasons, toolCallCount, guardrail, guardrailResult, providerName, llmStartTime, p.connectorName(), p.connectorName(), p.agentIDForRequest(), SessionIDFromContext(r.Context()), telemetry.LLMSpanContent{
+			Input:               inputContent,
+			Output:              accumulated.String(),
+			TokenUsageEstimated: estimated,
+		})
 	}
 
 	// Flush buffered tool-call chunks only when inspection passed.

@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-FROM python:3.13-slim AS deps
+FROM python:3.11-slim AS deps
 
 WORKDIR /src
 COPY requirements-agent.txt /src/requirements-agent.txt
