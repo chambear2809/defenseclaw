@@ -1367,7 +1367,7 @@ spec:
               subPath: openclaw-client
       containers:
         - name: defenseclaw
-          image: 637423309390.dkr.ecr.us-east-1.amazonaws.com/defenseclaw:0.6.0-web-tui-20260523-galileo-raw-4
+          image: 637423309390.dkr.ecr.us-east-1.amazonaws.com/defenseclaw:0.6.2-web-tui-20260525-key-store-1
           imagePullPolicy: IfNotPresent
           env:
             - name: HOME
@@ -1454,7 +1454,7 @@ spec:
             - mountPath: /tmp
               name: tmp
         - name: defenseclaw-web-tui
-          image: 637423309390.dkr.ecr.us-east-1.amazonaws.com/defenseclaw:0.6.0-web-tui-20260523-galileo-raw-4
+          image: 637423309390.dkr.ecr.us-east-1.amazonaws.com/defenseclaw:0.6.2-web-tui-20260525-key-store-1
           imagePullPolicy: IfNotPresent
           command:
             - defenseclaw-gateway
@@ -1670,7 +1670,7 @@ spec:
         fsGroupChangePolicy: OnRootMismatch
       initContainers:
         - name: defenseclaw-plugin-bootstrap
-          image: 637423309390.dkr.ecr.us-east-1.amazonaws.com/defenseclaw:0.6.0-web-tui-20260523-galileo-raw-4
+          image: 637423309390.dkr.ecr.us-east-1.amazonaws.com/defenseclaw:0.6.2-web-tui-20260525-key-store-1
           imagePullPolicy: IfNotPresent
           command:
             - sh

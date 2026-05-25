@@ -113,8 +113,9 @@ duo-sso
 aws eks update-kubeconfig --region us-east-1 --name isovalent-demo
 
 make docker-gateway-overlay-push \
-  OVERLAY_BASE_IMAGE=637423309390.dkr.ecr.us-east-1.amazonaws.com/defenseclaw:0.6.0 \
-  OVERLAY_IMAGE_TAG=0.6.0-web-tui-20260520-2
+  VERSION=0.6.2 \
+  OVERLAY_BASE_IMAGE=637423309390.dkr.ecr.us-east-1.amazonaws.com/defenseclaw:0.6.0-web-tui-20260523-galileo-raw-4 \
+  OVERLAY_IMAGE_TAG=0.6.2-web-tui-20260525-key-store-1
 
 # Built by the splunk-cisco-skills-bundle workflow from pinned source commit
 # 2bce17ff8f2f29afd6f5326d7976d20c251538a4. Runtime pods never pull GitHub
