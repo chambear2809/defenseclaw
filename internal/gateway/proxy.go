@@ -346,7 +346,8 @@ func NewGuardrailProxy(
 		}
 	}
 
-	judge := NewLLMJudge(&cfg.Judge, judgeLLM, dotenvPath, rp)
+	providers, _, _ := providerRegistrySnapshot()
+	judge := NewLLMJudge(&cfg.Judge, judgeLLM, dotenvPath, rp, providers)
 
 	inspector := NewGuardrailInspector(cfg.ScannerMode, cisco, judge, policyDir)
 	inspector.SetDetectionStrategy(
@@ -1509,6 +1510,69 @@ func ReloadProviderRegistry() error {
 	return nil
 }
 
+// SeedCustomProvidersFromLLMBaseURL writes a custom-providers.json overlay
+// that registers the domain from llmBaseURL as a known provider. This allows
+// custom deployments to route traffic through an LLM gateway whose domain is
+// not in the built-in providers list.
+//
+// The file is written to the path returned by configs.CustomProvidersPath().
+// After writing, ReloadProviderRegistry() is called so the domain is
+// immediately recognized by isKnownProviderDomain().
+//
+// No-op when llmBaseURL is empty or cannot be parsed.
+func SeedCustomProvidersFromLLMBaseURL(llmBaseURL string) error {
+	llmBaseURL = strings.TrimSpace(llmBaseURL)
+	if llmBaseURL == "" {
+		return nil
+	}
+	u, err := url.Parse(llmBaseURL)
+	if err != nil {
+		return nil // unparseable URL — skip silently
+	}
+	host := strings.ToLower(u.Hostname())
+	if host == "" || host == "127.0.0.1" || host == "localhost" {
+		return nil // loopback addresses are handled by Ollama / local logic
+	}
+
+	// Check if the domain is already known — avoid writing a redundant overlay.
+	providerRegistryMu.RLock()
+	for _, pd := range providerDomains {
+		if strings.EqualFold(pd.domain, host) {
+			providerRegistryMu.RUnlock()
+			return nil
+		}
+	}
+	providerRegistryMu.RUnlock()
+
+	overlayPath := configs.CustomProvidersPath()
+	if overlayPath == "" {
+		return fmt.Errorf("custom-providers path is empty (no HOME set)")
+	}
+
+	overlay := configs.ProvidersConfig{
+		Providers: []configs.Provider{{
+			Name:    "custom-gateway",
+			Domains: []string{host},
+			EnvKeys: []string{"LLM_GATEWAY"},
+		}},
+	}
+	data, err := json.MarshalIndent(overlay, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	dir := filepath.Dir(overlayPath)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	if err := os.WriteFile(overlayPath, data, 0o600); err != nil {
+		return err
+	}
+
+	fmt.Fprintf(os.Stderr, "[sidecar] custom-providers overlay seeded for domain %q\n", host)
+	return ReloadProviderRegistry()
+}
+
 // providerRegistrySnapshot returns the currently-loaded provider list
 // under the read lock. The returned slice is safe to iterate but not to
 // mutate.
@@ -1546,6 +1610,10 @@ func inferProviderFromURL(targetURL string) string {
 // model and API key. This handles the direct-provider case where the agent is
 // configured with "defenseclaw" as a custom provider and sends requests straight
 // to the guardrail proxy without the fetch interceptor setting X-DC-Target-URL.
+//
+// When “cfg.llm.instance_name“ is set, the resolution honors the overlay
+// entry in “~/.defenseclaw/custom-providers.json“ for base_url, base
+// provider type, and TLS — see :func:`NewProviderForLLMConfig`.
 func (p *GuardrailProxy) resolveConfiguredProvider(req *ChatRequest) LLMProvider {
 	cfgModel := p.cfg.Model
 	if cfgModel == "" {
@@ -1578,9 +1646,26 @@ func (p *GuardrailProxy) resolveConfiguredProvider(req *ChatRequest) LLMProvider
 		return nil
 	}
 
-	fmt.Fprintf(os.Stderr, "[guardrail] direct-provider mode: using configured model %q\n", cfgModel)
+	instanceName := strings.TrimSpace(p.cfg.LLM.InstanceName)
+	baseURL := strings.TrimSpace(p.cfg.LLM.BaseURL)
+	if instanceName != "" {
+		fmt.Fprintf(os.Stderr, "[guardrail] direct-provider mode: model=%q instance=%q\n", cfgModel, instanceName)
+	} else {
+		fmt.Fprintf(os.Stderr, "[guardrail] direct-provider mode: using configured model %q\n", cfgModel)
+	}
 
-	provider, err := NewProvider(cfgModel, apiKey)
+	registry, _, _ := providerRegistrySnapshot()
+	// Build an effective LLMConfig from the proxy config, with the
+	// already-resolved API key pinned inline so the dispatcher does
+	// not re-resolve (which would lose the connector token resolver
+	// / dotenv fallback applied above).
+	effLLM := p.cfg.LLM
+	effLLM.Model = cfgModel
+	effLLM.APIKey = apiKey
+	effLLM.APIKeyEnv = ""
+	effLLM.BaseURL = baseURL
+	effLLM.InstanceName = instanceName
+	provider, err := NewProviderForLLMConfig(&effLLM, registry)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[guardrail] failed to create provider for %q: %v\n", cfgModel, err)
 		return nil
@@ -1645,6 +1730,52 @@ func (p *GuardrailProxy) resolveProviderFromHeaders(req *ChatRequest) LLMProvide
 	}
 
 	modelArg := compositeModelForUpstream(prefix, req.Model)
+
+	// When the operator has configured an instance_name, route through the
+	// overlay so per-instance TLS / base_url / sub-block posture apply. This
+	// keeps fetch-interceptor traffic and native-binary connector traffic
+	// (ZeptoClaw / Codex) flowing through custom-provider config without
+	// requiring the agent to send a new header.
+	//
+	// The family guard below only fires when the URL resolved to a *different*
+	// provider than the pinned overlay entry. Two cases skip the guard and
+	// apply the overlay anyway:
+	//
+	//   1. The overlay declares no base_provider_type — there is nothing to
+	//      contradict the inferred family.
+	//   2. The inferred prefix matches the overlay's own Name. That only
+	//      happens when inferProviderFromURL hit a domain listed under this
+	//      exact overlay entry, which is the strongest possible "this is the
+	//      right overlay" signal. Without this carve-out, a corporate proxy
+	//      whose hostname is registered against an overlay with
+	//      base_provider_type="bedrock" silently bypasses the overlay because
+	//      the inferred prefix is the overlay name, not "bedrock".
+	instanceName := strings.TrimSpace(p.cfg.LLM.InstanceName)
+	if instanceName != "" {
+		registry, _, _ := providerRegistrySnapshot()
+		if registry != nil {
+			for _, prov := range registry.Providers {
+				if !strings.EqualFold(prov.Name, instanceName) {
+					continue
+				}
+				if prov.BaseProviderType != "" &&
+					prov.BaseProviderType != prefix &&
+					!strings.EqualFold(prov.Name, prefix) {
+					fmt.Fprintf(os.Stderr,
+						"[guardrail] instance %q has base_provider_type=%q but URL inferred to %q; skipping overlay\n",
+						instanceName, prov.BaseProviderType, prefix)
+					break
+				}
+				provider, err := NewProviderForInstance(instanceName, modelArg, req.TargetAPIKey, registry)
+				if err == nil {
+					return provider
+				}
+				fmt.Fprintf(os.Stderr, "[guardrail] instance %q lookup failed, falling back: %v\n", instanceName, err)
+				break
+			}
+		}
+	}
+
 	provider, err := NewProviderWithBase(modelArg, req.TargetAPIKey, baseURL)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[guardrail] provider error: %v\n", err)
