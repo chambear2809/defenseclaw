@@ -1862,6 +1862,7 @@ spec:
               test -s "${src}"
               if [ ! -s "${dst}" ] || \
                 ! grep -q 'splunk-cisco-skills' "${dst}" 2>/dev/null || \
+                ! grep -q 'splunk-cisco-skills/releases/9bb131a104830b166dc0918b1be89332a7a8ada4' "${dst}" 2>/dev/null || \
                 ! grep -q '"bridgeit"' "${dst}" 2>/dev/null || \
                 ! grep -q 'bridgeit-rag' "${dst}" 2>/dev/null || \
                 ! grep -q 'splunk-observability-cloud' "${dst}" 2>/dev/null || \
