@@ -6,7 +6,7 @@ pulling mutable GitHub branches at runtime.
 ## Release Model
 
 - Source repository: `https://github.com/chambear2809/splunk-cisco-skills`
-- Current pinned source commit: `2bce17ff8f2f29afd6f5326d7976d20c251538a4`
+- Current pinned source commit: `9bb131a104830b166dc0918b1be89332a7a8ada4`
 - Runtime release path:
   `/home/node/.openclaw/splunk-cisco-skills/releases/<source-sha>`
 - Runtime pods do not install Python packages from PyPI. The bundle image
@@ -47,7 +47,7 @@ kubectl -n defenseclaw rollout status deploy/defenseclaw
 kubectl -n defenseclaw rollout status deploy/openclaw
 
 kubectl -n defenseclaw exec deploy/openclaw -- \
-  sh -c 'release=/home/node/.openclaw/splunk-cisco-skills/releases/2bce17ff8f2f29afd6f5326d7976d20c251538a4; test -s "$release/.complete" && test "$(cat "$release/.revision")" = "2bce17ff8f2f29afd6f5326d7976d20c251538a4"'
+  sh -c 'release=/home/node/.openclaw/splunk-cisco-skills/releases/9bb131a104830b166dc0918b1be89332a7a8ada4; test -s "$release/.complete" && test "$(cat "$release/.revision")" = "9bb131a104830b166dc0918b1be89332a7a8ada4"'
 ```
 
 Then validate OpenClaw and the guarded MCP surface:

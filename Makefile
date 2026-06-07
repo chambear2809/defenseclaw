@@ -17,7 +17,7 @@ OVERLAY_IMAGE_TAG ?= $(VERSION)-web-tui
 RUNTIME_NODE_IMAGE ?= node:20.20.2-bookworm-slim
 GATEWAY_LINUX_AMD64 := defenseclaw-gateway-galileo-linux-amd64
 SPLUNK_CISCO_SKILLS_SOURCE ?= ../splunk-cisco-skills
-SPLUNK_CISCO_SKILLS_SHA ?= 2bce17ff8f2f29afd6f5326d7976d20c251538a4
+SPLUNK_CISCO_SKILLS_SHA ?= 9bb131a104830b166dc0918b1be89332a7a8ada4
 SPLUNK_CISCO_BUNDLE_REPOSITORY ?= 637423309390.dkr.ecr.us-east-1.amazonaws.com/splunk-cisco-skills-bundle
 SPLUNK_CISCO_BUNDLE_CONTEXT ?= build/splunk-cisco-skills-bundle
 
