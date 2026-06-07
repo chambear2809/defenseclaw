@@ -112,10 +112,9 @@ The Splunk OTel Collector values expect:
 duo-sso
 aws eks update-kubeconfig --region us-east-1 --name isovalent-demo
 
-make docker-gateway-overlay-push \
-  VERSION=0.6.2 \
-  OVERLAY_BASE_IMAGE=637423309390.dkr.ecr.us-east-1.amazonaws.com/defenseclaw:0.6.0-web-tui-20260523-galileo-raw-4 \
-  OVERLAY_IMAGE_TAG=0.6.2-web-tui-20260525-key-store-1
+make docker-gateway-runtime-push \
+  VERSION=0.6.6 \
+  OVERLAY_IMAGE_TAG=0.6.6-web-tui-20260607-runtime-2
 
 # Built by the splunk-cisco-skills-bundle workflow from pinned source commit
 # 2bce17ff8f2f29afd6f5326d7976d20c251538a4. Runtime pods never pull GitHub

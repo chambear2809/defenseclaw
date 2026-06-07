@@ -14,6 +14,7 @@ DIST_DIR    := dist
 ECR_REPOSITORY ?= 637423309390.dkr.ecr.us-east-1.amazonaws.com/defenseclaw
 OVERLAY_BASE_IMAGE ?= $(ECR_REPOSITORY):$(VERSION)
 OVERLAY_IMAGE_TAG ?= $(VERSION)-web-tui
+RUNTIME_NODE_IMAGE ?= node:20.20.2-bookworm-slim
 GATEWAY_LINUX_AMD64 := defenseclaw-gateway-galileo-linux-amd64
 SPLUNK_CISCO_SKILLS_SOURCE ?= ../splunk-cisco-skills
 SPLUNK_CISCO_SKILLS_SHA ?= 2bce17ff8f2f29afd6f5326d7976d20c251538a4
@@ -22,7 +23,7 @@ SPLUNK_CISCO_BUNDLE_CONTEXT ?= build/splunk-cisco-skills-bundle
 
 .PHONY: all path doctor uninstall quickstart llm-setup \
         build install cli-install dev-install pycli dev-pycli gateway gateway-cross gateway-run start gateway-install \
-        gateway-linux-amd64 docker-gateway-overlay docker-gateway-overlay-push docker-splunk-cisco-skills-bundle \
+        gateway-linux-amd64 docker-gateway-overlay docker-gateway-overlay-push docker-gateway-runtime docker-gateway-runtime-push docker-splunk-cisco-skills-bundle \
         plugin plugin-install maybe-openclaw-plugin-install extensions test cli-test cli-test-cov gateway-test tui-test go-test-cov \
         connector-matrix-test go-connector-matrix-test py-connector-matrix-test \
         test-verbose test-file lint py-lint go-lint ts-test rego-test clean \
@@ -375,6 +376,17 @@ docker-gateway-overlay: gateway-linux-amd64
 	@echo "Built overlay image $(ECR_REPOSITORY):$(OVERLAY_IMAGE_TAG)"
 
 docker-gateway-overlay-push: docker-gateway-overlay
+	docker push $(ECR_REPOSITORY):$(OVERLAY_IMAGE_TAG)
+
+docker-gateway-runtime: extensions gateway-linux-amd64
+	docker build --platform linux/amd64 \
+		--build-arg NODE_IMAGE=$(RUNTIME_NODE_IMAGE) \
+		--build-arg APP_VERSION=$(VERSION) \
+		-t $(ECR_REPOSITORY):$(OVERLAY_IMAGE_TAG) \
+		-f deploy/docker/defenseclaw-gateway-runtime.Dockerfile .
+	@echo "Built runtime image $(ECR_REPOSITORY):$(OVERLAY_IMAGE_TAG)"
+
+docker-gateway-runtime-push: docker-gateway-runtime
 	docker push $(ECR_REPOSITORY):$(OVERLAY_IMAGE_TAG)
 
 docker-splunk-cisco-skills-bundle:

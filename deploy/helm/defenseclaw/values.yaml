@@ -2,7 +2,7 @@ replicaCount: 1
 
 image:
   repository: 637423309390.dkr.ecr.us-east-1.amazonaws.com/defenseclaw
-  tag: 0.6.2-web-tui-20260525-key-store-1
+  tag: 0.6.6-web-tui-20260607-runtime-2
   pullPolicy: IfNotPresent
 
 nameOverride: ""

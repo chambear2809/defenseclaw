@@ -136,7 +136,7 @@ When explaining this to new audiences, keep the split simple:
 | EKS cluster | `isovalent-demo` |
 | Runtime namespace | `defenseclaw` |
 | Optional Cisco Cloud Control namespace | `defenseclaw-tokenomics` |
-| Validated gateway image | `637423309390.dkr.ecr.us-east-1.amazonaws.com/defenseclaw:0.6.2-web-tui-20260525-key-store-1` |
+| Validated gateway image | `637423309390.dkr.ecr.us-east-1.amazonaws.com/defenseclaw:0.6.6-web-tui-20260607-runtime-2` |
 | Galileo project | `clus-demo` |
 | Galileo project ID | `0ba7b20d-8262-44c4-b230-547a0cd74b2b` |
 | Galileo log stream ID | `82b893bd-fa1f-411e-81e8-e12ca66692ad` |
