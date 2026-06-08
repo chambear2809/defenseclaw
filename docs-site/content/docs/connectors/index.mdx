@@ -1,6 +1,6 @@
 ---
 title: Connectors
-description: Nine first-class connectors — OpenClaw, ZeptoClaw, Claude Code, Codex, Cursor, Windsurf, Gemini CLI, GitHub Copilot CLI, Hermes — with a single enforcement contract.
+description: Eleven first-class connectors — OpenClaw, ZeptoClaw, Claude Code, Codex, Cursor, Windsurf, Gemini CLI, GitHub Copilot CLI, OpenHands, Antigravity, Hermes — with a single enforcement contract.
 keywords:
   - DefenseClaw connectors
   - Claude Code connector
@@ -8,6 +8,8 @@ keywords:
   - Cursor connector
   - OpenClaw connector
   - GitHub Copilot CLI connector
+  - OpenHands connector
+  - Antigravity connector
   - Gemini CLI connector
   - Windsurf connector
   - Hermes connector
@@ -19,8 +21,13 @@ Connectors are the adapter layer between agent frameworks and DefenseClaw's guar
 
 <Cards>
   <Card title="Proxy connectors" description="OpenClaw, ZeptoClaw. DefenseClaw sits in the LLM data path — every request and response is intercepted, scored, and forwarded." />
-  <Card title="Hook connectors" description="Claude Code, Codex, Cursor, Windsurf, Gemini CLI, GitHub Copilot CLI, Hermes. DefenseClaw wires into the agent's native lifecycle hooks; the agent talks directly to its upstream." />
+  <Card title="Hook connectors" description="Claude Code, Codex, Cursor, Windsurf, Gemini CLI, GitHub Copilot CLI, OpenHands, Antigravity, Hermes. DefenseClaw wires into the agent's native lifecycle hooks; the agent talks directly to its upstream." />
+  <Card title="Compatibility contracts" href="/docs/connectors/compatibility" description="Versioned hook contracts, setup-time connector version checks, and the runtime hook_contract_lock.json." />
 </Cards>
+
+<Callout type="info">
+**One gateway, many hook connectors.** A single DefenseClaw gateway can serve several hook connectors at once, each with its own guardrail posture under `guardrail.connectors.<name>` — pick **Add** (not Replace) when you run a second `setup <connector>`. Proxy connectors (OpenClaw, ZeptoClaw) bind a listener and own the traffic plane, so they can't be multi peers. See [Multi-connector](/docs/setup/guardrail/multi-connector).
+</Callout>
 
 ## Pick yours
 
@@ -32,7 +39,9 @@ Connectors are the adapter layer between agent frameworks and DefenseClaw's guar
   <Card title="Cursor" href="/docs/connectors/cursor" description="hooks.json with native ask on beforeShellExecution and beforeMCPExecution." />
   <Card title="Windsurf" href="/docs/connectors/windsurf" description="Cascade hooks across pre_user_prompt, pre_run_command, pre_mcp_tool_use." />
   <Card title="Gemini CLI" href="/docs/connectors/geminicli" description="settings.json hooks + native OTLP exporter pointing at the gateway." />
-  <Card title="GitHub Copilot CLI" href="/docs/connectors/copilot" description="Workspace-scoped hooks under .github/hooks/." />
+  <Card title="GitHub Copilot CLI" href="/docs/connectors/copilot" description="Global hooks under ~/.copilot/hooks with optional workspace overrides." />
+  <Card title="OpenHands" href="/docs/connectors/openhands" description="Global ~/.openhands/hooks.json command hooks across local OpenHands sessions." />
+  <Card title="Antigravity" href="/docs/connectors/antigravity" description="All five Antigravity 2.0 lifecycle hooks (PreInvocation/PreToolUse/PostToolUse/PostInvocation/Stop) in ~/.gemini/config/hooks.json, with native ask that overrides --dangerously-skip-permissions." />
   <Card title="Hermes" href="/docs/connectors/hermes" description="config.yaml hooks for the Hermes agent runtime." />
 </Cards>
 
@@ -40,7 +49,7 @@ Connectors are the adapter layer between agent frameworks and DefenseClaw's guar
 
 <CapabilityMatrix />
 
-For the full breakdown including HITL behaviour, head to the [Capability Matrix](/docs/capability-matrix).
+For the full breakdown including HITL behaviour, head to the [Capability Matrix](/docs/capability-matrix). For deterministic hook version pinning, see [Connector Compatibility](/docs/connectors/compatibility).
 
 ## How a connector is structured
 

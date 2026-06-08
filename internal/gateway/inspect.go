@@ -26,8 +26,7 @@ import (
 	"strings"
 	"time"
 
-	"go.opentelemetry.io/otel/attribute"
-
+	"github.com/defenseclaw/defenseclaw/internal/audit"
 	"github.com/defenseclaw/defenseclaw/internal/redaction"
 	"github.com/defenseclaw/defenseclaw/internal/scanner"
 	"github.com/defenseclaw/defenseclaw/internal/telemetry"
@@ -42,13 +41,6 @@ import (
 // this keeps operator fat-fingers (e.g. "true", "yes") from silently
 // flipping the switch — the header is an escape hatch, not a mode.
 const revealHeader = "X-DefenseClaw-Reveal-PII"
-
-const (
-	enterpriseOpsWorkflowHeader    = "X-DefenseClaw-Workflow-ID"
-	enterpriseOpsStepHeader        = "X-DefenseClaw-Step-ID"
-	enterpriseOpsPhaseHeader       = "X-DefenseClaw-Phase"
-	enterpriseOpsActionClassHeader = "X-DefenseClaw-Action-Class"
-)
 
 // wantsReveal reports whether the caller has opted into raw PII in
 // the HTTP response. Returning true causes the handler to:
@@ -65,29 +57,6 @@ func wantsReveal(r *http.Request) bool {
 	return r.Header.Get(revealHeader) == "1"
 }
 
-func inspectSpanAttributes(r *http.Request, verdict *ToolInspectVerdict) []attribute.KeyValue {
-	attrs := make([]attribute.KeyValue, 0, 8)
-	if verdict != nil {
-		attrs = append(attrs,
-			attribute.String("defenseclaw.inspect.verdict.raw_action", verdict.RawAction),
-			attribute.String("defenseclaw.inspect.verdict.final_action", verdict.Action),
-			attribute.String("defenseclaw.inspect.verdict.severity", verdict.Severity),
-			attribute.Bool("defenseclaw.inspect.verdict.would_block", verdict.WouldBlock),
-		)
-	}
-	for header, attrName := range map[string]string{
-		enterpriseOpsWorkflowHeader:    "defenseclaw.demo.workflow_id",
-		enterpriseOpsStepHeader:        "defenseclaw.demo.step_id",
-		enterpriseOpsPhaseHeader:       "defenseclaw.demo.phase",
-		enterpriseOpsActionClassHeader: "defenseclaw.demo.action_class",
-	} {
-		if value := strings.TrimSpace(r.Header.Get(header)); value != "" {
-			attrs = append(attrs, attribute.String(attrName, value))
-		}
-	}
-	return attrs
-}
-
 // ToolInspectRequest is the payload for POST /api/v1/inspect/tool.
 // A single endpoint handles both general tool policy checks and message
 // content inspection — the handler branches on the Tool field.
@@ -98,6 +67,11 @@ type ToolInspectRequest struct {
 	Direction       string          `json:"direction,omitempty"`
 	SessionID       string          `json:"session_id,omitempty"`
 	ApprovalSurface string          `json:"approval_surface,omitempty"`
+	// Connector selects which connector's rule set the scan uses. The hook
+	// handlers stamp it (codex/claudecode/...) so each connector scans
+	// against its own EffectiveRulePackDir. Empty ⇒ process-global default
+	// set (single-connector installs and the generic inspect endpoint).
+	Connector string `json:"connector,omitempty"`
 }
 
 // ToolInspectVerdict is the response from the inspect endpoint.
@@ -121,20 +95,16 @@ type ToolInspectRequest struct {
 // and claude-code hook responses use so a future generic inspect
 // hook script can read .raw_action / .would_block uniformly.
 type ToolInspectVerdict struct {
-	Action             string                      `json:"action"`
-	RawAction          string                      `json:"raw_action,omitempty"`
-	Severity           string                      `json:"severity"`
-	Confidence         float64                     `json:"confidence"`
-	Reason             string                      `json:"reason"`
-	Findings           []string                    `json:"findings"`
-	DetailedFindings   []RuleFinding               `json:"detailed_findings,omitempty"`
-	Mode               string                      `json:"mode"`
-	WouldBlock         bool                        `json:"would_block,omitempty"`
-	ApprovalTimeoutMS  int                         `json:"approval_timeout_ms,omitempty"`
-	AgentControl       *agentControlDecision       `json:"agent_control,omitempty"`
-	DecisionEvidence   *DecisionEvidence           `json:"decision_evidence,omitempty"`
-	ResponseProtection *ResponseProtectionEvidence `json:"response_protection,omitempty"`
-	ProtectedOutput    json.RawMessage             `json:"protected_output,omitempty"`
+	Action            string        `json:"action"`
+	RawAction         string        `json:"raw_action,omitempty"`
+	Severity          string        `json:"severity"`
+	Confidence        float64       `json:"confidence"`
+	Reason            string        `json:"reason"`
+	Findings          []string      `json:"findings"`
+	DetailedFindings  []RuleFinding `json:"detailed_findings,omitempty"`
+	Mode              string        `json:"mode"`
+	WouldBlock        bool          `json:"would_block,omitempty"`
+	ApprovalTimeoutMS int           `json:"approval_timeout_ms,omitempty"`
 }
 
 // applyMode stamps the active guardrail mode onto the verdict and,
@@ -311,7 +281,9 @@ func (a *APIServer) inspectToolPolicy(req *ToolInspectRequest) *ToolInspectVerdi
 	argsStr := string(req.Args)
 	toolName := req.Tool
 
-	ruleFindings := ScanAllRules(argsStr, toolName)
+	// Scan against the request connector's rule set so each connector
+	// enforces its own pack (empty ⇒ process-global default set).
+	ruleFindings := ScanAllRulesForConnector(req.Connector, argsStr, toolName)
 
 	// CodeGuard: scan file content for write_file/edit_file tools.
 	tool := strings.ToLower(toolName)
@@ -345,7 +317,7 @@ func (a *APIServer) inspectToolPolicy(req *ToolInspectRequest) *ToolInspectVerdi
 		}
 	}
 
-	action := guardrailRuntimeAction(a.scannerCfg, severity, true)
+	action := guardrailRuntimeActionForConnector(a.scannerCfg, req.Connector, severity, true)
 
 	reasons := make([]string, 0, minInt(len(ruleFindings), 5))
 	for i, f := range ruleFindings {
@@ -429,8 +401,10 @@ func (a *APIServer) inspectMessageContent(req *ToolInspectRequest) *ToolInspectV
 		return &ToolInspectVerdict{Action: "allow", Severity: "NONE", Findings: []string{}}
 	}
 
-	// Outbound messages get the full scan — tool name "message" for context
-	ruleFindings := ScanAllRules(content, "message")
+	// Outbound messages get the full scan — tool name "message" for context.
+	// Routed through the request's connector so each connector scans against
+	// its own rule pack (empty ⇒ process-global default set).
+	ruleFindings := ScanAllRulesForConnector(req.Connector, content, "message")
 
 	if len(ruleFindings) == 0 {
 		// Regex found nothing locally. Give the AID lane a turn —
@@ -445,7 +419,7 @@ func (a *APIServer) inspectMessageContent(req *ToolInspectRequest) *ToolInspectV
 	severity := HighestSeverity(ruleFindings)
 	confidence := HighestConfidence(ruleFindings, severity)
 
-	action := guardrailRuntimeAction(a.scannerCfg, severity, strings.EqualFold(req.Direction, "outbound"))
+	action := guardrailRuntimeActionForConnector(a.scannerCfg, req.Connector, severity, strings.EqualFold(req.Direction, "outbound"))
 
 	reasons := make([]string, 0, minInt(len(ruleFindings), 5))
 	for i, f := range ruleFindings {
@@ -522,21 +496,10 @@ func (a *APIServer) handleInspectTool(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if a.agentControl != nil {
-		stage, step := agentControlStepForInspect(&req)
-		decision := a.agentControl.evaluate(ctx, stage, step)
-		mergeAgentControlIntoToolVerdict(verdict, decision)
-		annotateAgentControlSpan(r.Context(), decision)
-		emitAgentControlPolicyDecision(a.otel, decision)
-	}
-
-	verdict = applyBehavioralRiskToToolVerdict(r.Context(), &req, verdict)
 	verdict.applyMode(inspectMode(a.scannerCfg))
 	a.resolveOpenClawInspectConfirm(r.Context(), &req, verdict)
 
 	elapsed := time.Since(t0)
-	decisionEvidence := buildRuntimeDecisionEvidence(r.Context(), "pre_tool", &req, verdict, elapsed)
-	verdict.DecisionEvidence = decisionEvidence
 
 	// verdict.Reason is composed as "matched: <rule-id>:<title>"
 	// which is PII-safe by construction (rule metadata only).
@@ -569,33 +532,46 @@ func (a *APIServer) handleInspectTool(w http.ResponseWriter, r *http.Request) {
 	var auditAction string
 	switch verdict.Action {
 	case "block":
-		auditAction = "inspect-tool-block"
+		auditAction = string(audit.ActionInspectToolBlock)
 	case "confirm":
-		auditAction = "inspect-tool-confirm"
+		auditAction = string(audit.ActionInspectToolConfirm)
 	case "alert":
-		auditAction = "inspect-tool-alert"
+		auditAction = string(audit.ActionInspectToolAlert)
 	default:
-		auditAction = "inspect-tool-allow"
+		auditAction = string(audit.ActionInspectToolAllow)
 	}
 	if a.otel != nil {
 		elapsedMs := float64(elapsed.Milliseconds())
 		tool := a.connectorName() + ":" + req.Tool
-		a.otel.RecordInspectEvaluation(r.Context(), tool, verdict.Action, verdict.Severity)
-		a.otel.RecordInspectLatency(r.Context(), tool, elapsedMs)
-		a.otel.RecordGuardrailEvaluation(r.Context(), a.connectorName()+":policy-rules", verdict.Action)
-		a.otel.RecordGuardrailLatency(r.Context(), a.connectorName()+":policy-rules", elapsedMs)
+		a.otel.RecordInspectEvaluation(context.Background(), tool, verdict.Action, verdict.Severity)
+		a.otel.RecordInspectLatency(context.Background(), tool, elapsedMs)
+		a.otel.RecordGuardrailEvaluation(context.Background(), a.connectorName()+":policy-rules", verdict.Action)
+		a.otel.RecordGuardrailLatency(context.Background(), a.connectorName()+":policy-rules", elapsedMs)
 		// Inspect span is emitted for its side effect on the span
-		// exporter. Use r.Context() so HTTP request trace context,
-		// audit correlation, and Galileo OTLP export stay aligned.
-		attrs := inspectSpanAttributes(r, verdict)
-		attrs = append(attrs, agentControlSpanAttributes(verdict.AgentControl)...)
-		_ = a.otel.EmitInspectSpan(r.Context(), req.Tool, verdict.Action, verdict.Severity, elapsedMs, attrs...)
+		// exporter — trace_id is now pulled from r.Context() by
+		// LogActionCtx (the gateway CorrelationMiddleware seeded
+		// the same trace id into both).
+		_ = a.otel.EmitInspectSpan(context.Background(), req.Tool, verdict.Action, verdict.Severity, elapsedMs)
 	}
+
+	targetType := "tool_call"
+	if strings.ToLower(req.Tool) == "message" {
+		switch strings.ToLower(req.Direction) {
+		case "completion", "outbound", "response":
+			targetType = "completion"
+		case "tool_result", "tool-response":
+			targetType = "tool_response"
+		default:
+			targetType = "prompt"
+		}
+	}
+	evalCtx := a.emitInspectVerdictFindings(r.Context(), "inspect-http",
+		"/api/v1/inspect/tool:"+req.Tool, targetType, verdict, elapsed,
+		"emit_inspect_tool")
 
 	requestID := RequestIDFromContext(r.Context())
 	auditDetails := fmt.Sprintf("severity=%s confidence=%.2f reason=%s elapsed=%s mode=%s would_block=%v raw_action=%s",
 		verdict.Severity, verdict.Confidence, verdict.Reason, elapsed, verdict.Mode, verdict.WouldBlock, verdict.RawAction)
-	auditDetails = appendRuntimeDecisionEvidenceAudit(auditDetails, decisionEvidence)
 	if req.Content != "" {
 		auditDetails = appendRawTelemetryDetails(auditDetails, "raw_content", []byte(req.Content))
 	}
@@ -605,6 +581,7 @@ func (a *APIServer) handleInspectTool(w http.ResponseWriter, r *http.Request) {
 	if requestID != "" {
 		auditDetails += fmt.Sprintf(" request_id=%s", requestID)
 	}
+	auditDetails = appendHookEvaluationDetails(auditDetails, evalCtx)
 	_ = a.logger.LogActionCtx(r.Context(), auditAction, req.Tool, auditDetails)
 
 	a.emitCodeGuardOTel(&req, verdict, elapsed)
@@ -623,7 +600,7 @@ func (a *APIServer) handleInspectTool(w http.ResponseWriter, r *http.Request) {
 		// when the caller opts in to raw response PII, the
 		// audit-store row must still flow through the sink
 		// barrier so SQLite/Splunk never see the raw literal.
-		_ = a.logger.LogActionCtx(r.Context(), "inspect-reveal", req.Tool,
+		_ = a.logger.LogActionCtx(r.Context(), string(audit.ActionInspectReveal), req.Tool,
 			fmt.Sprintf("severity=%s remote=%s reason=%s",
 				verdict.Severity, r.RemoteAddr,
 				redaction.ForSinkReason(verdict.Reason)))

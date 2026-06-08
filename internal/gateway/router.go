@@ -43,10 +43,6 @@ type activeSpan struct {
 	startTime time.Time
 	tool      string
 	provider  string
-	id        string
-	sessionID string
-	runID     string
-	output    strings.Builder
 }
 
 // activeAgent tracks an invoke_agent span for a running agent session.
@@ -55,81 +51,6 @@ type activeAgent struct {
 	ctx        context.Context
 	startTime  time.Time
 	sessionKey string
-	agentName  string
-	agentType  string
-	agentID    string
-
-	inputContent        string
-	outputContent       string
-	inputTokens         int
-	outputTokens        int
-	tokenUsageEstimated bool
-}
-
-type sessionMessageUsage struct {
-	PromptTokens     int
-	CompletionTokens int
-}
-
-func (u *sessionMessageUsage) UnmarshalJSON(data []byte) error {
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(data, &fields); err != nil {
-		return err
-	}
-	u.PromptTokens = firstUsageInt(fields,
-		"prompt_tokens",
-		"input_tokens",
-		"prompt_token_count",
-		"input_token_count",
-		"promptTokens",
-		"inputTokens",
-		"input",
-		"prompt",
-	)
-	u.CompletionTokens = firstUsageInt(fields,
-		"completion_tokens",
-		"output_tokens",
-		"completion_token_count",
-		"output_token_count",
-		"completionTokens",
-		"outputTokens",
-		"generated_token_count",
-		"output",
-		"completion",
-	)
-	return nil
-}
-
-func firstUsageInt(fields map[string]json.RawMessage, keys ...string) int {
-	for _, key := range keys {
-		raw, ok := fields[key]
-		if !ok {
-			continue
-		}
-		if value, ok := usageInt(raw); ok {
-			return value
-		}
-	}
-	return 0
-}
-
-func usageInt(raw json.RawMessage) (int, bool) {
-	var n int
-	if err := json.Unmarshal(raw, &n); err == nil {
-		return n, true
-	}
-	var f float64
-	if err := json.Unmarshal(raw, &f); err == nil {
-		return int(f), true
-	}
-	var s string
-	if err := json.Unmarshal(raw, &s); err == nil {
-		var parsed int
-		if _, scanErr := fmt.Sscanf(strings.TrimSpace(s), "%d", &parsed); scanErr == nil {
-			return parsed, true
-		}
-	}
-	return 0, false
 }
 
 // EventRouter dispatches gateway events to the appropriate handlers and logs
@@ -202,150 +123,6 @@ func (r *EventRouter) getActiveAgentCtx() context.Context {
 		return aa.ctx
 	}
 	return context.Background()
-}
-
-func (r *EventRouter) latestUserMessage(sessionKey string) string {
-	if r.contextTracker == nil || sessionKey == "" {
-		return ""
-	}
-	return lastUserText(r.contextTracker.RecentMessages(sessionKey, 10))
-}
-
-func sessionLLMTokens(usage *sessionMessageUsage, input, output string) (int, int, bool) {
-	if usage != nil {
-		return usage.PromptTokens, usage.CompletionTokens, false
-	}
-	inputTokens := telemetry.EstimateTokenCount(input)
-	outputTokens := telemetry.EstimateTokenCount(output)
-	return inputTokens, outputTokens, inputTokens != 0 || outputTokens != 0
-}
-
-func agentSpanSummary(aa *activeAgent) telemetry.AgentSpanSummary {
-	if aa == nil {
-		return telemetry.AgentSpanSummary{}
-	}
-	return telemetry.AgentSpanSummary{
-		Input:               aa.inputContent,
-		Output:              aa.outputContent,
-		InputTokens:         aa.inputTokens,
-		OutputTokens:        aa.outputTokens,
-		TokenUsageEstimated: aa.tokenUsageEstimated,
-	}
-}
-
-func (r *EventRouter) findActiveToolSpanLocked(tool, id, sessionID, runID string) (string, int, *activeSpan) {
-	if id != "" {
-		for key, q := range r.activeToolSpans {
-			for i, as := range q {
-				if as != nil && as.id == id {
-					return key, i, as
-				}
-			}
-		}
-	}
-	if tool == "" {
-		return "", -1, nil
-	}
-	q := r.activeToolSpans[tool]
-	for i, as := range q {
-		if as == nil {
-			continue
-		}
-		if sessionID != "" && as.sessionID != "" && as.sessionID != sessionID {
-			continue
-		}
-		if runID != "" && as.runID != "" && as.runID != runID {
-			continue
-		}
-		return tool, i, as
-	}
-	if len(q) > 0 {
-		return tool, 0, q[0]
-	}
-	return "", -1, nil
-}
-
-func (r *EventRouter) activeToolOutput(tool, id, sessionID, runID string) string {
-	r.spanMu.Lock()
-	defer r.spanMu.Unlock()
-	_, _, as := r.findActiveToolSpanLocked(tool, id, sessionID, runID)
-	if as == nil {
-		return ""
-	}
-	return as.output.String()
-}
-
-func (r *EventRouter) appendActiveToolOutput(tool, id, sessionID, runID, delta string) {
-	if delta == "" {
-		return
-	}
-	r.spanMu.Lock()
-	defer r.spanMu.Unlock()
-	_, _, as := r.findActiveToolSpanLocked(tool, id, sessionID, runID)
-	if as == nil {
-		return
-	}
-	as.output.WriteString(delta)
-}
-
-func (r *EventRouter) endToolSpansForRun(runID string, exitCode int) {
-	if r.otel == nil {
-		return
-	}
-	var spans []*activeSpan
-	r.spanMu.Lock()
-	for key, q := range r.activeToolSpans {
-		kept := q[:0]
-		for _, as := range q {
-			if as == nil {
-				continue
-			}
-			if runID == "" || as.runID == "" || as.runID == runID {
-				spans = append(spans, as)
-				continue
-			}
-			kept = append(kept, as)
-		}
-		if len(kept) == 0 {
-			delete(r.activeToolSpans, key)
-		} else {
-			r.activeToolSpans[key] = kept
-		}
-	}
-	r.spanMu.Unlock()
-
-	for _, as := range spans {
-		output := as.output.String()
-		r.otel.EndToolSpan(as.span, exitCode, len(output), as.startTime, as.tool, as.provider, output)
-	}
-}
-
-func (r *EventRouter) addActiveAgentLLMSummary(runID, input, output string, inputTokens, outputTokens int, estimated bool) {
-	r.spanMu.Lock()
-	defer r.spanMu.Unlock()
-
-	var aa *activeAgent
-	if runID != "" {
-		aa = r.activeAgentSpans[runID]
-	}
-	if aa == nil && len(r.activeAgentSpans) == 1 {
-		for _, candidate := range r.activeAgentSpans {
-			aa = candidate
-			break
-		}
-	}
-	if aa == nil {
-		return
-	}
-	if aa.inputContent == "" {
-		aa.inputContent = input
-	}
-	if output != "" {
-		aa.outputContent = output
-	}
-	aa.inputTokens += inputTokens
-	aa.outputTokens += outputTokens
-	aa.tokenUsageEstimated = aa.tokenUsageEstimated || estimated
 }
 
 // getToolParentCtx returns the best parent context for tool/approval spans:
@@ -494,6 +271,15 @@ func (r *EventRouter) streamEnvelope(ctx context.Context, sessionKey string) aud
 		}
 	}
 	return env
+}
+
+func (r *EventRouter) streamContext(sessionKey string, overlay audit.CorrelationEnvelope) context.Context {
+	env := audit.MergeEnvelope(r.streamEnvelope(context.Background(), sessionKey), overlay)
+	ctx := context.Background()
+	if env.SessionID != "" {
+		ctx = ContextWithSessionID(ctx, env.SessionID)
+	}
+	return audit.ContextWithEnvelope(ctx, env)
 }
 
 // logStreamAction is the stream-path analogue of
@@ -714,14 +500,6 @@ func (r *EventRouter) handleSessionTool(evt EventFrame) {
 		if output == "" {
 			output = payload.Result
 		}
-		if output == "" && payload.Data != nil && payload.CallID != "" {
-			output = r.activeToolOutput(toolName, payload.CallID, payload.SessionKey, payload.RunID)
-		}
-		if output == "" && payload.Data != nil && payload.CallID != "" {
-			readLoopLogf("[bifrost] session.tool result deferred until session.message toolResult tool=%s callId=%s",
-				toolName, payload.CallID)
-			return
-		}
 		syntheticEvt := EventFrame{
 			Type:  evt.Type,
 			Event: "tool_result",
@@ -779,22 +557,17 @@ func (r *EventRouter) handleSessionMessage(evt EventFrame) {
 	// Format A: chat message
 	if envelope.Message != nil {
 		var msg struct {
-			Role         string               `json:"role"`
-			Content      json.RawMessage      `json:"content"`
-			ToolCallID   string               `json:"toolCallId"`
-			ToolName     string               `json:"toolName"`
-			Timestamp    int64                `json:"timestamp"`
-			StopReason   string               `json:"stopReason"`
-			ErrorMessage string               `json:"errorMessage"`
-			Provider     string               `json:"provider"`
-			Model        string               `json:"model"`
-			Usage        *sessionMessageUsage `json:"usage,omitempty"`
-			Details      *struct {
-				Status     string `json:"status"`
-				ExitCode   *int   `json:"exitCode"`
-				Aggregated string `json:"aggregated"`
-			} `json:"details,omitempty"`
-			IsError bool `json:"isError,omitempty"`
+			Role         string          `json:"role"`
+			Content      json.RawMessage `json:"content"`
+			Timestamp    int64           `json:"timestamp"`
+			StopReason   string          `json:"stopReason"`
+			ErrorMessage string          `json:"errorMessage"`
+			Provider     string          `json:"provider"`
+			Model        string          `json:"model"`
+			Usage        *struct {
+				PromptTokens     int `json:"prompt_tokens"`
+				CompletionTokens int `json:"completion_tokens"`
+			} `json:"usage,omitempty"`
 		}
 		if err := json.Unmarshal(envelope.Message, &msg); err != nil {
 			readLoopLogf("[bifrost] session.message: has message field but failed to parse: %v", err)
@@ -835,32 +608,6 @@ func (r *EventRouter) handleSessionMessage(evt EventFrame) {
 				finishReasons = []string{msg.StopReason}
 			}
 			emitLLMResponseEvent(msgCtx, msgMeta, contentStr, string(msg.Content), finishReasons)
-		case "toolResult":
-			output := sessionMessageTextContent(msg.Content)
-			if output == "" && msg.Details != nil {
-				output = msg.Details.Aggregated
-			}
-			exitCode := 0
-			if msg.Details != nil && msg.Details.ExitCode != nil {
-				exitCode = *msg.Details.ExitCode
-			}
-			if msg.IsError && exitCode == 0 {
-				exitCode = 1
-			}
-			r.handleToolResult(EventFrame{
-				Type:  evt.Type,
-				Event: "tool_result",
-				Payload: mustMarshal(ToolResultPayload{
-					Tool:      firstNonEmpty(msg.ToolName, "tool"),
-					Output:    output,
-					ExitCode:  &exitCode,
-					ID:        msg.ToolCallID,
-					SessionID: envelope.SessionKey,
-					RunID:     envelope.RunID,
-					AgentName: r.agentNameForStream(""),
-				}),
-				Seq: evt.Seq,
-			})
 		}
 
 		if r.hilt != nil && r.hilt.ResolveFromMessage(envelope.SessionKey, msg.Role, contentStr) {
@@ -885,12 +632,11 @@ func (r *EventRouter) handleSessionMessage(evt EventFrame) {
 		// Stores the LLM context so subsequent tool spans become children.
 		if r.otel != nil && msg.Role == "assistant" && msg.Model != "" {
 			system := inferSystem(msg.Provider, msg.Model)
-			providerName := system
-			if providerName == "" || providerName == "unknown" {
-				providerName = msg.Provider
+			promptTokens, completionTokens := 0, 0
+			if msg.Usage != nil {
+				promptTokens = msg.Usage.PromptTokens
+				completionTokens = msg.Usage.CompletionTokens
 			}
-			inputContent := r.latestUserMessage(envelope.SessionKey)
-			promptTokens, completionTokens, tokenUsageEstimated := sessionLLMTokens(msg.Usage, inputContent, contentStr)
 			finishReasons := []string{}
 			if msg.StopReason != "" {
 				finishReasons = []string{msg.StopReason}
@@ -902,7 +648,7 @@ func (r *EventRouter) handleSessionMessage(evt EventFrame) {
 			now := time.Now()
 			llmCtx, span := r.otel.StartLLMSpan(
 				parentCtx,
-				system, msg.Model, providerName,
+				system, msg.Model, msg.Provider,
 				0, 0.0,
 			)
 			r.otel.SetRawSpanString(span, "defenseclaw.llm.response.content", contentStr)
@@ -913,18 +659,12 @@ func (r *EventRouter) handleSessionMessage(evt EventFrame) {
 				promptTokens, completionTokens,
 				finishReasons, toolCallCount,
 				"none", "",
-				providerName, now,
+				system, now,
 				r.defaultAgentName,
 				r.defaultAgentName,
 				SharedAgentRegistry().AgentID(),
 				SessionIDFromContext(parentCtx),
-				telemetry.LLMSpanContent{
-					Input:               inputContent,
-					Output:              contentStr,
-					TokenUsageEstimated: tokenUsageEstimated,
-				},
 			)
-			r.addActiveAgentLLMSummary(envelope.RunID, inputContent, contentStr, promptTokens, completionTokens, tokenUsageEstimated)
 
 			// Store LLM context so tool_call spans become children of this LLM span.
 			r.spanMu.Lock()
@@ -932,7 +672,7 @@ func (r *EventRouter) handleSessionMessage(evt EventFrame) {
 			r.spanMu.Unlock()
 
 			readLoopLogf("[bifrost] session.message: emitted LLM span model=%s provider=%s system=%s tokens=%d/%d",
-				msg.Model, providerName, system, promptTokens, completionTokens)
+				msg.Model, msg.Provider, system, promptTokens, completionTokens)
 		}
 
 		if r.contextTracker != nil && envelope.SessionKey != "" && contentStr != "" {
@@ -954,12 +694,12 @@ func (r *EventRouter) handleSessionMessage(evt EventFrame) {
 
 		if msg.Role == "user" && r.contextTracker != nil && envelope.SessionKey != "" {
 			if r.contextTracker.HasRepeatedInjection(envelope.SessionKey, 3) {
-				r.logStreamAction(envelope.SessionKey, "gateway-multi-turn-injection", envelope.SessionKey,
+				r.logStreamAction(envelope.SessionKey, string(audit.ActionGatewayMultiTurnInjection), envelope.SessionKey,
 					"repeated injection patterns detected across multiple user turns")
 				// Async read-loop context — stamp session_id so the
 				// verdict event carries the conversation identifier
 				// even though we're outside any HTTP request.
-				vctx := ContextWithSessionID(context.Background(), envelope.SessionKey)
+				vctx := r.streamContext(envelope.SessionKey, audit.CorrelationEnvelope{TurnID: envelope.MessageID})
 				emitVerdict(vctx, gatewaylog.StageMultiTurn, gatewaylog.DirectionPrompt, "",
 					"warn", "repeated injection patterns across user turns",
 					gatewaylog.SeverityHigh, []string{"injection:multi-turn"}, 0)
@@ -980,7 +720,7 @@ func (r *EventRouter) handleSessionMessage(evt EventFrame) {
 		// locally (session/agent/run) before emitting. Without this,
 		// every gateway-session-message row landed in audit_events
 		// with session_id / agent_* / run_id NULL.
-		r.logStreamAction(envelope.SessionKey, "gateway-session-message", envelope.SessionKey,
+		r.logStreamAction(envelope.SessionKey, string(audit.ActionGatewaySessionMessage), envelope.SessionKey,
 			fmt.Sprintf("role=%s msgId=%s seq=%d content_len=%d", msg.Role, envelope.MessageID, envelope.MessageSeq, len(contentStr)))
 		return
 	}
@@ -1047,7 +787,7 @@ func (r *EventRouter) scanInboundPrompt(sessionKey, messageID, model, content st
 	severity := deriveSeverity(verdict.Severity)
 	categories := categoriesOf(verdict.Findings)
 
-	vctx := ContextWithSessionID(context.Background(), sessionKey)
+	vctx := r.streamContext(sessionKey, audit.CorrelationEnvelope{TurnID: messageID})
 	emitVerdict(
 		vctx,
 		gatewaylog.StageSessionMessage,
@@ -1065,7 +805,7 @@ func (r *EventRouter) scanInboundPrompt(sessionKey, messageID, model, content st
 	// the local-pattern scanner matches. Always redact before any
 	// sink, log line, or UI surface — same rules as handleSessionTool.
 	scrubbedReason := redaction.ForSinkReason(verdict.Reason)
-	r.logStreamAction(sessionKey, "gateway-session-prompt-alert", sessionKey,
+	r.logStreamAction(sessionKey, string(audit.ActionGatewaySessionPromptAlert), sessionKey,
 		fmt.Sprintf("msgId=%s model=%s action=%s severity=%s findings=%d reason=%s",
 			messageID, model, verdict.Action, verdict.Severity,
 			len(verdict.Findings), scrubbedReason))
@@ -1116,7 +856,7 @@ func (r *EventRouter) handleSessionsChanged(evt EventFrame, seqStr string) {
 
 	if sc.Session.Status == "failed" || sc.Phase == "error" {
 		readLoopLogf("[bifrost] sessions.changed ERROR: session %s status=failed phase=%s", sc.SessionKey, sc.Phase)
-		r.logStreamAction(sc.SessionKey, "gateway-session-error", sc.SessionKey,
+		r.logStreamAction(sc.SessionKey, string(audit.ActionGatewaySessionError), sc.SessionKey,
 			fmt.Sprintf("phase=%s runId=%s model=%s", sc.Phase, sc.RunID, sc.Session.Model))
 	}
 }
@@ -1145,7 +885,7 @@ func (r *EventRouter) handleChatEvent(evt EventFrame, seqStr string) {
 		scrubbedErr := redaction.MessageContent(ce.ErrorMessage)
 		readLoopLogf("[bifrost] chat ERROR: %q session=%s runId=%s",
 			scrubbedErr, ce.SessionKey, ce.RunID)
-		r.logStreamAction(ce.SessionKey, "gateway-chat-error", ce.SessionKey,
+		r.logStreamAction(ce.SessionKey, string(audit.ActionGatewayChatError), ce.SessionKey,
 			fmt.Sprintf("runId=%s error=%s", ce.RunID,
 				truncate(redaction.ForSinkString(ce.ErrorMessage), 200)))
 		ectx := ContextWithSessionID(context.Background(), ce.SessionKey)
@@ -1158,22 +898,6 @@ func (r *EventRouter) handleChatEvent(evt EventFrame, seqStr string) {
 func mustMarshal(v interface{}) json.RawMessage {
 	b, _ := json.Marshal(v)
 	return b
-}
-
-func sessionMessageTextContent(content json.RawMessage) string {
-	if len(content) == 0 {
-		return ""
-	}
-	if content[0] == '"' {
-		var s string
-		if err := json.Unmarshal(content, &s); err == nil {
-			return s
-		}
-	}
-	if text := responsesTextFromContent(content); text != "" {
-		return text
-	}
-	return string(content)
 }
 
 // agentEventPayload is the structure of an agent streaming event.
@@ -1297,11 +1021,6 @@ type agentStreamData struct {
 	Name       string          `json:"name"`
 	ToolCallID string          `json:"toolCallId"`
 	Args       json.RawMessage `json:"args,omitempty"`
-	Text       string          `json:"text,omitempty"`
-	Delta      string          `json:"delta,omitempty"`
-	Output     string          `json:"output,omitempty"`
-	Content    string          `json:"content,omitempty"`
-	Chunk      string          `json:"chunk,omitempty"`
 	Error      string          `json:"error,omitempty"`
 	StartedAt  int64           `json:"startedAt,omitempty"`
 	EndedAt    int64           `json:"endedAt,omitempty"`
@@ -1330,7 +1049,7 @@ func (r *EventRouter) handleAgentStreamEvent(se struct {
 		switch data.Phase {
 		case "start":
 			readLoopLogf("[bifrost] agent lifecycle START runId=%s", se.RunID)
-			r.logStreamAction(se.SessionKey, "gateway-agent-start", se.SessionKey,
+			r.logStreamAction(se.SessionKey, string(audit.ActionGatewayAgentStart), se.SessionKey,
 				fmt.Sprintf("runId=%s", se.RunID))
 
 			// Start invoke_agent span as root of this agent run.
@@ -1340,14 +1059,12 @@ func (r *EventRouter) handleAgentStreamEvent(se struct {
 				if conversationID == "" {
 					conversationID = se.RunID
 				}
-				agentName := r.agentNameForStream("")
-				agentID := SharedAgentRegistry().AgentID()
 				agentCtx, agentSpan := r.otel.StartAgentSpan(
 					context.Background(),
-					conversationID, // conversation.id
-					agentName,      // agent name (claw mode fallback)
-					agentName,      // agent type
-					agentID,
+					conversationID,           // conversation.id
+					r.agentNameForStream(""), // agent name (claw mode fallback)
+					r.agentNameForStream(""), // agent type
+					SharedAgentRegistry().AgentID(),
 					"", // provider filled on session.message
 				)
 				r.spanMu.Lock()
@@ -1356,9 +1073,6 @@ func (r *EventRouter) handleAgentStreamEvent(se struct {
 					ctx:        agentCtx,
 					startTime:  time.Now(),
 					sessionKey: se.SessionKey,
-					agentName:  agentName,
-					agentType:  agentName,
-					agentID:    agentID,
 				}
 				r.spanMu.Unlock()
 			}
@@ -1371,7 +1085,7 @@ func (r *EventRouter) handleAgentStreamEvent(se struct {
 			// the OTel span tag.
 			scrubbedErr := redaction.MessageContent(data.Error)
 			readLoopLogf("[bifrost] agent lifecycle ERROR runId=%s error=%q", se.RunID, scrubbedErr)
-			r.logStreamAction(se.SessionKey, "gateway-agent-error", se.SessionKey,
+			r.logStreamAction(se.SessionKey, string(audit.ActionGatewayAgentError), se.SessionKey,
 				fmt.Sprintf("runId=%s error=%s", se.RunID,
 					truncate(redaction.ForSinkString(data.Error), 200)))
 			ectx := ContextWithSessionID(context.Background(), se.SessionKey)
@@ -1381,14 +1095,12 @@ func (r *EventRouter) handleAgentStreamEvent(se struct {
 
 			// End invoke_agent span with error.
 			if r.otel != nil && se.RunID != "" {
-				r.endToolSpansForRun(se.RunID, 1)
 				r.spanMu.Lock()
 				r.activeLLMCtx = nil
 				if aa := r.activeAgentSpans[se.RunID]; aa != nil {
 					delete(r.activeAgentSpans, se.RunID)
 					r.spanMu.Unlock()
-					r.otel.RecordAgentDuration(aa.ctx, "invoke_agent", aa.agentName, aa.agentType, aa.agentID, time.Since(aa.startTime).Seconds())
-					r.otel.EndAgentSpan(aa.span, truncate(redaction.ForSinkString(data.Error), 256), agentSpanSummary(aa))
+					r.otel.EndAgentSpan(aa.span, truncate(redaction.ForSinkString(data.Error), 256))
 				} else {
 					r.spanMu.Unlock()
 				}
@@ -1396,19 +1108,17 @@ func (r *EventRouter) handleAgentStreamEvent(se struct {
 
 		case "end":
 			readLoopLogf("[bifrost] agent lifecycle END runId=%s", se.RunID)
-			r.logStreamAction(se.SessionKey, "gateway-agent-end", se.SessionKey,
+			r.logStreamAction(se.SessionKey, string(audit.ActionGatewayAgentEnd), se.SessionKey,
 				fmt.Sprintf("runId=%s", se.RunID))
 
 			// End invoke_agent span successfully.
 			if r.otel != nil && se.RunID != "" {
-				r.endToolSpansForRun(se.RunID, 0)
 				r.spanMu.Lock()
 				r.activeLLMCtx = nil
 				if aa := r.activeAgentSpans[se.RunID]; aa != nil {
 					delete(r.activeAgentSpans, se.RunID)
 					r.spanMu.Unlock()
-					r.otel.RecordAgentDuration(aa.ctx, "invoke_agent", aa.agentName, aa.agentType, aa.agentID, time.Since(aa.startTime).Seconds())
-					r.otel.EndAgentSpan(aa.span, "", agentSpanSummary(aa))
+					r.otel.EndAgentSpan(aa.span, "")
 				} else {
 					r.spanMu.Unlock()
 				}
@@ -1438,12 +1148,6 @@ func (r *EventRouter) handleAgentStreamEvent(se struct {
 		}
 		r.handleSessionTool(toolEvt)
 
-	case "command_output":
-		if data.Phase == "delta" {
-			r.appendActiveToolOutput("", data.ToolCallID, se.SessionKey, se.RunID,
-				firstNonEmpty(data.Delta, data.Text, data.Output, data.Content, data.Chunk, data.Meta))
-		}
-
 	case "text":
 		readLoopLogf("[bifrost] agent text stream: phase=%s (content delivery, no action)", data.Phase)
 
@@ -1459,7 +1163,7 @@ func (r *EventRouter) handleToolCall(evt EventFrame) {
 		return
 	}
 
-	r.logStreamToolAction(payload.SessionID, "gateway-tool-call", payload.Tool, payload.ID,
+	r.logStreamToolAction(payload.SessionID, string(audit.ActionGatewayToolCall), payload.Tool, payload.ID,
 		fmt.Sprintf("status=%s args_length=%d", payload.Status, len(payload.Args)))
 	meta := streamLLMEventMeta(r, payload.SessionID, payload.RunID, "builtin", "", payload.AgentName)
 	meta.ToolID = payload.ID
@@ -1471,7 +1175,11 @@ func (r *EventRouter) handleToolCall(evt EventFrame) {
 		if blocked, _ := r.policy.IsBlocked("tool", payload.Tool); blocked {
 			fmt.Fprintf(os.Stderr, "[sidecar] BLOCKED tool call: %q is on the static block list\n", payload.Tool)
 			r.logStreamToolAction(payload.SessionID, "gateway-tool-call-blocked", payload.Tool, payload.ID, "reason=static-block-list")
-			vctx := ContextWithSessionID(context.Background(), payload.SessionID)
+			vctx := r.streamContext(payload.SessionID, audit.CorrelationEnvelope{
+				DestinationApp: "builtin",
+				ToolName:       payload.Tool,
+				ToolID:         payload.ID,
+			})
 			emitVerdict(vctx, gatewaylog.StageBlockList, gatewaylog.DirectionPrompt, payload.Tool,
 				"block", "static block list",
 				gatewaylog.SeverityHigh, []string{"policy:block", "surface:tool_call"}, 0)
@@ -1489,7 +1197,7 @@ func (r *EventRouter) handleToolCall(evt EventFrame) {
 	flaggedPattern := ""
 	if dangerous {
 		flaggedPattern = findings[0].RuleID
-		r.logStreamToolAction(payload.SessionID, "gateway-tool-call-flagged", payload.Tool, payload.ID,
+		r.logStreamToolAction(payload.SessionID, string(audit.ActionGatewayToolCallFlagged), payload.Tool, payload.ID,
 			fmt.Sprintf("reason=%s severity=%s confidence=%.2f",
 				findings[0].RuleID, findings[0].Severity, findings[0].Confidence))
 		fmt.Fprintf(os.Stderr, "[sidecar] FLAGGED tool call: %s (%s)\n", payload.Tool, findings[0].Title)
@@ -1527,7 +1235,7 @@ func (r *EventRouter) handleToolCall(evt EventFrame) {
 				// persistent sink.
 				fmt.Fprintf(os.Stderr, "[sidecar] LLM JUDGE flagged tool call: %s severity=%s %s\n",
 					tool, verdict.Severity, redaction.Reason(verdict.Reason))
-				r.logStreamToolAction(sessionID, "gateway-tool-call-judge-flagged", tool, toolID,
+				r.logStreamToolAction(sessionID, string(audit.ActionGatewayToolCallJudgeFlagged), tool, toolID,
 					fmt.Sprintf("severity=%s findings=%d reason=%s",
 						verdict.Severity, len(verdict.Findings),
 						redaction.ForSinkReason(verdict.Reason)))
@@ -1563,9 +1271,6 @@ func (r *EventRouter) handleToolCall(evt EventFrame) {
 			startTime: time.Now(),
 			tool:      payload.Tool,
 			provider:  "builtin",
-			id:        payload.ID,
-			sessionID: payload.SessionID,
-			runID:     payload.RunID,
 		})
 		r.spanMu.Unlock()
 	}
@@ -1604,34 +1309,7 @@ func (r *EventRouter) handleToolResult(evt EventFrame) {
 		exitCode = *payload.ExitCode
 	}
 
-	var as *activeSpan
-	if r.otel != nil {
-		r.spanMu.Lock()
-		key, idx, candidate := r.findActiveToolSpanLocked(payload.Tool, payload.ID, payload.SessionID, payload.RunID)
-		if candidate != nil {
-			as = candidate
-			if payload.Tool == "" || payload.Tool == "tool" {
-				payload.Tool = as.tool
-			}
-			if payload.SessionID == "" {
-				payload.SessionID = as.sessionID
-			}
-			if payload.RunID == "" {
-				payload.RunID = as.runID
-			}
-			if payload.Output == "" {
-				payload.Output = as.output.String()
-			}
-			q := r.activeToolSpans[key]
-			r.activeToolSpans[key] = append(q[:idx], q[idx+1:]...)
-			if len(r.activeToolSpans[key]) == 0 {
-				delete(r.activeToolSpans, key)
-			}
-		}
-		r.spanMu.Unlock()
-	}
-
-	r.logStreamToolAction(payload.SessionID, "gateway-tool-result", payload.Tool, payload.ID,
+	r.logStreamToolAction(payload.SessionID, string(audit.ActionGatewayToolResult), payload.Tool, payload.ID,
 		fmt.Sprintf("exit_code=%d output_len=%d", exitCode, len(payload.Output)))
 	meta := streamLLMEventMeta(r, payload.SessionID, payload.RunID, "builtin", "", payload.AgentName)
 	meta.ToolID = payload.ID
@@ -1640,9 +1318,22 @@ func (r *EventRouter) handleToolResult(evt EventFrame) {
 
 	r.inspectToolResult(payload)
 
-	if r.otel != nil && as != nil {
-		r.otel.SetRawSpanString(as.span, "defenseclaw.tool.output", payload.Output)
-		r.otel.EndToolSpan(as.span, exitCode, len(payload.Output), as.startTime, as.tool, as.provider, payload.Output)
+	if r.otel != nil {
+		r.spanMu.Lock()
+		var as *activeSpan
+		if q := r.activeToolSpans[payload.Tool]; len(q) > 0 {
+			as = q[0]
+			r.activeToolSpans[payload.Tool] = q[1:]
+			if len(r.activeToolSpans[payload.Tool]) == 0 {
+				delete(r.activeToolSpans, payload.Tool)
+			}
+		}
+		r.spanMu.Unlock()
+
+		if as != nil {
+			r.otel.SetRawSpanString(as.span, "defenseclaw.tool.output", payload.Output)
+			r.otel.EndToolSpan(as.span, exitCode, len(payload.Output), as.startTime, as.tool, as.provider)
+		}
 	}
 }
 
@@ -1727,7 +1418,7 @@ func (r *EventRouter) inspectToolResult(payload ToolResultPayload) {
 	}
 	fmt.Fprintf(os.Stderr, "[sidecar] tool result alert: tool=%s action=%s severity=%s entities=%d findings=%v\n",
 		payload.Tool, verdict.Action, verdict.Severity, entityCount, scrubbedFindings)
-	r.logStreamToolAction(payload.SessionID, "tool-result-pii-alert", payload.Tool, payload.ID,
+	r.logStreamToolAction(payload.SessionID, string(audit.ActionToolResultPIIAlert), payload.Tool, payload.ID,
 		fmt.Sprintf("severity=%s entities=%d findings=%d reason=%s",
 			verdict.Severity, entityCount, len(verdict.Findings),
 			redaction.ForSinkReason(verdict.Reason)))
@@ -1763,7 +1454,7 @@ func (r *EventRouter) handleApprovalRequest(evt EventFrame) {
 	fmt.Fprintf(os.Stderr, "[sidecar] exec.approval.requested: id=%s command=%s argc=%d cwd=%s\n",
 		payload.ID, cmdName, len(argv), cwd)
 	approvalSession, _ := r.activeAgentCorrelation()
-	r.logStreamAction(approvalSession, "gateway-approval-requested", payload.ID,
+	r.logStreamAction(approvalSession, string(audit.ActionGatewayApprovalRequested), payload.ID,
 		fmt.Sprintf("command_name=%s argc=%d cwd=%s", cmdName, len(argv), cwd))
 
 	var approvalSpan trace.Span
@@ -1803,9 +1494,13 @@ func (r *EventRouter) handleApprovalRequest(evt EventFrame) {
 
 	if dangerous {
 		sessionID, _ := r.activeAgentCorrelation()
-		r.logStreamAction(sessionID, "gateway-approval-denied", payload.ID,
+		r.logStreamAction(sessionID, string(audit.ActionGatewayApprovalDenied), payload.ID,
 			fmt.Sprintf("reason=%s command_name=%s", topFinding.RuleID, cmdName))
-		vctx := ContextWithSessionID(context.Background(), sessionID)
+		vctx := r.streamContext(sessionID, audit.CorrelationEnvelope{
+			DestinationApp: "builtin",
+			ToolName:       cmdName,
+			ToolID:         payload.ID,
+		})
 		emitVerdict(vctx, gatewaylog.StageApproval, gatewaylog.DirectionPrompt, cmdName,
 			"block", fmt.Sprintf("%s: %s", topFinding.RuleID, topFinding.Title),
 			deriveSeverity(topFinding.Severity), []string{"approval:denied", "surface:exec"}, 0)
@@ -1828,7 +1523,7 @@ func (r *EventRouter) handleApprovalRequest(evt EventFrame) {
 	}
 
 	if r.autoApprove {
-		r.logStreamAction(approvalSession, "gateway-approval-granted", payload.ID,
+		r.logStreamAction(approvalSession, string(audit.ActionGatewayApprovalGranted), payload.ID,
 			fmt.Sprintf("reason=auto-approve command_name=%s", cmdName))
 		fmt.Fprintf(os.Stderr, "[sidecar] AUTO-APPROVED exec: %s\n", cmdName)
 
@@ -1841,7 +1536,7 @@ func (r *EventRouter) handleApprovalRequest(evt EventFrame) {
 	}
 
 	fmt.Fprintf(os.Stderr, "[sidecar] PENDING exec approval: %s (awaiting manual approval)\n", cmdName)
-	r.logStreamAction(approvalSession, "gateway-approval-pending", payload.ID,
+	r.logStreamAction(approvalSession, string(audit.ActionGatewayApprovalPending), payload.ID,
 		fmt.Sprintf("command_name=%s reason=awaiting-manual-approval", cmdName))
 
 	if r.otel != nil {

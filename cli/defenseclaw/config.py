@@ -25,8 +25,11 @@ from __future__ import annotations
 import logging
 import os
 import platform
+import stat
 import subprocess
 import sys
+import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -82,6 +85,44 @@ LEGACY_DEPLOYMENT_MODE_ALIASES = {
     "ci": "ci_cd",
     "edge": "server",
 }
+
+if os.name == "nt":
+    import msvcrt
+
+    # msvcrt.locking() locks a byte range starting at the file pointer's
+    # CURRENT position. To get mutual exclusion we must lock the SAME byte
+    # (offset 0) on every acquisition, so we seek(0) immediately before each
+    # lock/unlock call and we never write to the lock file. Writing (in any
+    # mode) can advance the pointer or grow the file, which would make
+    # concurrent holders lock disjoint ranges and silently defeat the lock.
+    def _lock_file_exclusive(file_obj) -> None:
+        while True:
+            file_obj.seek(0)
+            try:
+                # LK_LOCK blocks for ~10s then raises; retry so this behaves
+                # like a blocking exclusive lock (fcntl.flock(LOCK_EX)).
+                msvcrt.locking(file_obj.fileno(), msvcrt.LK_LOCK, 1)
+                return
+            except OSError:
+                time.sleep(0.05)
+
+    def _unlock_file(file_obj) -> None:
+        file_obj.seek(0)
+        try:
+            msvcrt.locking(file_obj.fileno(), msvcrt.LK_UNLCK, 1)
+        except OSError:
+            # Lock already released (e.g. handle closed); don't crash
+            # teardown/save paths.
+            pass
+
+else:
+    import fcntl
+
+    def _lock_file_exclusive(file_obj) -> None:
+        fcntl.flock(file_obj.fileno(), fcntl.LOCK_EX)
+
+    def _unlock_file(file_obj) -> None:
+        fcntl.flock(file_obj.fileno(), fcntl.LOCK_UN)
 
 
 def _home() -> Path:
@@ -235,6 +276,7 @@ class ClawConfig:
     mode: str = "openclaw"
     home_dir: str = "~/.openclaw"
     config_file: str = "~/.openclaw/openclaw.json"
+    workspace_dir: str = ""
     openclaw_home_original: str = ""
 
 
@@ -742,15 +784,37 @@ class GatewayConfig:
     watcher: GatewayWatcherConfig = field(default_factory=GatewayWatcherConfig)
 
     def resolved_token(self) -> str:
-        """Return gateway token from env var (if set) or direct value."""
+        """Return the gateway auth token, walking the precedence ladder.
+
+        Resolution order:
+
+        1. ``self.token_env`` — operator-supplied override, ALWAYS wins.
+           This lets ``defenseclaw setup`` / ops tooling pin the var
+           name explicitly without us guessing.
+        2. ``DEFENSECLAW_GATEWAY_TOKEN`` — the canonical name the Go
+           gateway (`internal/gateway/firstboot.go::EnsureGatewayToken`)
+           writes to ``~/.defenseclaw/.env`` on first boot.
+        3. ``OPENCLAW_GATEWAY_TOKEN`` — back-compat shim for installs
+           that bootstrapped before the defenseclaw rename. The Go
+           gateway also reads this for the same reason; honouring it
+           here keeps the two sides symmetric.
+        4. ``self.token`` — literal value from ``config.yaml``. Last
+           resort because plaintext secrets in YAML are discouraged
+           (and ``_warn_plaintext_secrets`` already nags about it).
+
+        Returns the empty string when no token is reachable; callers
+        gate on the truthiness, so empty == "unauthenticated".
+        """
         if self.token_env:
             val = os.environ.get(self.token_env, "")
             if val:
                 return val
-        else:
-            val = os.environ.get("OPENCLAW_GATEWAY_TOKEN", "")
-            if val:
-                return val
+        val = os.environ.get("DEFENSECLAW_GATEWAY_TOKEN", "")
+        if val:
+            return val
+        val = os.environ.get("OPENCLAW_GATEWAY_TOKEN", "")
+        if val:
+            return val
         return self.token
 
 
@@ -1066,6 +1130,35 @@ class HILTConfig:
 
 
 @dataclass
+class PerConnectorGuardrailConfig:
+    """Per-connector guardrail overrides (hook-based connectors only).
+
+    Mirrors ``config.PerConnectorGuardrailConfig`` in
+    ``internal/config/config.go``. Every field is optional: an unset
+    (empty / ``None``) field inherits the global :class:`GuardrailConfig`
+    value via the ``effective_*`` resolvers. ``hilt`` is ``None`` to mean
+    "inherit the global HILT block"; a present block (even an empty one)
+    explicitly overrides it.
+    """
+
+    mode: str = ""
+    hilt: HILTConfig | None = None
+    hook_fail_mode: str = ""
+    block_message: str = ""
+    rule_pack_dir: str = ""
+    # Per-connector on/off switch toggled by
+    # ``defenseclaw guardrail {enable,disable} --connector X``. ``None``
+    # (the default) means "inherit the default (enabled)" — the connector
+    # stays active exactly as before. ``False`` means the operator
+    # explicitly disabled this one connector: the Go boot loop drops it
+    # from the active set so its hooks are torn down (per-connector analog
+    # of the global ``guardrail disable``), while its other policy fields
+    # are retained so re-enable restores it with no re-prompt. Resolved via
+    # :meth:`GuardrailConfig.effective_enabled`; never read directly.
+    enabled: bool | None = None
+
+
+@dataclass
 class GuardrailConfig:
     enabled: bool = False
     mode: str = "observe"           # observe | action
@@ -1147,6 +1240,159 @@ class GuardrailConfig:
     # Used by the wizard to remember the operator's choice across
     # reruns so reconfigure flows don't re-prompt.
     llm_role: str = ""
+    # Per-connector guardrail overrides keyed by connector name
+    # (hook-based connectors only). Empty/absent preserves the legacy
+    # single-connector behavior driven by the singular ``connector``
+    # field. Mirrors ``GuardrailConfig.Connectors`` in
+    # ``internal/config/config.go``; resolution goes through the
+    # ``effective_*`` methods, never by reading the map directly.
+    connectors: dict[str, PerConnectorGuardrailConfig] = field(default_factory=dict)
+
+    def _connector_override(
+        self, connector: str
+    ) -> PerConnectorGuardrailConfig | None:
+        """Return the override block for ``connector`` if configured.
+
+        An empty connector name or empty map yields ``None`` so callers
+        uniformly fall through to the global value. Lookup is
+        connector-name-insensitive: an exact key hit is the fast path,
+        otherwise keys are compared after ``connector_paths.normalize`` so
+        a request for the canonical name (e.g. ``"openhands"``) resolves an
+        override written with different case or a hyphen/underscore alias
+        (e.g. ``"OpenHands"``, ``"open-hands"``). Mirrors
+        ``GuardrailConfig.connectorOverride`` in Go.
+        """
+        if not connector or not self.connectors:
+            return None
+        pc = self.connectors.get(connector)
+        if pc is not None:
+            return pc
+        want = connector_paths.normalize(connector)
+        for name, entry in self.connectors.items():
+            if connector_paths.normalize(name) == want:
+                return entry
+        return None
+
+    def effective_mode(self, connector: str = "") -> str:
+        """Per-connector override > global mode > ``"observe"``."""
+        pc = self._connector_override(connector)
+        if pc is not None and pc.mode.strip():
+            return pc.mode.strip()
+        if self.mode.strip():
+            return self.mode.strip()
+        return "observe"
+
+    def effective_enabled(self, connector: str = "") -> bool:
+        """Per-connector on/off resolver — mirrors Go ``EffectiveEnabled``.
+
+        Defaults to ``True``: an absent override, or an override whose
+        ``enabled`` field is ``None`` (unset), resolves to enabled, so
+        single-connector installs and any connector never explicitly
+        disabled keep running. Only an explicit ``enabled: false`` returns
+        ``False`` — the signal the Go boot loop uses to drop the connector
+        from the active set (triggering teardown) and the hook gates use to
+        short-circuit it to allow-without-scan.
+        """
+        pc = self._connector_override(connector)
+        if pc is not None and pc.enabled is not None:
+            return pc.enabled
+        return True
+
+    def effective_hilt(self, connector: str = "") -> HILTConfig:
+        """Per-connector hilt block (when present) fully replaces global."""
+        pc = self._connector_override(connector)
+        if pc is not None and pc.hilt is not None:
+            return pc.hilt
+        return self.hilt
+
+    def effective_hook_fail_mode(self, connector: str = "") -> str:
+        """Per-connector override > global > ``"open"`` (non-"closed")."""
+        pc = self._connector_override(connector)
+        if pc is not None and pc.hook_fail_mode.strip():
+            if pc.hook_fail_mode.strip().lower() == "closed":
+                return "closed"
+            return "open"
+        if self.hook_fail_mode.strip().lower() == "closed":
+            return "closed"
+        return "open"
+
+    def effective_block_message(self, connector: str = "") -> str:
+        """Per-connector block message when set, else the global one."""
+        pc = self._connector_override(connector)
+        if pc is not None and pc.block_message != "":
+            return pc.block_message
+        return self.block_message
+
+    def effective_rule_pack_dir(self, connector: str = "") -> str:
+        """Per-connector rule-pack dir when set, else the global one."""
+        pc = self._connector_override(connector)
+        if pc is not None and pc.rule_pack_dir.strip():
+            return pc.rule_pack_dir
+        return self.rule_pack_dir
+
+    def validate(self) -> None:
+        """Validate per-connector guardrail VALUE invariants only.
+
+        Leaf check mirroring ``GuardrailConfig.Validate`` in Go over the
+        NEW ``guardrail.connectors`` map: inspects each override's enum
+        values (mode, hook_fail_mode, hilt.min_severity) and rejects empty
+        connector names. It deliberately does NOT re-validate the global
+        guardrail fields — those predate multi-connector support and were
+        never gated by ``load()``, so checking them here could reject
+        configs that load fine today. Never touches the connector
+        registry; the hook-membership guard lives in the gateway boot
+        loop. Raises :class:`ValueError` with a named message on the
+        first violation.
+        """
+        seen: dict[str, str] = {}
+        for name in sorted(self.connectors):
+            if not name.strip():
+                raise ValueError(
+                    "guardrail.connectors: empty connector name is not allowed"
+                )
+            # Reject two distinct keys that canonicalize to the same connector
+            # (e.g. "claude-code" + "claudecode", or "OpenHands" + "openhands").
+            # connector_override()/active_connectors() resolve keys through
+            # connector_paths.normalize, so a duplicate would make per-connector
+            # lookups and the active-connector roster ambiguous. Mirrors the Go
+            # GuardrailConfig.Validate duplicate-key guard.
+            norm = connector_paths.normalize(name)
+            if norm in seen:
+                raise ValueError(
+                    f"guardrail.connectors: {seen[norm]!r} and {name!r} refer to "
+                    f"the same connector {norm!r}; keep only one"
+                )
+            seen[norm] = name
+            pc = self.connectors[name]
+            try:
+                _validate_guardrail_mode(pc.mode)
+                _validate_guardrail_hook_fail_mode(pc.hook_fail_mode)
+                if pc.hilt is not None:
+                    _validate_guardrail_min_severity(pc.hilt.min_severity)
+            except ValueError as exc:
+                raise ValueError(f"guardrail.connectors[{name!r}]: {exc}") from exc
+
+
+def _validate_guardrail_mode(mode: str) -> None:
+    if (mode or "").strip() not in {"", "observe", "action"}:
+        raise ValueError(
+            f'invalid guardrail mode {mode!r} (want "observe" or "action")'
+        )
+
+
+def _validate_guardrail_hook_fail_mode(mode: str) -> None:
+    if (mode or "").strip().lower() not in {"", "open", "closed"}:
+        raise ValueError(
+            f'invalid hook_fail_mode {mode!r} (want "open" or "closed")'
+        )
+
+
+def _validate_guardrail_min_severity(sev: str) -> None:
+    if (sev or "").strip().upper() not in {"", "LOW", "MEDIUM", "HIGH", "CRITICAL"}:
+        raise ValueError(
+            f"invalid hilt.min_severity {sev!r} "
+            "(want LOW, MEDIUM, HIGH, or CRITICAL)"
+        )
 
 
 @dataclass
@@ -1287,6 +1533,7 @@ class Config:
     registries: RegistriesConfig = field(default_factory=RegistriesConfig)
     webhooks: list[WebhookConfig] = field(default_factory=list)
     privacy: PrivacyConfig = field(default_factory=lambda: PrivacyConfig())
+    _loaded_authoritative_dicts: dict[str, dict[str, Any]] = field(default_factory=dict, repr=False, compare=False)
     ai_discovery: AIDiscoveryConfig = field(default_factory=AIDiscoveryConfig)
     notifications: NotificationsConfig = field(default_factory=lambda: NotificationsConfig())
 
@@ -1296,7 +1543,19 @@ class Config:
         return connector_paths.connector_home(
             self.active_connector(),
             openclaw_home=self.claw.home_dir,
+            workspace_dir=self.connector_workspace_dir(),
         ) or _expand(self.claw.home_dir)
+
+    def connector_workspace_dir(self) -> str:
+        """Return the explicitly pinned connector workspace, if any."""
+        raw = (self.claw.workspace_dir or "").strip()
+        if not raw:
+            return ""
+        raw = _expand(raw)
+        try:
+            return str(Path(raw).expanduser().resolve(strict=False))
+        except OSError:
+            return os.path.abspath(raw)
 
     def active_connector(self) -> str:
         """Return the canonical connector name for this config.
@@ -1313,41 +1572,81 @@ class Config:
             return connector_paths.normalize(self.claw.mode)
         return "openclaw"
 
-    def skill_dirs(self) -> list[str]:
-        """Return skill directories for the active connector.
+    def active_connectors(self) -> list[str]:
+        """Return the full resolved set of connector names, sorted.
+
+        Mirrors ``Config.activeConnectors`` in claw.go and is additive
+        over :meth:`active_connector`: when the multi-connector
+        ``guardrail.connectors`` map is populated its (normalized) keys
+        drive the set; otherwise it is the single :meth:`active_connector`
+        value, so the legacy single-connector behavior is preserved. The
+        multi-connector boot loop iterates this list while existing
+        single-connector callers keep using :meth:`active_connector`.
+        """
+        if self.guardrail.connectors:
+            # Dedupe after normalization so two alias keys (e.g. "claude-code"
+            # and "claudecode") can never make the boot loop iterate the same
+            # connector twice. validate() rejects such configs at load, but
+            # this stays robust for any caller that bypasses validation.
+            names = sorted(
+                {
+                    connector_paths.normalize(name)
+                    for name in self.guardrail.connectors
+                    if name.strip()
+                }
+            )
+            if names:
+                return names
+        return [self.active_connector()]
+
+    def skill_dirs(self, connector: str | None = None) -> list[str]:
+        """Return skill directories for a connector.
 
         Polymorphic — when ``guardrail.connector`` is set, the
         connector-specific layout (e.g. ``~/.codex/skills``) is
         returned; otherwise falls back to OpenClaw paths derived
         from ``claw.home_dir`` and ``claw.config_file``.
+
+        ``connector`` overrides the resolved connector so multi-connector
+        callers (e.g. the TUI catalog focus selector via
+        ``skill list --connector <name>``) can list a non-primary
+        connector's directories. Defaults to :meth:`active_connector`.
         """
         return connector_paths.skill_dirs(
-            self.active_connector(),
+            connector or self.active_connector(),
             openclaw_home=self.claw.home_dir,
             openclaw_config=self.claw.config_file,
+            workspace_dir=self.connector_workspace_dir(),
         )
 
-    def plugin_dirs(self) -> list[str]:
-        """Return plugin/extension directories for the active connector.
+    def plugin_dirs(self, connector: str | None = None) -> list[str]:
+        """Return plugin/extension directories for a connector.
 
-        See :meth:`skill_dirs` for dispatch semantics.
+        See :meth:`skill_dirs` for dispatch semantics and the
+        ``connector`` override used by multi-connector callers.
         """
         return connector_paths.plugin_dirs(
-            self.active_connector(),
+            connector or self.active_connector(),
             openclaw_home=self.claw.home_dir,
+            workspace_dir=self.connector_workspace_dir(),
         )
 
-    def mcp_servers(self) -> list[MCPServerEntry]:
-        """Return MCP server registrations for the active connector.
+    def mcp_servers(self, connector: str | None = None) -> list[MCPServerEntry]:
+        """Return MCP server registrations for a connector.
 
         For OpenClaw the lookup prefers ``openclaw config get
         mcp.servers`` and falls back to a direct
         ``openclaw.json`` parse (with ``sudo -u sandbox`` prefix when
         running standalone-sandbox mode).
+
+        ``connector`` overrides the resolved connector (used by
+        ``mcp list --connector <name>`` for multi-connector focus);
+        defaults to :meth:`active_connector`.
         """
         return connector_paths.mcp_servers(
-            self.active_connector(),
+            connector or self.active_connector(),
             openclaw_config=self.claw.config_file,
+            workspace_dir=self.connector_workspace_dir(),
             openclaw_bin_resolver=openclaw_bin,
             openclaw_cmd_prefix=openclaw_cmd_prefix(),
         )
@@ -1490,16 +1789,136 @@ class Config:
         return llm
 
     def save(self) -> None:
+        """Persist this :class:`Config` to ``~/.defenseclaw/config.yaml``.
+
+        Round-trips through the existing file so that YAML keys the
+        Python dataclass does NOT model survive the save. The two known
+        callers that depend on this contract today are:
+
+        * ``audit_sinks:`` — written by ``defenseclaw setup splunk``
+          (see ``cli/defenseclaw/observability/writer.py``). Operators
+          configure local-Splunk HEC, remote Splunk Enterprise, OTLP
+          logs, and webhook forwarding here.
+        * ``otel.resource.attributes:`` — stamped by the same writer
+          to attribute exporters back to the preset that configured
+          them.
+
+        Before this round-trip, every connector-setup call site that
+        invoked ``cfg.save()`` (``setup codex``, ``setup claude-code``,
+        ``execute_guardrail_setup``, etc.) would silently strip those
+        blocks because ``dataclasses.asdict(self)`` only emits the
+        fields the dataclass declares — turning Splunk dashboards dark
+        without any warning. The two workaround "no cfg.save() here"
+        comments in ``cmd_setup.py`` documented this foot-gun; this
+        method removes the need for them.
+
+        Modeled keys still win — including the v4-migration strip of
+        the legacy ``splunk:`` top-level key and the byte-stability
+        strips of empty ``notifications``/``privacy``/``asset_policy``
+        blocks — so that operators who programmatically reset a value
+        through the dataclass still see the file updated.
+
+        Write is atomic via ``tmp + os.replace`` (matches the
+        observability writer pattern) so a crash mid-write cannot
+        leave a half-written ``config.yaml`` that the Go gateway
+        refuses to reload.
+        """
         path = os.path.join(self.data_dir, CONFIG_FILE_NAME)
-        data = _config_to_dict(self)
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w") as f:
-            yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+        dataclass_data = _config_to_dict(self)
+        owned_keys = _owned_top_level_keys(self)
+        with locked_config_yaml(path):
+            existing = _load_existing_config_yaml(path)
+            merged = _merge_preserving_unmodeled(
+                existing, dataclass_data, owned_keys,
+                authoritative_base=self._loaded_authoritative_dicts,
+            )
+            write_config_yaml_secure(path, merged)
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+@contextmanager
+def locked_config_yaml(path: str):
+    """Hold an exclusive per-config lock for a read/merge/write cycle."""
+    directory = os.path.dirname(path) or "."
+    os.makedirs(directory, exist_ok=True)
+    lock_path = path + ".lock"
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(lock_path, flags, 0o600)
+    try:
+        # "r+" (not "a+"): the lock file is a pure sentinel we never write to,
+        # and append mode would force the file pointer to EOF, breaking the
+        # offset-0 byte-range lock used on Windows (see _lock_file_exclusive).
+        lock = os.fdopen(fd, "r+")
+    except BaseException:
+        os.close(fd)
+        raise
+    try:
+        _lock_file_exclusive(lock)
+        try:
+            yield
+        finally:
+            _unlock_file(lock)
+    finally:
+        lock.close()
+
+
+def write_config_yaml_secure(path: str, data: dict[str, Any]) -> None:
+    """Atomically write YAML without widening config.yaml permissions."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    existing_mode: int | None = None
+    try:
+        existing_mode = stat.S_IMODE(os.stat(path).st_mode)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        existing_mode = None
+
+    try:
+        os.unlink(tmp)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pass
+
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(tmp, flags, 0o600)
+    try:
+        with os.fdopen(fd, "w") as f:
+            yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False)
+            f.flush()
+            os.fsync(f.fileno())
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+    if existing_mode is not None and existing_mode != 0o600:
+        target_mode = existing_mode & 0o600
+        if target_mode == 0:
+            target_mode = 0o600
+        try:
+            os.chmod(tmp, target_mode)
+        except OSError as exc:
+            _log.warning(
+                "config.save: cannot mirror %o mode onto %s (%s); writing as 0600",
+                existing_mode, tmp, exc,
+            )
+    os.replace(tmp, path)
+    try:
+        dir_fd = os.open(os.path.dirname(path) or ".", os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
+
 
 def _llm_is_empty(d: dict[str, Any] | None) -> bool:
     if not d:
@@ -1598,6 +2017,7 @@ def _config_to_dict(cfg: Config) -> dict[str, Any]:
     """Serialize Config to a dict suitable for YAML."""
     from dataclasses import asdict
     d = asdict(cfg)
+    d.pop("_loaded_authoritative_dicts", None)
     gw = d.get("gateway")
     if gw and not gw.get("token"):
         gw.pop("token", None)
@@ -1609,6 +2029,41 @@ def _config_to_dict(cfg: Config) -> dict[str, Any]:
     guardrail = d.get("guardrail") or {}
     _strip_empty_llm(guardrail, "llm")
     _strip_empty_llm(guardrail.get("judge"), "llm")
+    # Mirror Go's ``yaml:"connectors,omitempty"`` — drop the empty
+    # per-connector overrides map so existing single-connector configs
+    # stay byte-identical after a load/save round-trip. The block
+    # reappears the moment an operator adds a connector override (e.g.
+    # ``setup migrate-connectors``).
+    #
+    # Exception: if the map WAS populated at load and the caller has now
+    # cleared it (e.g. ``setup remove`` collapsing the final
+    # multi-connector entry back to the legacy singular shape), we must
+    # emit an explicit empty ``connectors: {}`` so the authoritative
+    # atomic-replace in ``_deep_merge_nested`` clears the on-disk block.
+    # Popping the key here would instead let the parent (non-authoritative)
+    # guardrail merge rescue the stale connectors from disk, so the
+    # removal would silently fail to persist.
+    if isinstance(guardrail, dict) and not guardrail.get("connectors"):
+        had_connectors = bool(
+            (getattr(cfg, "_loaded_authoritative_dicts", None) or {}).get(
+                "guardrail.connectors"
+            )
+        )
+        if had_connectors:
+            guardrail["connectors"] = {}
+        else:
+            guardrail.pop("connectors", None)
+    else:
+        # Mirror Go's ``yaml:"enabled,omitempty"`` on the *bool: an unset
+        # (None) per-connector enabled flag must not serialize as
+        # ``enabled: null``. Drop it so a connector that was never
+        # explicitly disabled stays byte-identical; an explicit
+        # True/False round-trips verbatim.
+        conns = guardrail.get("connectors")
+        if isinstance(conns, dict):
+            for entry in conns.values():
+                if isinstance(entry, dict) and entry.get("enabled") is None:
+                    entry.pop("enabled", None)
     # v4: the legacy top-level `splunk:` block is rejected by the Go
     # gateway at startup (see internal/config/config.go::detectLegacySplunk).
     # The Python dataclass retains a SplunkConfig for backwards-compatible
@@ -1662,6 +2117,254 @@ def _config_to_dict(cfg: Config) -> dict[str, Any]:
         if not sources:
             d.pop("registries", None)
     return d
+
+
+def _owned_top_level_keys(cfg: Config) -> frozenset[str]:
+    """Return the set of TOP-LEVEL YAML keys the dataclass declares.
+
+    Used by :meth:`Config.save` to distinguish "dataclass intentionally
+    omitted this key" (e.g. ``notifications:`` was at full defaults so
+    ``_config_to_dict`` stripped it) from "the dataclass doesn't model
+    this key at all" (e.g. ``audit_sinks:``, written by
+    :mod:`defenseclaw.observability.writer`). The first case should drop
+    the key from the on-disk file; the second case should preserve it.
+
+    Implementation note: we read the field names off ``Config`` itself
+    via ``dataclasses.fields`` rather than calling ``asdict(cfg)`` so
+    this stays O(fields) instead of O(full config tree) and so it is
+    safe to call from inside ``save()`` without triggering side effects
+    on lazily-populated nested dataclasses.
+    """
+    from dataclasses import fields
+    return frozenset(f.name for f in fields(cfg) if not f.name.startswith("_"))
+
+
+def _load_existing_config_yaml(path: str) -> dict[str, Any]:
+    """Best-effort read of an existing ``config.yaml`` for round-trip save.
+
+    Returns ``{}`` when the file is missing (first save), unreadable, or
+    malformed. On parse failure we log a warning but do NOT raise — the
+    operator's previous file may be partially corrupt and we still want
+    ``cfg.save()`` to succeed so the next setup wizard can rewrite it
+    cleanly. Worst-case the on-disk file is replaced with the
+    dataclass-only view, which is exactly the pre-fix behaviour, so we
+    cannot regress relative to the old serializer.
+    """
+    try:
+        with open(path) as f:
+            raw = yaml.safe_load(f) or {}
+    except FileNotFoundError:
+        return {}
+    except OSError as exc:
+        _log.warning(
+            "config.save: cannot read existing %s (%s); "
+            "writing dataclass-only view (any unmodelled keys will be lost)",
+            path, exc,
+        )
+        return {}
+    except yaml.YAMLError as exc:
+        backup = _backup_unparseable_config(path)
+        _log.warning(
+            "config.save: existing %s failed to parse (%s); "
+            "writing dataclass-only view (backup=%s)",
+            path, exc, backup or "unavailable",
+        )
+        return {}
+    if not isinstance(raw, dict):
+        _log.warning(
+            "config.save: existing %s is not a YAML mapping (got %s); "
+            "writing dataclass-only view",
+            path, type(raw).__name__,
+        )
+        return {}
+    return raw
+
+
+def _backup_unparseable_config(path: str) -> str:
+    try:
+        with open(path, "rb") as src:
+            data = src.read()
+    except OSError:
+        return ""
+    backup = f"{path}.bak"
+    try:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(backup, flags, 0o600)
+    except FileExistsError:
+        backup = f"{path}.bak.{os.getpid()}"
+        try:
+            fd = os.open(backup, flags, 0o600)
+        except OSError:
+            return ""
+    except OSError:
+        return ""
+    try:
+        with os.fdopen(fd, "wb") as dst:
+            dst.write(data)
+            dst.flush()
+            os.fsync(dst.fileno())
+    except OSError:
+        return ""
+    return backup
+
+
+# Dotted YAML paths whose VALUE is a dict[str, str]-style modeled
+# collection — i.e. the dataclass is the SINGLE SOURCE OF TRUTH for
+# the contents of the dict. When the caller clears one of these
+# (sets it to ``{}``), the on-disk file MUST be cleared too;
+# preserving the previous keys would leak stale secrets like an
+# ``otel.headers.Authorization`` token across an OTLP endpoint
+# rotation.
+#
+# The list is intentionally explicit (not auto-derived from
+# dataclass introspection) because not every nested dataclass field
+# typed as ``dict[str, str]`` is dataclass-authoritative — some
+# carry user-supplied free-form keys we want to preserve. Any new
+# secret-bearing modeled dict added to ``OTelConfig`` (or
+# elsewhere) MUST be added here so a clear-on-save honours the
+# operator's intent.
+#
+# Format: dotted YAML path from the top-level config dict.
+_AUTHORITATIVE_MODELED_DICT_PATHS: frozenset[str] = frozenset({
+    # Outbound OTLP credentials (Authorization, x-honeycomb-team,
+    # vendor-specific bearer headers). Letting a stale
+    # Authorization survive a clear is a credential-leak class
+    # regression.
+    "otel.headers",
+    # OpenTelemetry resource attributes (service.name,
+    # deployment.environment, custom operator labels). Some
+    # operators use this for tenant identifiers, so leftover keys
+    # after a clear leak prior tenant identity into the new
+    # session.
+    "otel.resource.attributes",
+    # Per-connector guardrail overrides map. This is fully modeled by
+    # the dataclass (``guardrail.connectors``) and is the single source
+    # of truth for the configured connector set. Without atomic replace,
+    # the non-authoritative merge rescues keys that exist only on disk —
+    # so ``setup remove <connector>`` would delete the key in-memory,
+    # save, and then have it resurrected from the prior file on reload
+    # (the removal never persists). Marking it authoritative makes a
+    # deleted/cleared connector propagate to disk, which is the whole
+    # point of the removal.
+    "guardrail.connectors",
+})
+
+
+def _merge_preserving_unmodeled(
+    existing: dict[str, Any],
+    new: dict[str, Any],
+    owned_top_level: frozenset[str],
+    authoritative_base: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Deep-merge ``new`` over ``existing`` while preserving unmodelled keys.
+
+    Top-level rules (the layer where ``audit_sinks:`` lives):
+
+    * Key in ``new``: dataclass wins (with a recursive deep-merge when
+      both sides are dicts so nested unmodelled keys like operator
+      additions survive).
+    * Key only in ``existing``:
+        - If the key IS owned by the dataclass (``owned_top_level``) →
+          the dataclass intentionally chose to omit it (e.g.
+          ``_config_to_dict`` stripped ``notifications:`` because it
+          was at full defaults, or stripped the legacy ``splunk:``
+          v4-migration block). Drop it.
+        - Otherwise → unmodelled extension key (``audit_sinks:``,
+          operator-added comments-as-keys, future Go-side additions).
+          Preserve it unchanged.
+    * Key only in ``new`` → emit it.
+
+    Nested rules (any depth below top level):
+
+    * Both dicts → recurse via :func:`_deep_merge_nested`. The
+      recursion preserves unmodelled subkeys by default (so an
+      operator-added ``otel.custom_extension.foo`` survives a save
+      that doesn't touch it) BUT atomically replaces dicts whose
+      dotted path appears in
+      :data:`_AUTHORITATIVE_MODELED_DICT_PATHS`. The latter
+      includes ``otel.headers`` and ``otel.resource.attributes``,
+      both of which are dataclass-authoritative collections — a
+      caller that clears ``cfg.otel.headers = {}`` to rotate OTLP
+      credentials gets the on-disk block cleared, which is the
+      whole point of clearing it.
+    * Lists → atomic replacement (the dataclass list is authoritative;
+      partial list merges would mis-handle operator deletions of list
+      elements modelled by the dataclass).
+    * Scalars / type mismatch → new wins.
+    """
+    out: dict[str, Any] = {}
+    # Pass 1: walk existing keys so file order is preserved when the
+    # dataclass output omits a key. yaml.safe_dump with sort_keys=False
+    # honours dict iteration order on CPython 3.7+, which keeps
+    # operator-edited files visually stable across saves.
+    for k, ev in existing.items():
+        if k in new:
+            nv = new[k]
+            if isinstance(ev, dict) and isinstance(nv, dict):
+                out[k] = _deep_merge_nested(ev, nv, path=k, authoritative_base=authoritative_base)
+            else:
+                out[k] = nv
+        elif k in owned_top_level:
+            # Dataclass owns this key and chose to omit it (default-strip
+            # or legacy-drop). Honour that decision.
+            continue
+        else:
+            # Unmodelled key — rescue it from the file. This is the
+            # whole point of the round-trip save.
+            out[k] = ev
+    # Pass 2: append keys present only in the dataclass output.
+    for k, nv in new.items():
+        if k not in existing:
+            out[k] = nv
+    return out
+
+
+def _deep_merge_nested(
+    existing: dict[str, Any],
+    new: dict[str, Any],
+    path: str = "",
+    authoritative_base: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Recursive deep-merge for nested dicts.
+
+    Behaviour:
+
+    * If the dotted path of the recursing dict is in
+      :data:`_AUTHORITATIVE_MODELED_DICT_PATHS` (e.g. ``otel.headers``,
+      ``otel.resource.attributes``), the dataclass dict is the
+      single source of truth. ``new`` wins atomically — no per-key
+      rescue from ``existing``. Setting the modeled map to ``{}``
+      therefore CLEARS the on-disk block, which is what callers
+      expect when they rotate OTLP credentials or change tenant
+      identifiers.
+
+    * Otherwise, keys only in ``existing`` are preserved (the
+      operator-added free-form rescue path) and keys in ``new``
+      win on overlap.
+    """
+    if path in _AUTHORITATIVE_MODELED_DICT_PATHS:
+        base = (authoritative_base or {}).get(path)
+        if base is not None and dict(new) == dict(base) and dict(existing) != dict(base):
+            return dict(existing)
+        # Atomic replace: dataclass dict wins. We deliberately keep
+        # the path in the recursion signature so future authoritative
+        # paths nested deeper still match without a separate flag.
+        return dict(new)
+    out: dict[str, Any] = {}
+    for k, ev in existing.items():
+        if k in new:
+            nv = new[k]
+            if isinstance(ev, dict) and isinstance(nv, dict):
+                child = f"{path}.{k}" if path else k
+                out[k] = _deep_merge_nested(ev, nv, path=child, authoritative_base=authoritative_base)
+            else:
+                out[k] = nv
+        else:
+            out[k] = ev
+    for k, nv in new.items():
+        if k not in existing:
+            out[k] = nv
+    return out
 
 
 def _default_notifications_dict() -> dict[str, Any]:
@@ -2174,7 +2877,44 @@ def _merge_guardrail(raw: dict[str, Any] | None, data_dir: str) -> GuardrailConf
         hilt=_merge_hilt(hilt_raw),
         hook_fail_mode=_normalize_hook_fail_mode(raw.get("hook_fail_mode", "")),
         llm_role=_normalize_llm_role(raw.get("llm_role", "")),
+        connectors=_merge_guardrail_connectors(raw.get("connectors")),
     )
+
+
+def _merge_guardrail_connectors(
+    raw: Any,
+) -> dict[str, PerConnectorGuardrailConfig]:
+    """Parse the optional ``guardrail.connectors`` map.
+
+    Mirrors the Go unmarshal of
+    ``map[string]PerConnectorGuardrailConfig``. A non-mapping or empty
+    value yields an empty dict (legacy single-connector behavior). The
+    per-connector ``hilt`` block is parsed only when present so ``None``
+    correctly means "inherit the global HILT".
+    """
+    if not isinstance(raw, dict) or not raw:
+        return {}
+    out: dict[str, PerConnectorGuardrailConfig] = {}
+    for name, entry in raw.items():
+        entry = entry if isinstance(entry, dict) else {}
+        hilt_entry = entry.get("hilt")
+        if hilt_entry is None:
+            hilt_entry = entry.get("hitl")
+        # ``enabled`` is parsed only when present so an absent key stays
+        # ``None`` ("inherit default") rather than collapsing to a concrete
+        # bool. A non-bool value is ignored (treated as unset) to match Go's
+        # *bool nil semantics.
+        enabled_raw = entry.get("enabled")
+        enabled = enabled_raw if isinstance(enabled_raw, bool) else None
+        out[str(name)] = PerConnectorGuardrailConfig(
+            mode=entry.get("mode", ""),
+            hilt=_merge_hilt(hilt_entry) if hilt_entry is not None else None,
+            hook_fail_mode=entry.get("hook_fail_mode", ""),
+            block_message=entry.get("block_message", ""),
+            rule_pack_dir=entry.get("rule_pack_dir", ""),
+            enabled=enabled,
+        )
+    return out
 
 
 def _normalize_llm_role(value: Any) -> str:
@@ -2234,19 +2974,19 @@ def _merge_mcp_scanner(raw: Any) -> MCPScannerConfig:
 
 
 def _merge_otel(raw: dict[str, Any] | None) -> OTelConfig:
-    if not raw:
+    if not isinstance(raw, dict) or not raw:
         return OTelConfig()
-    traces_raw = raw.get("traces", {})
-    logs_raw = raw.get("logs", {})
-    metrics_raw = raw.get("metrics", {})
-    batch_raw = raw.get("batch", {})
-    tls_raw = raw.get("tls", {})
-    resource_raw = raw.get("resource", {})
+    traces_raw = _as_mapping(raw.get("traces"))
+    logs_raw = _as_mapping(raw.get("logs"))
+    metrics_raw = _as_mapping(raw.get("metrics"))
+    batch_raw = _as_mapping(raw.get("batch"))
+    tls_raw = _as_mapping(raw.get("tls"))
+    resource_raw = _as_mapping(raw.get("resource"))
     return OTelConfig(
         enabled=raw.get("enabled", False),
         protocol=raw.get("protocol", "grpc"),
         endpoint=raw.get("endpoint", ""),
-        headers=raw.get("headers", {}),
+        headers=_as_mapping(raw.get("headers")),
         tls=OTelTLSConfig(
             insecure=tls_raw.get("insecure", False),
             ca_cert=tls_raw.get("ca_cert", ""),
@@ -2279,9 +3019,28 @@ def _merge_otel(raw: dict[str, Any] | None) -> OTelConfig:
             max_queue_size=batch_raw.get("max_queue_size", 2048),
         ),
         resource=OTelResourceConfig(
-            attributes=resource_raw.get("attributes", {}),
+            attributes=_as_mapping(resource_raw.get("attributes")),
         ),
     )
+
+
+def _as_mapping(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    return {}
+
+
+def _snapshot_authoritative_dicts(raw: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    out: dict[str, dict[str, Any]] = {}
+    for path in _AUTHORITATIVE_MODELED_DICT_PATHS:
+        cur: Any = raw
+        for part in path.split("."):
+            if not isinstance(cur, dict):
+                cur = {}
+                break
+            cur = cur.get(part, {})
+        out[path] = dict(cur) if isinstance(cur, dict) else {}
+    return out
 
 
 def _merge_webhooks(raw: list[dict[str, Any]] | None) -> list[WebhookConfig]:
@@ -2595,6 +3354,7 @@ def load() -> Config:
             mode=raw.get("claw", {}).get("mode", "openclaw"),
             home_dir=raw.get("claw", {}).get("home_dir", "~/.openclaw"),
             config_file=raw.get("claw", {}).get("config_file", "~/.openclaw/openclaw.json"),
+            workspace_dir=raw.get("claw", {}).get("workspace_dir", ""),
             openclaw_home_original=raw.get("claw", {}).get("openclaw_home_original", ""),
         ),
         inspect_llm=_merge_inspect_llm(raw.get("inspect_llm")),
@@ -2670,9 +3430,14 @@ def load() -> Config:
         ai_discovery=_merge_ai_discovery(raw.get("ai_discovery")),
         notifications=_merge_notifications(raw.get("notifications")),
     )
+    cfg._loaded_authoritative_dicts = _snapshot_authoritative_dicts(raw)
     _migrate_llm_fields(cfg)
     _warn_disable_redaction_config(cfg)
     _warn_plaintext_secrets(cfg)
+    # Fail loud on invalid guardrail value invariants, mirroring the Go
+    # gateway's Load() which rejects the same shapes. Value-only check —
+    # no registry access (see GuardrailConfig.validate).
+    cfg.guardrail.validate()
     return cfg
 
 

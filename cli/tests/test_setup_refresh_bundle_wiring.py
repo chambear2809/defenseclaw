@@ -35,7 +35,6 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from click.testing import CliRunner
-
 from defenseclaw import config
 from defenseclaw.context import AppContext
 
@@ -62,7 +61,7 @@ class TestSetupSplunkRefreshWiring(unittest.TestCase):
     @patch(
         "defenseclaw.commands.cmd_setup._refresh_and_maybe_restart_splunk_bridge",
     )
-    @patch("defenseclaw.commands.cmd_setup._preflight_docker", return_value=True)
+    @patch("defenseclaw.commands.cmd_setup._preflight_docker", return_value=(True, ""))
     @patch("defenseclaw.commands.cmd_setup.subprocess.run")
     @patch(
         "defenseclaw.commands.cmd_setup.splunk_bridge_bin",
@@ -113,7 +112,7 @@ class TestSetupSplunkRefreshWiring(unittest.TestCase):
     @patch(
         "defenseclaw.commands.cmd_setup._refresh_and_maybe_restart_splunk_bridge",
     )
-    @patch("defenseclaw.commands.cmd_setup._preflight_docker", return_value=True)
+    @patch("defenseclaw.commands.cmd_setup._preflight_docker", return_value=(True, ""))
     @patch("defenseclaw.commands.cmd_setup.subprocess.run")
     @patch(
         "defenseclaw.commands.cmd_setup.splunk_bridge_bin",

@@ -80,22 +80,27 @@ def build_claw_aibom(
     *,
     live: bool = True,
     categories: set[str] | None = None,
+    connector: str | None = None,
 ) -> dict[str, Any]:
     """Collect a connector-agnostic agent-framework inventory.
 
-    Dispatches via :meth:`Config.active_connector`. For OpenClaw —
+    Dispatches via :meth:`Config.active_connector` (or the explicit
+    *connector* override used by multi-connector focus). For OpenClaw —
     the historical default — *live=True* shells out to ``openclaw …
     --json`` commands in parallel; for Codex / Claude Code / ZeptoClaw
     we walk the filesystem under :func:`connector_paths.skill_dirs`,
     :func:`connector_paths.plugin_dirs`, and
     :func:`connector_paths.mcp_servers`.
 
+    *connector* targets a specific connector's inventory (the TUI focus
+    selector and ``aibom scan --connector`` rely on this); defaults to
+    the active connector so single-connector behaviour is unchanged.
     *categories* restricts which sections are collected (default: all).
     *live=False* always returns the disk-only shape (no subprocess
     calls, no filesystem walk).
     """
     cats = _resolve_categories(categories)
-    connector = cfg.active_connector()
+    connector = connector or cfg.active_connector()
     if connector != "openclaw" and live:
         return _build_aibom_from_filesystem(cfg, connector, cats)
 
@@ -113,7 +118,11 @@ def build_claw_aibom(
         "connector": connector,
         "openclaw_config": _expand(cfg.claw.config_file),
         "claw_home": claw_home,
-        "claw_mode": cfg.claw.mode,
+        # The inventory is scoped to ``connector`` (defaults to the active
+        # connector), so report that as the framework "mode" rather than the
+        # global cfg.claw.mode, which is a stale last-activated pointer in
+        # multi-connector installs.
+        "claw_mode": connector,
         "live": live,
         "skills": _parse_skills(cache.get("skills_list")) if "skills" in cats else [],
         "plugins": _parse_plugins(cache.get("plugins_list")) if "plugins" in cats else [],
@@ -528,11 +537,11 @@ def _attach_connector_paths(
     except Exception:
         out["connector_config_files"] = []
     try:
-        out["connector_skill_dirs"] = list(cfg.skill_dirs())
+        out["connector_skill_dirs"] = list(cfg.skill_dirs(connector))
     except Exception:
         out["connector_skill_dirs"] = []
     try:
-        out["connector_plugin_dirs"] = list(cfg.plugin_dirs())
+        out["connector_plugin_dirs"] = list(cfg.plugin_dirs(connector))
     except Exception:
         out["connector_plugin_dirs"] = []
     try:
@@ -1709,15 +1718,15 @@ def _build_aibom_from_filesystem(
 
     skills: list[dict[str, Any]] = []
     if "skills" in cats:
-        skills = _enumerate_skills_filesystem(cfg)
+        skills = _enumerate_skills_filesystem(cfg, connector)
 
     plugins: list[dict[str, Any]] = []
     if "plugins" in cats:
-        plugins = _enumerate_plugins_filesystem(cfg)
+        plugins = _enumerate_plugins_filesystem(cfg, connector)
 
     mcps: list[dict[str, Any]] = []
     if "mcp" in cats:
-        mcps = _enumerate_mcp_filesystem(cfg)
+        mcps = _enumerate_mcp_filesystem(cfg, connector)
 
     # Plan C7: dispatch into per-connector adapters for the four
     # categories that the CLI shellout used to own. When an adapter
@@ -1761,7 +1770,12 @@ def _build_aibom_from_filesystem(
         "connector": connector,
         "openclaw_config": _expand(cfg.claw.config_file),
         "claw_home": cfg.claw_home_dir(),
-        "claw_mode": cfg.claw.mode,
+        # This builder is per-connector (filesystem) scoped, so the framework
+        # "mode" is the connector being scanned — NOT the global cfg.claw.mode,
+        # which in a multi-connector install is a stale pointer to whichever
+        # connector was last activated (e.g. shows "antigravity" for a codex
+        # scan). Mirrors single-connector installs where claw.mode == connector.
+        "claw_mode": connector,
         "live": True,
         "skills": skills,
         "plugins": plugins,
@@ -1777,19 +1791,22 @@ def _build_aibom_from_filesystem(
     return out
 
 
-def _enumerate_skills_filesystem(cfg: Config) -> list[dict[str, Any]]:
-    """Walk every directory in ``cfg.skill_dirs()`` and emit one row
-    per immediate subdirectory.
+def _enumerate_skills_filesystem(
+    cfg: Config, connector: str | None = None,
+) -> list[dict[str, Any]]:
+    """Walk every directory in ``cfg.skill_dirs(connector)`` and emit one
+    row per immediate subdirectory.
 
     A skill is treated as the directory itself; its ``id`` is the
     basename. ``eligible`` is True if the directory contains at
     least one of: SKILL.md, skill.json, README.md (matches the
     discovery contract used by the connector-specific OTel
-    component scanner).
+    component scanner). ``connector`` scopes the walk to a specific
+    connector for multi-connector focus (defaults to active).
     """
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for skill_dir in cfg.skill_dirs():
+    for skill_dir in cfg.skill_dirs(connector):
         if not os.path.isdir(skill_dir):
             continue
         try:
@@ -1797,6 +1814,8 @@ def _enumerate_skills_filesystem(cfg: Config) -> list[dict[str, Any]]:
         except OSError:
             continue
         for entry in sorted(entries):
+            if _is_openhands_installed_container(skill_dir, entry):
+                continue
             full = os.path.join(skill_dir, entry)
             if not os.path.isdir(full):
                 continue
@@ -1818,6 +1837,14 @@ def _enumerate_skills_filesystem(cfg: Config) -> list[dict[str, Any]]:
     return rows
 
 
+def _is_openhands_installed_container(skill_dir: str, entry: str) -> bool:
+    return (
+        entry == "installed"
+        and os.path.basename(skill_dir) == "skills"
+        and os.path.basename(os.path.dirname(skill_dir)) == ".openhands"
+    )
+
+
 def _skill_dir_is_eligible(path: str) -> bool:
     for marker in ("SKILL.md", "skill.json", "README.md"):
         if os.path.isfile(os.path.join(path, marker)):
@@ -1826,7 +1853,7 @@ def _skill_dir_is_eligible(path: str) -> bool:
 
 
 def _read_skill_description(path: str) -> str:
-    """Return the first non-empty line of SKILL.md / README.md, if any.
+    """Return a short description from SKILL.md / README.md, if any.
 
     Bounded to 2 KiB so we don't accidentally slurp a multi-MB README
     into the inventory dict.
@@ -1840,6 +1867,9 @@ def _read_skill_description(path: str) -> str:
                 text = f.read(2048)
         except OSError:
             continue
+        frontmatter_description = _frontmatter_description(text)
+        if frontmatter_description:
+            return frontmatter_description[:200]
         for line in text.splitlines():
             stripped = line.strip().lstrip("#").strip()
             if stripped:
@@ -1847,18 +1877,34 @@ def _read_skill_description(path: str) -> str:
     return ""
 
 
-def _enumerate_plugins_filesystem(cfg: Config) -> list[dict[str, Any]]:
-    """One row per plugin directory under ``cfg.plugin_dirs()``.
+def _frontmatter_description(text: str) -> str:
+    if not text.startswith("---"):
+        return ""
+    end = text.find("\n---", 3)
+    if end < 0:
+        return ""
+    for line in text[3:end].splitlines():
+        key, sep, value = line.partition(":")
+        if sep and key.strip() == "description":
+            return value.strip().strip("\"'")
+    return ""
+
+
+def _enumerate_plugins_filesystem(
+    cfg: Config, connector: str | None = None,
+) -> list[dict[str, Any]]:
+    """One row per plugin directory under ``cfg.plugin_dirs(connector)``.
 
     A plugin is treated as a directory containing one of the
     documented manifest names (matches plugin_scanner._MANIFEST_CANDIDATES
     after S2.3): package.json, manifest.json, plugin.json,
     openclaw.plugin.json, .codex-plugin/plugin.json,
-    .claude-plugin/plugin.json.
+    .claude-plugin/plugin.json. ``connector`` scopes the walk for
+    multi-connector focus (defaults to active).
     """
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for plugin_dir in cfg.plugin_dirs():
+    for plugin_dir in cfg.plugin_dirs(connector):
         if not os.path.isdir(plugin_dir):
             continue
         try:
@@ -1910,17 +1956,21 @@ def _detect_plugin_manifest(plugin_root: str) -> str:
     return ""
 
 
-def _enumerate_mcp_filesystem(cfg: Config) -> list[dict[str, Any]]:
+def _enumerate_mcp_filesystem(
+    cfg: Config, connector: str | None = None,
+) -> list[dict[str, Any]]:
     """Read MCP servers via the connector-aware
     :meth:`Config.mcp_servers` helper and convert
     :class:`MCPServerEntry` rows into the inventory dict shape used by
-    the OpenClaw CLI parser.
+    the OpenClaw CLI parser. ``connector`` scopes the read for
+    multi-connector focus (defaults to active).
     """
     rows: list[dict[str, Any]] = []
-    for entry in cfg.mcp_servers():
+    resolved = connector or cfg.active_connector()
+    for entry in cfg.mcp_servers(connector):
         row: dict[str, Any] = {
             "id": entry.name,
-            "source": f"{cfg.active_connector()} mcp registry",
+            "source": f"{resolved} mcp registry",
         }
         if entry.command:
             row["command"] = entry.command

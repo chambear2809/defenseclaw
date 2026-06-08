@@ -1,6 +1,6 @@
 {
   "name": "defenseclaw",
-  "version": "0.6.0",
+  "version": "0.7.1",
   "description": "OpenClaw plugin for DefenseClaw — scan skills/plugins/MCPs, enforce policy, monitor runtime",
   "type": "module",
   "main": "dist/index.js",
@@ -34,8 +34,6 @@
   },
   "license": "Apache-2.0",
   "permissions": [
-    "net:connect:localhost",
-    "net:connect:chat-ai.cisco.com",
-    "net:connect:id.cisco.com"
+    "net:connect:localhost"
   ]
 }

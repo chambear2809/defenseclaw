@@ -25,6 +25,7 @@ import (
 
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/defenseclaw/defenseclaw/internal/audit"
 	"github.com/defenseclaw/defenseclaw/internal/gatewaylog"
 	"github.com/defenseclaw/defenseclaw/internal/redaction"
 	"github.com/defenseclaw/defenseclaw/internal/telemetry"
@@ -156,14 +157,18 @@ func stampEventCorrelation(ev *gatewaylog.Event, ctx context.Context) {
 	if ev == nil || ctx == nil {
 		return
 	}
+	env := audit.EnvelopeFromContext(ctx)
 	if ev.RequestID == "" {
-		ev.RequestID = RequestIDFromContext(ctx)
+		ev.RequestID = firstNonEmpty(RequestIDFromContext(ctx), env.RequestID)
 	}
 	if ev.SessionID == "" {
-		ev.SessionID = SessionIDFromContext(ctx)
+		ev.SessionID = firstNonEmpty(SessionIDFromContext(ctx), env.SessionID)
+	}
+	if ev.TurnID == "" {
+		ev.TurnID = env.TurnID
 	}
 	if ev.TraceID == "" {
-		ev.TraceID = TraceIDFromContext(ctx)
+		ev.TraceID = firstNonEmpty(TraceIDFromContext(ctx), env.TraceID)
 		if ev.TraceID == "" {
 			if sp := trace.SpanFromContext(ctx); sp != nil && sp.SpanContext().IsValid() {
 				ev.TraceID = sp.SpanContext().TraceID().String()
@@ -171,23 +176,38 @@ func stampEventCorrelation(ev *gatewaylog.Event, ctx context.Context) {
 		}
 	}
 	if ev.RunID == "" {
-		ev.RunID = gatewaylog.ProcessRunID()
+		ev.RunID = firstNonEmpty(env.RunID, gatewaylog.ProcessRunID())
 	}
 	id := AgentIdentityFromContext(ctx)
 	if ev.AgentID == "" {
-		ev.AgentID = id.AgentID
+		ev.AgentID = firstNonEmpty(id.AgentID, env.AgentID)
 	}
 	if ev.AgentName == "" {
-		ev.AgentName = id.AgentName
+		ev.AgentName = firstNonEmpty(id.AgentName, env.AgentName)
 	}
 	if ev.AgentType == "" {
 		ev.AgentType = id.AgentType
 	}
 	if ev.AgentInstanceID == "" {
-		ev.AgentInstanceID = id.AgentInstanceID
+		ev.AgentInstanceID = firstNonEmpty(id.AgentInstanceID, env.AgentInstanceID)
 	}
 	if ev.SidecarInstanceID == "" {
-		ev.SidecarInstanceID = id.SidecarInstanceID
+		ev.SidecarInstanceID = firstNonEmpty(id.SidecarInstanceID, env.SidecarInstanceID)
+	}
+	if ev.PolicyID == "" {
+		ev.PolicyID = env.PolicyID
+	}
+	if ev.DestinationApp == "" {
+		ev.DestinationApp = env.DestinationApp
+	}
+	if ev.ToolName == "" {
+		ev.ToolName = env.ToolName
+	}
+	if ev.ToolID == "" {
+		ev.ToolID = env.ToolID
+	}
+	if ev.Connector == "" {
+		ev.Connector = env.Connector
 	}
 }
 
@@ -252,10 +272,25 @@ func emitEvent(ctx context.Context, e gatewaylog.Event) {
 	w.EmitContext(ctx, e)
 }
 
+// emitVerdictExtras carries optional verdict-event fields that
+// runtime finding emitters (guardrail Inspect, mid-stream,
+// tool-call inspect) stamp so SIEM can join the verdict to its
+// per-finding scan_findings rows. Pure additive — emitVerdict
+// callers that pass no extras get exactly the same wire shape as
+// before.
+type emitVerdictExtras struct {
+	EvaluationID string
+	RuleIDs      []string
+}
+
 // emitVerdict records a single guardrail-pipeline stage decision.
 // ctx carries the request correlation + agent identity that Gets
 // stamped onto the envelope. Pass context.Background() when emitting
 // outside a request (boot fall-backs, background self-tests).
+//
+// The variadic extras slot lets new call sites stamp evaluation_id
+// + rule_ids without forcing every existing caller (multi-turn,
+// block-list, approval-denied, etc.) to update.
 func emitVerdict(
 	ctx context.Context,
 	stage gatewaylog.Stage,
@@ -265,7 +300,12 @@ func emitVerdict(
 	severity gatewaylog.Severity,
 	categories []string,
 	latencyMs int64,
+	extras ...emitVerdictExtras,
 ) {
+	var ext emitVerdictExtras
+	if len(extras) > 0 {
+		ext = extras[0]
+	}
 	// Plan B6 / S0.10: VerdictPayload.Reason is documented as
 	// "short, redacted" but the redactor pipeline DOES legitimately
 	// receive raw-secret strings on the way in (the redaction layer
@@ -279,11 +319,13 @@ func emitVerdict(
 		Direction: direction,
 		Model:     model,
 		Verdict: &gatewaylog.VerdictPayload{
-			Stage:      stage,
-			Action:     action,
-			Reason:     reason,
-			Categories: categories,
-			LatencyMs:  latencyMs,
+			Stage:        stage,
+			Action:       action,
+			Reason:       reason,
+			Categories:   categories,
+			LatencyMs:    latencyMs,
+			EvaluationID: ext.EvaluationID,
+			RuleIDs:      ext.RuleIDs,
 		},
 	})
 }
@@ -372,14 +414,22 @@ func emitLifecycle(ctx context.Context, subsystem, transition string, details ma
 			details["transition_raw"] = transition
 		}
 	}
-	emitEvent(ctx, gatewaylog.Event{
+	ev := gatewaylog.Event{
 		EventType: gatewaylog.EventLifecycle,
 		Lifecycle: &gatewaylog.LifecyclePayload{
 			Subsystem:  subsystem,
 			Transition: normalized,
 			Details:    details,
 		},
-	})
+	}
+	// Promote a connector detail to the first-class envelope field so
+	// gateway.jsonl consumers (Splunk local bridge, AgentWatch) can
+	// filter/group by connector without parsing the details bag — the
+	// same contract the audit-event connector column provides.
+	if c := details["connector"]; c != "" {
+		ev.Connector = c
+	}
+	emitEvent(ctx, ev)
 }
 
 // normalizeLifecycleTransition maps caller-supplied transition
@@ -411,6 +461,14 @@ func normalizeLifecycleTransition(t string) string {
 // in /health or alerting — stderr-only diagnostics stay in the
 // legacy writer. ctx supplies the correlation triplet when available.
 func emitError(ctx context.Context, subsystem, code, message string, cause error) {
+	emitErrorConnector(ctx, subsystem, code, "", message, cause)
+}
+
+// emitErrorConnector is emitError with first-class connector attribution.
+// Connector-scoped failures (e.g. hook self-heal re-install failures) pass
+// the originating connector so gateway.jsonl error events carry the same
+// connector dimension as every other surface; "" behaves like emitError.
+func emitErrorConnector(ctx context.Context, subsystem, code, connector, message string, cause error) {
 	payload := &gatewaylog.ErrorPayload{
 		Subsystem: subsystem,
 		Code:      code,
@@ -422,6 +480,7 @@ func emitError(ctx context.Context, subsystem, code, message string, cause error
 	emitEvent(ctx, gatewaylog.Event{
 		EventType: gatewaylog.EventError,
 		Severity:  gatewaylog.SeverityHigh,
+		Connector: connector,
 		Error:     payload,
 	})
 }

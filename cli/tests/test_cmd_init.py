@@ -564,6 +564,7 @@ class TestInitShowsScannerDefaults(unittest.TestCase):
     @patch("defenseclaw.config.default_data_path")
     def test_init_saves_scanner_defaults_to_config(self, mock_path, _mock_env, _mock_scanners, _mock_guardrail, _mock_which):
         from pathlib import Path
+
         import yaml
 
         mock_path.return_value = Path(self.tmp_dir)
@@ -637,6 +638,7 @@ class TestInitShowsGatewayDefaults(unittest.TestCase):
     @patch("defenseclaw.config.default_data_path")
     def test_init_saves_gateway_defaults_to_config(self, mock_path, _mock_env, _mock_scanners, _mock_guardrail, _mock_which):
         from pathlib import Path
+
         import yaml
 
         mock_path.return_value = Path(self.tmp_dir)
@@ -694,6 +696,7 @@ class TestResolveOpenclawGateway(unittest.TestCase):
 
     def test_local_mode_reads_port_and_token(self):
         import json
+
         from defenseclaw.commands.cmd_init import _resolve_openclaw_gateway
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -715,6 +718,7 @@ class TestResolveOpenclawGateway(unittest.TestCase):
 
     def test_non_local_mode_reads_host(self):
         import json
+
         from defenseclaw.commands.cmd_init import _resolve_openclaw_gateway
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -737,6 +741,7 @@ class TestResolveOpenclawGateway(unittest.TestCase):
 
     def test_missing_gateway_block(self):
         import json
+
         from defenseclaw.commands.cmd_init import _resolve_openclaw_gateway
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -752,6 +757,7 @@ class TestResolveOpenclawGateway(unittest.TestCase):
 
     def test_no_auth_token(self):
         import json
+
         from defenseclaw.commands.cmd_init import _resolve_openclaw_gateway
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1281,6 +1287,7 @@ class TestIsSidecarRunning(unittest.TestCase):
 
     def test_json_pid_format(self):
         import json
+
         from defenseclaw.commands.cmd_init import _read_pid
         pid_file = os.path.join(self.tmp_dir, "gateway.pid")
         with open(pid_file, "w") as f:
@@ -1353,7 +1360,8 @@ class TestSaveOwnershipBackup(unittest.TestCase):
 
     def test_creates_backup_file(self):
         import json
-        from defenseclaw.commands.cmd_init_sandbox import _save_ownership_backup, OPENCLAW_OWNERSHIP_BACKUP
+
+        from defenseclaw.commands.cmd_init_sandbox import _save_ownership_backup
         backup_path = _save_ownership_backup(self.oc_home, self.data_dir)
         self.assertTrue(os.path.isfile(backup_path))
 
@@ -1367,7 +1375,7 @@ class TestSaveOwnershipBackup(unittest.TestCase):
         self.assertEqual(data["original_gid"], os.stat(self.oc_home).st_gid)
 
     def test_backup_file_path(self):
-        from defenseclaw.commands.cmd_init_sandbox import _save_ownership_backup, OPENCLAW_OWNERSHIP_BACKUP
+        from defenseclaw.commands.cmd_init_sandbox import OPENCLAW_OWNERSHIP_BACKUP, _save_ownership_backup
         backup_path = _save_ownership_backup(self.oc_home, self.data_dir)
         expected = os.path.join(self.data_dir, OPENCLAW_OWNERSHIP_BACKUP)
         self.assertEqual(backup_path, expected)
@@ -1388,7 +1396,8 @@ class TestIntegrateOpenclawHomeIdempotent(unittest.TestCase):
 
     def test_idempotent_when_already_configured(self):
         import json
-        from defenseclaw.commands.cmd_init_sandbox import _integrate_openclaw_home, OPENCLAW_OWNERSHIP_BACKUP
+
+        from defenseclaw.commands.cmd_init_sandbox import OPENCLAW_OWNERSHIP_BACKUP, _integrate_openclaw_home
 
         # Simulate a previous successful integration
         backup_path = os.path.join(self.data_dir, OPENCLAW_OWNERSHIP_BACKUP)
@@ -1441,6 +1450,7 @@ class TestRestoreOpenclawOwnership(unittest.TestCase):
 
     def test_removes_symlink(self):
         import json
+
         from defenseclaw.commands.cmd_init_sandbox import OPENCLAW_OWNERSHIP_BACKUP
         from defenseclaw.commands.cmd_setup_sandbox import _restore_openclaw_ownership
 
@@ -1705,6 +1715,186 @@ class TestInitHITLFlags(unittest.TestCase):
         self.assertFalse(hilt["enabled"],
                          "no flag = no change; default_config() seeds enabled=False")
         self.assertEqual(hilt["min_severity"], "HIGH")
+
+
+class TestMultiConnectorInit(unittest.TestCase):
+    """First-run wizard can configure several connectors in one pass."""
+
+    def setUp(self):
+        self.tmp_dir = tempfile.mkdtemp(prefix="dclaw-init-multi-")
+        self.addCleanup(shutil.rmtree, self.tmp_dir, ignore_errors=True)
+
+    def _disc(self, installed):
+        return AgentDiscovery(
+            scanned_at="2026-06-03T00:00:00Z",
+            cache_hit=False,
+            agents={
+                name: AgentSignal(
+                    name=name,
+                    installed=name in installed,
+                    config_path=f"/tmp/{name}.cfg" if name in installed else "",
+                    binary_path="",
+                    version="",
+                    error="",
+                )
+                for name in KNOWN_CONNECTORS
+            },
+        )
+
+    def test_parse_connector_list_normalizes_dedups_splits(self):
+        from defenseclaw.commands.cmd_init import _parse_connector_list
+
+        self.assertEqual(_parse_connector_list("codex, claude-code ,codex"), ["codex", "claudecode"])
+        self.assertEqual(_parse_connector_list("codex claudecode"), ["codex", "claudecode"])
+        self.assertEqual(_parse_connector_list(""), [])
+        self.assertEqual(_parse_connector_list(None), [])
+
+    def test_installed_hook_connectors_excludes_proxy_backed(self):
+        from defenseclaw.commands.cmd_init import _installed_hook_connectors
+
+        got = _installed_hook_connectors(self._disc({"codex", "claudecode", "openclaw"}))
+        self.assertIn("codex", got)
+        self.assertIn("claudecode", got)
+        # openclaw is proxy-backed and cannot be a multi-connector peer.
+        self.assertNotIn("openclaw", got)
+
+    def test_activate_additional_connectors_writes_per_connector_overrides(self):
+        from defenseclaw import config as cfg_mod
+        from defenseclaw.commands.cmd_init import _activate_additional_connectors
+
+        with patch.dict(os.environ, {"DEFENSECLAW_HOME": self.tmp_dir}), patch(
+            "defenseclaw.commands.cmd_setup._check_connector_version_supported_for_setup",
+            return_value=True,
+        ):
+            cfg = cfg_mod.default_config()
+            cfg.guardrail.connector = "codex"
+            cfg.claw.mode = "codex"
+            cfg.guardrail.mode = "observe"
+            cfg.guardrail.enabled = True
+            cfg.save()
+
+            active = _activate_additional_connectors(
+                {"connector": "codex", "profile": "observe", "fail_mode": "open",
+                 "human_approval": None, "hilt_min_severity": None},
+                [{"connector": "claudecode", "profile": "action", "fail_mode": "closed",
+                  "human_approval": True, "hilt_min_severity": "MEDIUM"}],
+                start_gateway=False,
+            )
+            self.assertEqual(active, ["claudecode", "codex"])
+
+            reloaded = cfg_mod.load()
+            gc = reloaded.guardrail
+            self.assertEqual(sorted(gc.connectors), ["claudecode", "codex"])
+            self.assertEqual(reloaded.active_connectors(), ["claudecode", "codex"])
+            cc = gc.connectors["claudecode"]
+            self.assertEqual(cc.mode, "action")
+            self.assertEqual(cc.hook_fail_mode, "closed")
+            self.assertIsNotNone(cc.hilt)
+            self.assertTrue(cc.hilt.enabled)
+            self.assertEqual(cc.hilt.min_severity, "MEDIUM")
+            # The codex peer carries an empty override and inherits the
+            # global observe mode written by the primary bootstrap.
+            self.assertEqual(gc.connectors["codex"].mode, "")
+            # Singular mirror pinned to the sorted-first connector for
+            # backward-compatible (single-connector) readers.
+            self.assertEqual(gc.connector, "claudecode")
+            self.assertEqual(reloaded.claw.mode, "claudecode")
+
+    def test_activate_additional_connectors_downgrades_unverified_action(self):
+        """An extra connector requested in action mode whose installed version
+        is not verified against a known hook contract must be downgraded to
+        observe (parity with the Go gateway boot gate), not silently written as
+        an enforcing connector the gateway will refuse to run."""
+        from defenseclaw import config as cfg_mod
+        from defenseclaw.commands.cmd_init import _activate_additional_connectors
+
+        with patch.dict(os.environ, {"DEFENSECLAW_HOME": self.tmp_dir}), patch(
+            "defenseclaw.commands.cmd_setup._check_connector_version_supported_for_setup",
+            return_value=False,
+        ):
+            cfg = cfg_mod.default_config()
+            cfg.guardrail.connector = "codex"
+            cfg.claw.mode = "codex"
+            cfg.guardrail.mode = "observe"
+            cfg.guardrail.enabled = True
+            cfg.save()
+
+            _activate_additional_connectors(
+                {"connector": "codex", "profile": "observe", "fail_mode": "open",
+                 "human_approval": None, "hilt_min_severity": None},
+                [{"connector": "claudecode", "profile": "action", "fail_mode": "closed",
+                  "human_approval": None, "hilt_min_severity": None}],
+                start_gateway=False,
+            )
+
+            reloaded = cfg_mod.load()
+            # Unverified extra is downgraded to observe, not action.
+            self.assertEqual(reloaded.guardrail.connectors["claudecode"].mode, "observe")
+
+    def test_activate_additional_connectors_keeps_action_with_drift_override(self):
+        """With the explicit drift override the gate passes, so the extra stays
+        in action mode."""
+        from defenseclaw import config as cfg_mod
+        from defenseclaw.commands.cmd_init import _activate_additional_connectors
+
+        with patch.dict(
+            os.environ,
+            {"DEFENSECLAW_HOME": self.tmp_dir, "DEFENSECLAW_ALLOW_HOOK_CONTRACT_DRIFT": "1"},
+        ), patch(
+            "defenseclaw.commands.cmd_setup._check_connector_version_supported_for_setup",
+            return_value=True,
+        ):
+            cfg = cfg_mod.default_config()
+            cfg.guardrail.connector = "codex"
+            cfg.claw.mode = "codex"
+            cfg.guardrail.mode = "observe"
+            cfg.guardrail.enabled = True
+            cfg.save()
+
+            _activate_additional_connectors(
+                {"connector": "codex", "profile": "observe", "fail_mode": "open",
+                 "human_approval": None, "hilt_min_severity": None},
+                [{"connector": "claudecode", "profile": "action", "fail_mode": "closed",
+                  "human_approval": None, "hilt_min_severity": None}],
+                start_gateway=False,
+            )
+
+            reloaded = cfg_mod.load()
+            self.assertEqual(reloaded.guardrail.connectors["claudecode"].mode, "action")
+
+    def test_prompt_first_run_fans_out_per_connector(self):
+        from defenseclaw.commands import cmd_init
+
+        disc = self._disc({"codex", "claudecode"})
+        prompts = iter(["codex,claudecode", "local", "observe", "open", "action", "closed", "MEDIUM"])
+        confirms = iter([False, True, False, True])  # judge, claudecode HITL, start_gateway, verify
+
+        with patch.object(cmd_init.agent_discovery, "discover_agents", return_value=disc), \
+                patch.object(cmd_init.agent_discovery, "render_discovery_table", return_value=""), \
+                patch.object(cmd_init.click, "prompt", side_effect=lambda *a, **k: next(prompts)), \
+                patch.object(cmd_init.click, "confirm", side_effect=lambda *a, **k: next(confirms)):
+            settings, scanner_mode, with_judge, start_gateway, verify = cmd_init._prompt_first_run(
+                connector=None, profile=None, scanner_mode="local", with_judge=False,
+                fail_mode=None, human_approval=None, hilt_min_severity=None,
+                start_gateway=False, verify=None, rescan_agents=False,
+            )
+
+        self.assertEqual([s["connector"] for s in settings], ["codex", "claudecode"])
+        self.assertEqual(settings[0]["profile"], "observe")
+        self.assertEqual(settings[1]["profile"], "action")
+        self.assertEqual(settings[1]["fail_mode"], "closed")
+        self.assertTrue(settings[1]["human_approval"])
+        self.assertEqual(settings[1]["hilt_min_severity"], "MEDIUM")
+        self.assertEqual(scanner_mode, "local")
+        self.assertFalse(with_judge)
+        self.assertFalse(start_gateway)
+        self.assertTrue(verify)
+
+    def test_single_connector_selection_keeps_legacy_shape(self):
+        from defenseclaw.commands.cmd_init import _prompt_connector_selection
+
+        # An explicit single connector short-circuits discovery entirely.
+        self.assertEqual(_prompt_connector_selection("codex", False), ["codex"])
 
 
 if __name__ == "__main__":

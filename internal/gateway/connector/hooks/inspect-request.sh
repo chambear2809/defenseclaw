@@ -1,8 +1,11 @@
 #!/bin/bash
-# defenseclaw-managed-hook v2
+# defenseclaw-managed-hook v6
 # DefenseClaw PreRequest hook — inspects user query before it is sent to the LLM.
 # Reads the user message content from stdin (JSON with "content" field).
 set -euo pipefail
+# Windows: HOME may be unset when agents spawn hooks. Fall back to USERPROFILE.
+HOME="${HOME:-${USERPROFILE:-$(cd ~ 2>/dev/null && pwd)}}"
+export HOME
 
 # Fail-open guard. If the operator has disabled the guardrail or fully
 # uninstalled DefenseClaw, exit 0 immediately so the agent isn't
@@ -21,9 +24,16 @@ fi
 defenseclaw_harden_resources
 defenseclaw_harden_env
 
-CONTENT=$(cat)
+DEFENSECLAW_HOOK_CONNECTOR="inspect"
+DEFENSECLAW_HOOK_NAME="inspect-request"
+export DEFENSECLAW_HOOK_CONNECTOR DEFENSECLAW_HOOK_NAME
 
-API_ADDR="${DEFENSECLAW_API_ADDR:-{{.APIAddr}}}"
+CONTENT="$(defenseclaw_read_stdin_capped)" || {
+  echo "defenseclaw: inspect request refusing oversized payload" >&2
+  exit 2
+}
+
+API_ADDR="{{.APIAddr}}"
 FAIL_MODE="${DEFENSECLAW_FAIL_MODE:-{{.FailMode}}}"
 
 # Transport failures (gateway down / 5xx) always allow unless
@@ -67,11 +77,11 @@ elif [ "$HTTP_CODE" -lt 200 ] 2>/dev/null || [ "$HTTP_CODE" -ge 300 ] 2>/dev/nul
   fail_response "gateway returned HTTP ${HTTP_CODE}"
 fi
 
-ACTION=$(echo "$RESULT" | jq -r '.action // "allow"' 2>/dev/null) || {
+ACTION=$(echo "$RESULT" | _dc_jq -r '.action // "allow"' 2>/dev/null) || {
   fail_response "failed to parse action from response"
 }
 if [ "$ACTION" = "block" ]; then
-  REASON=$(echo "$RESULT" | jq -r '.reason // "blocked by DefenseClaw"' 2>/dev/null)
+  REASON=$(echo "$RESULT" | _dc_jq -r '.reason // "blocked by DefenseClaw"' 2>/dev/null)
   echo "DefenseClaw: $REASON" >&2
   exit 2
 fi

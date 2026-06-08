@@ -188,6 +188,88 @@ class TestAlertsCommand(unittest.TestCase):
         self.assertNotEqual(result.exit_code, 0)
 
     # ------------------------------------------------------------------
+    # --connector N: per-connector attribution filter
+    # ------------------------------------------------------------------
+
+    def _seed_two_connectors(self):
+        self.app.store.log_event(Event(action="connector-hook", target="/a",
+                                       severity="HIGH",
+                                       details="connector=codex marker_codexonly"))
+        self.app.store.log_event(Event(action="connector-hook", target="/b",
+                                       severity="HIGH",
+                                       details="connector=claudecode marker_cconly"))
+
+    def test_alerts_connector_filter_keeps_only_matching(self):
+        from defenseclaw.commands.cmd_alerts import alerts
+        self._seed_two_connectors()
+
+        result = self.runner.invoke(alerts, ["--no-tui", "--connector", "codex"],
+                                    obj=self.app, catch_exceptions=False)
+        self.assertEqual(result.exit_code, 0, result.output)
+        # The scope is reflected in the title and only codex rows survive.
+        # (Assert on the connector= value, which renders before the Details
+        # column truncates, rather than the trailing free-text marker.)
+        self.assertIn("connector=codex", result.output)
+        self.assertNotIn("claudec", result.output)
+
+    def test_alerts_connector_filter_is_case_insensitive_substring(self):
+        from defenseclaw.commands.cmd_alerts import alerts
+        self._seed_two_connectors()
+
+        result = self.runner.invoke(alerts, ["--no-tui", "--connector", "CODEX"],
+                                    obj=self.app, catch_exceptions=False)
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("connector=codex", result.output)
+        self.assertNotIn("claudec", result.output)
+
+    def test_alerts_connector_filter_no_match_message(self):
+        from defenseclaw.commands.cmd_alerts import alerts
+        self._seed_two_connectors()
+
+        result = self.runner.invoke(alerts, ["--no-tui", "--connector", "nope"],
+                                    obj=self.app, catch_exceptions=False)
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("No alerts from connector 'nope'", result.output)
+
+    def test_alerts_connector_filter_show_indexes_filtered_set(self):
+        from defenseclaw.commands.cmd_alerts import alerts
+        self._seed_two_connectors()
+
+        # --show 1 should resolve against the filtered list, i.e. the codex row.
+        result = self.runner.invoke(alerts, ["--no-tui", "--connector", "codex", "--show", "1"],
+                                    obj=self.app, catch_exceptions=False)
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("Alert #1", result.output)
+        self.assertIn("connector=codex", result.output)
+
+    def test_alerts_no_connector_flag_is_unchanged(self):
+        from defenseclaw.commands.cmd_alerts import alerts
+        self._seed_two_connectors()
+
+        # Without --connector, both connectors' rows render (no-op parity).
+        result = self.runner.invoke(alerts, ["--no-tui"], obj=self.app, catch_exceptions=False)
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("connector=codex", result.output)
+        self.assertIn("claudec", result.output)
+
+    def test_filter_by_connector_helper(self):
+        from defenseclaw.commands.cmd_alerts import _event_connector, _filter_by_connector
+
+        a = Event(action="connector-hook", target="/a", severity="HIGH",
+                  details="connector=codex x=1")
+        b = Event(action="connector-hook", target="/b", severity="HIGH",
+                  details="connector=claudecode y=2")
+        c = Event(action="sink-failure", target="/c", severity="HIGH",
+                  details="sink_kind=splunk_hec")  # no connector attribution
+
+        self.assertEqual(_event_connector(a), "codex")
+        self.assertEqual(_event_connector(c), "")
+        # Substring + case-insensitive, and a no-op for empty needle.
+        self.assertEqual(_filter_by_connector([a, b, c], "codex"), [a])
+        self.assertEqual(_filter_by_connector([a, b, c], "CLAUDE"), [b])
+        self.assertEqual(_filter_by_connector([a, b, c], ""), [a, b, c])
+
+    # ------------------------------------------------------------------
     # Helper functions
     # ------------------------------------------------------------------
 
@@ -378,6 +460,89 @@ class TestAIBOMCommand(unittest.TestCase):
         result = self.runner.invoke(aibom, ["scan"], obj=self.app, catch_exceptions=False)
         self.assertEqual(result.exit_code, 0, result.output)
         mock_build.assert_called_once()
+
+    @patch("defenseclaw.inventory.claw_inventory.enrich_with_policy")
+    @patch("defenseclaw.inventory.claw_inventory.claw_aibom_to_scan_result")
+    @patch("defenseclaw.inventory.claw_inventory.build_claw_aibom")
+    def test_scan_defaults_to_all_connectors(self, mock_build, mock_to_scan, mock_enrich):
+        # A bare `aibom scan` is a complete BOM: it inventories EVERY active
+        # connector with no flag required (the --all-connectors flag was
+        # removed as redundant).
+        from defenseclaw.commands.cmd_aibom import aibom
+        from defenseclaw.models import ScanResult
+
+        mock_build.return_value = self._make_inventory()
+        mock_to_scan.return_value = ScanResult(
+            scanner="aibom-claw", target="x",
+            timestamp=datetime.now(timezone.utc), findings=[],
+        )
+        self.app.cfg.active_connectors = lambda: ["claudecode", "codex"]  # type: ignore[method-assign]
+
+        result = self.runner.invoke(
+            aibom, ["scan"], obj=self.app, catch_exceptions=False,
+        )
+        self.assertEqual(result.exit_code, 0, result.output)
+        fanned = {c.kwargs.get("connector") for c in mock_build.call_args_list}
+        self.assertEqual(fanned, {"claudecode", "codex"})
+
+    @patch("defenseclaw.inventory.claw_inventory.enrich_with_policy")
+    @patch("defenseclaw.inventory.claw_inventory.claw_aibom_to_scan_result")
+    @patch("defenseclaw.inventory.claw_inventory.build_claw_aibom")
+    def test_scan_connector_flag_targets_one(self, mock_build, mock_to_scan, mock_enrich):
+        from defenseclaw.commands.cmd_aibom import aibom
+        from defenseclaw.models import ScanResult
+
+        mock_build.return_value = self._make_inventory()
+        mock_to_scan.return_value = ScanResult(
+            scanner="aibom-claw", target="x",
+            timestamp=datetime.now(timezone.utc), findings=[],
+        )
+        self.app.cfg.active_connectors = lambda: ["claudecode", "codex"]  # type: ignore[method-assign]
+
+        result = self.runner.invoke(
+            aibom, ["scan", "--connector", "codex"], obj=self.app, catch_exceptions=False,
+        )
+        self.assertEqual(result.exit_code, 0, result.output)
+        mock_build.assert_called_once()
+        self.assertEqual(mock_build.call_args.kwargs.get("connector"), "codex")
+
+    def test_scan_all_connectors_flag_removed(self):
+        # --all-connectors was removed (a bare scan already covers all), so
+        # passing it must be rejected as an unknown option rather than
+        # silently accepted.
+        from defenseclaw.commands.cmd_aibom import aibom
+
+        self.app.cfg.active_connectors = lambda: ["claudecode", "codex"]  # type: ignore[method-assign]
+        result = self.runner.invoke(
+            aibom, ["scan", "--all-connectors"],
+            obj=self.app, catch_exceptions=False,
+        )
+        self.assertNotEqual(result.exit_code, 0)
+
+    @patch("defenseclaw.inventory.claw_inventory.enrich_with_policy")
+    @patch("defenseclaw.inventory.claw_inventory.claw_aibom_to_scan_result")
+    @patch("defenseclaw.inventory.claw_inventory.build_claw_aibom")
+    def test_scan_json_is_list_for_multiple_connectors(self, mock_build, mock_to_scan, mock_enrich):
+        # JSON contract: a single connector emits a bare object (unchanged);
+        # several connectors emit a list so automation can attribute each blob.
+        from defenseclaw.commands.cmd_aibom import aibom
+        from defenseclaw.models import ScanResult
+
+        mock_build.return_value = self._make_inventory()
+        mock_to_scan.return_value = ScanResult(
+            scanner="aibom-claw", target="x",
+            timestamp=datetime.now(timezone.utc), findings=[],
+        )
+        self.app.cfg.active_connectors = lambda: ["claudecode", "codex"]  # type: ignore[method-assign]
+
+        result = self.runner.invoke(
+            aibom, ["scan", "--json"], obj=self.app, catch_exceptions=False,
+        )
+        self.assertEqual(result.exit_code, 0, result.output)
+        json_start = result.output.index("[")
+        data = json.loads(result.output[json_start:])
+        self.assertIsInstance(data, list)
+        self.assertEqual(len(data), 2)
 
     @patch("defenseclaw.inventory.claw_inventory.enrich_with_policy")
     @patch("defenseclaw.inventory.claw_inventory.claw_aibom_to_scan_result")
@@ -925,7 +1090,7 @@ class TestSetupSplunkCommand(unittest.TestCase):
         self.assertIn("--accept-splunk-license", result.output)
 
     @patch("defenseclaw.commands.cmd_setup._apply_logs_config")
-    @patch("defenseclaw.commands.cmd_setup._preflight_docker", return_value=True)
+    @patch("defenseclaw.commands.cmd_setup._preflight_docker", return_value=(True, ""))
     def test_setup_splunk_logs_non_interactive_with_license_flag(
         self, _mock_preflight, mock_apply_logs_config,
     ):
@@ -941,7 +1106,7 @@ class TestSetupSplunkCommand(unittest.TestCase):
         self.assertIn("Local Splunk configured (Free mode from day 1)", result.output)
         mock_apply_logs_config.assert_called_once()
 
-    @patch("defenseclaw.commands.cmd_setup._preflight_docker", return_value=True)
+    @patch("defenseclaw.commands.cmd_setup._preflight_docker", return_value=(True, ""))
     @patch("defenseclaw.commands.cmd_setup.subprocess.run")
     @patch("defenseclaw.commands.cmd_setup.splunk_bridge_bin", return_value="/tmp/fake-splunk-claw-bridge")
     def test_setup_splunk_logs_bootstrap_bridge_free_mode(
@@ -985,7 +1150,7 @@ class TestSetupSplunkCommand(unittest.TestCase):
         self.assertIn("Local Splunk configured (Free mode from day 1)", result.output)
         self.assertIn("Log in with admin", result.output)
 
-    @patch("defenseclaw.commands.cmd_setup._preflight_docker", return_value=True)
+    @patch("defenseclaw.commands.cmd_setup._preflight_docker", return_value=(True, ""))
     @patch("defenseclaw.commands.cmd_setup.subprocess.run")
     @patch("defenseclaw.commands.cmd_setup.splunk_bridge_bin", return_value="/tmp/fake-splunk-claw-bridge")
     def test_setup_splunk_logs_bootstrap_bridge_s3_export_env(
@@ -1040,7 +1205,7 @@ class TestSetupSplunkCommand(unittest.TestCase):
         self.assertEqual(env["S3_PREFIX"], "agentwatch/defenseclaw")
         self.assertEqual(env["AWS_REGION"], "us-west-2")
 
-    @patch("defenseclaw.commands.cmd_setup._preflight_docker", return_value=True)
+    @patch("defenseclaw.commands.cmd_setup._preflight_docker", return_value=(True, ""))
     @patch("defenseclaw.commands.cmd_setup.subprocess.run")
     @patch("defenseclaw.commands.cmd_setup.splunk_bridge_bin", return_value="/tmp/fake-splunk-claw-bridge")
     def test_setup_splunk_s3_export_implies_logs(
@@ -1141,7 +1306,7 @@ class TestSetupSplunkCommand(unittest.TestCase):
         self.assertEqual(kwargs["env"]["AWS_REGION"], "us-west-2")
 
     @patch("defenseclaw.commands.cmd_setup._bootstrap_bridge", return_value=None)
-    @patch("defenseclaw.commands.cmd_setup._preflight_docker", return_value=True)
+    @patch("defenseclaw.commands.cmd_setup._preflight_docker", return_value=(True, ""))
     def test_setup_splunk_logs_non_interactive_fails_when_bridge_bootstrap_fails(
         self, _mock_preflight, _mock_bootstrap_bridge,
     ):
@@ -1155,6 +1320,143 @@ class TestSetupSplunkCommand(unittest.TestCase):
         self.assertNotEqual(result.exit_code, 0)
         self.assertFalse(self.app.cfg.splunk.enabled)
         self.assertNotIn("Local Splunk configured (Free mode from day 1)", result.output)
+
+    @patch(
+        "defenseclaw.commands.cmd_setup._preflight_docker",
+        return_value=(False, "port_8000_in_use"),
+    )
+    def test_setup_splunk_logs_non_interactive_port_conflict_message(
+        self, _mock_preflight,
+    ):
+        """Regression: when pre-flight fails on a busy port the
+        non-interactive error must name the port, not lie about Docker.
+        """
+        from defenseclaw.commands.cmd_setup import setup
+
+        result = self.runner.invoke(
+            setup,
+            ["splunk", "--logs", "--non-interactive", "--accept-splunk-license"],
+            obj=self.app,
+        )
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertNotIn("Docker is required for --logs", result.output)
+        self.assertIn("port 8000 is already in use", result.output)
+
+    @patch(
+        "defenseclaw.commands.cmd_setup._preflight_docker",
+        return_value=(False, "docker_daemon_not_running"),
+    )
+    def test_setup_splunk_logs_non_interactive_docker_daemon_message(
+        self, _mock_preflight,
+    ):
+        from defenseclaw.commands.cmd_setup import setup
+
+        result = self.runner.invoke(
+            setup,
+            ["splunk", "--logs", "--non-interactive", "--accept-splunk-license"],
+            obj=self.app,
+        )
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("Docker daemon is not running", result.output)
+
+    @patch("defenseclaw.commands.cmd_setup._preflight_docker", return_value=(True, ""))
+    @patch("defenseclaw.commands.cmd_setup.subprocess.run")
+    @patch(
+        "defenseclaw.commands.cmd_setup.splunk_bridge_bin",
+        return_value="/tmp/fake-splunk-claw-bridge",
+    )
+    def test_bootstrap_bridge_empty_stdout_emits_diagnostic(
+        self, _mock_bridge_bin, mock_run, _mock_preflight,
+    ):
+        """Regression: when the bridge exits 0 but writes nothing to
+        stdout (or writes non-JSON), the operator must see a
+        self-explanatory error plus a tail of the bridge's stderr
+        rather than the raw ``json`` module exception.
+        """
+        from defenseclaw.commands.cmd_setup import _bootstrap_bridge
+
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout="",
+            stderr="docker compose: failed to package app\nsee log above\n",
+        )
+
+        contract = _bootstrap_bridge(self.tmp_dir, refresh_bundle=False)
+
+        self.assertIsNone(contract)
+
+    @patch("defenseclaw.commands.cmd_setup._preflight_docker", return_value=(True, ""))
+    @patch("defenseclaw.commands.cmd_setup.subprocess.run")
+    @patch(
+        "defenseclaw.commands.cmd_setup.splunk_bridge_bin",
+        return_value="/tmp/fake-splunk-claw-bridge",
+    )
+    def test_bootstrap_bridge_malformed_json_surfaces_stderr_tail(
+        self, _mock_bridge_bin, mock_run, _mock_preflight,
+    ):
+        from click.testing import CliRunner
+        from defenseclaw.commands.cmd_setup import setup
+
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout="not-json-at-all",
+            stderr="line1\nline2\nfatal: ansible bootstrap failed\n",
+        )
+
+        result = CliRunner().invoke(
+            setup,
+            ["splunk", "--logs", "--non-interactive", "--accept-splunk-license"],
+            obj=self.app,
+        )
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("malformed JSON contract", result.output)
+        self.assertIn("Last bridge stderr:", result.output)
+        self.assertIn("fatal: ansible bootstrap failed", result.output)
+
+    @patch("defenseclaw.commands.cmd_setup._preflight_docker", return_value=(True, ""))
+    @patch("defenseclaw.commands.cmd_setup.subprocess.run")
+    @patch(
+        "defenseclaw.commands.cmd_setup.splunk_bridge_bin",
+        return_value="/tmp/fake-splunk-claw-bridge",
+    )
+    def test_setup_splunk_s3_export_emits_implies_logs_notice(
+        self, _mock_bridge_bin, mock_run, _mock_preflight,
+    ):
+        from defenseclaw.commands.cmd_setup import setup
+
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "splunk_web_url": "http://127.0.0.1:8000",
+                    "hec_url": "http://127.0.0.1:8088/services/collector/event",
+                    "hec_token": "bootstrap-token",
+                    "license_group": "Free",
+                    "web_login_required": False,
+                    "index": "defenseclaw_local",
+                    "source": "defenseclaw",
+                    "sourcetype": "defenseclaw:json",
+                }
+            ),
+            stderr="",
+        )
+
+        result = self.runner.invoke(
+            setup,
+            [
+                "splunk",
+                "--s3-export",
+                "--s3-bucket",
+                "agentwatch-demo",
+                "--non-interactive",
+                "--accept-splunk-license",
+            ],
+            obj=self.app,
+            catch_exceptions=False,
+        )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("--s3-export implies --logs", result.output)
 
     @patch("defenseclaw.commands.cmd_setup._preflight_docker")
     def test_setup_splunk_logs_interactive_decline_license(self, mock_preflight):
@@ -1175,6 +1477,26 @@ class TestSetupSplunkCommand(unittest.TestCase):
         self.assertIn("Local Splunk enablement cancelled.", result.output)
         self.assertFalse(self.app.cfg.splunk.enabled)
         mock_preflight.assert_not_called()
+
+    @patch("defenseclaw.commands.cmd_setup._preflight_docker", return_value=(False, "docker_not_installed"))
+    def test_setup_splunk_logs_interactive_preflight_failure_stops_logs(self, mock_preflight):
+        from defenseclaw.commands.cmd_setup import setup
+
+        user_input = "\n".join([
+            "n",           # Enable O11y?
+            "y",           # Enable local logs?
+            "y",           # Accept Splunk license?
+            "n",           # Enable Enterprise?
+        ]) + "\n"
+
+        result = self.runner.invoke(
+            setup, ["splunk"], obj=self.app,
+            input=user_input, catch_exceptions=False,
+        )
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertFalse(self.app.cfg.splunk.enabled)
+        self.assertNotIn("Local Splunk configured", result.output)
+        mock_preflight.assert_called_once()
 
     @patch("defenseclaw.commands.cmd_setup._preflight_docker")
     def test_setup_splunk_o11y_and_logs_interactive_decline_logs_preserves_o11y(

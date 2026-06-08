@@ -26,6 +26,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -264,7 +265,7 @@ func TestIsLoopback(t *testing.T) {
 
 func TestRegistry_DefaultContainsAllBuiltins(t *testing.T) {
 	r := NewDefaultRegistry()
-	expected := []string{"openclaw", "zeptoclaw", "claudecode", "codex", "hermes", "cursor", "windsurf", "geminicli", "copilot"}
+	expected := []string{"openclaw", "zeptoclaw", "claudecode", "codex", "hermes", "cursor", "windsurf", "geminicli", "copilot", "openhands", "antigravity"}
 	for _, name := range expected {
 		if _, ok := r.Get(name); !ok {
 			t.Errorf("default registry missing %q", name)
@@ -481,7 +482,12 @@ func TestAllConnectors_ImplementInterface(t *testing.T) {
 // it exists on disk.
 func TestOpenClaw_ExtensionAvailable_OnFullBuild(t *testing.T) {
 	t.Parallel()
-	if _, err := openClawExtensionFS.ReadFile(filepath.Join(openClawPluginRoot, ".placeholder")); err == nil {
+	// embed.FS always uses forward-slash paths; filepath.Join would emit
+	// backslashes on Windows and never match the embedded entry, so the
+	// skip would not fire and the test would spuriously fail on a Windows
+	// placeholder build. Use path.Join (and the shared constant) to mirror
+	// openClawExtensionAvailable.
+	if _, err := openClawExtensionFS.ReadFile(path.Join(openClawPluginRoot, openClawPlaceholderName)); err == nil {
 		t.Skip("gateway built without OpenClaw extension (placeholder present) — full-build assertion does not apply here")
 	}
 	if !openClawExtensionAvailable() {
@@ -1411,6 +1417,18 @@ func TestEveryHookOwner_TeardownLeavesTombstone(t *testing.T) {
 			hookAPI:    "/api/v1/copilot/hook",
 			setup:      hookOnlySetup(".json", NewCopilotConnector, &CopilotHooksPathOverride),
 		},
+		{
+			name:       "openhands",
+			hookScript: "openhands-hook.sh",
+			hookAPI:    "/api/v1/openhands/hook",
+			setup:      hookOnlySetup(".json", NewOpenHandsConnector, &OpenHandsHooksPathOverride),
+		},
+		{
+			name:       "antigravity",
+			hookScript: "antigravity-hook.sh",
+			hookAPI:    "/api/v1/antigravity/hook",
+			setup:      hookOnlySetup(".json", NewAntigravityConnector, &AntigravityHooksPathOverride),
+		},
 	}
 
 	// Defence-in-depth: every Connector returned by setup must actually
@@ -2087,22 +2105,22 @@ env_key = "OPENROUTER_API_KEY"
 	}
 }
 
-// TestCodex_Setup_HealsStaleProxyRedirect covers the migration path for
-// operators upgrading from a pre-PR-#265 install. The legacy setup
-// rewrote ~/.codex/config.toml's top-level openai_base_url to point at
-// the gateway's :4000/c/codex proxy mount; PR #265 deleted that mount
-// but left the operator's config.toml carrying a now-broken value, so
-// every Codex turn fails with "stream disconnected before completion"
-// against the closed loopback port.
+// TestCodex_Setup_HealsStaleProxyRedirect covers the migration path
+// for operators upgrading from an installation done before codex
+// became hook-only. The legacy setup rewrote ~/.codex/config.toml's
+// top-level openai_base_url to point at the gateway's :4000/c/codex
+// proxy mount; that mount has since been removed but the operator's
+// config.toml still carries the now-broken value, so every Codex
+// turn fails with "stream disconnected before completion" against
+// the closed loopback port.
 //
-// PR #265's "Open question #1" predicted this and the call was to let
-// the next `defenseclaw setup codex` overwrite — but the new Setup is
-// intentionally non-destructive toward openai_base_url (see
-// TestCodex_Setup_DefaultObservability_NoProxyRewrite), so without
-// this heal the stale value survives forever. This test pins the
-// narrow strip: only the loopback /c/codex shape DefenseClaw itself
-// wrote gets removed, and the heal is independent of port number
-// because the pre-#265 default of :4000 was operator-configurable.
+// The current Setup is intentionally non-destructive toward
+// openai_base_url (see TestCodex_Setup_DefaultObservability_NoProxyRewrite),
+// so without this heal the stale value would survive forever. This
+// test pins the narrow strip: only the loopback /c/codex URL shape
+// DefenseClaw itself wrote gets removed, and the heal is independent
+// of port number because the historical default of :4000 was
+// operator-configurable.
 func TestCodex_Setup_HealsStaleProxyRedirect(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -3601,15 +3619,15 @@ func runHookAndReturnCurlArgs(t *testing.T, scriptPath string, extraEnv map[stri
 	// and contains no .disabled sentinel so the hook proceeds to the
 	// curl path the caller cares about.
 	dcHome := t.TempDir()
-	cmd := exec.Command("bash", scriptPath)
-	// Plan B4 / S0.4: hooks lock PATH down by default. The test
-	// stubs `curl` inside an ephemeral tmpdir; tell the hardening
-	// helpers to keep our path rather than reset it to system bins.
+	// Hooks lock PATH down by default. The test stubs `curl` inside
+	// an ephemeral tmpdir; bake that path into the generated helper
+	// file so the runtime environment cannot spoof the trust decision.
 	hookPath := stubDir + ":/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+	bakeHookPathForTest(t, scriptPath, hookPath)
+	cmd := exec.Command("bash", scriptPath)
 	cmd.Env = append(os.Environ(),
 		"PATH="+stubDir+":"+os.Getenv("PATH"),
 		"DEFENSECLAW_HOME="+dcHome,
-		"DEFENSECLAW_HOOK_PATH="+hookPath,
 	)
 	for k, v := range extraEnv {
 		cmd.Env = append(cmd.Env, k+"="+v)
@@ -3623,6 +3641,27 @@ func runHookAndReturnCurlArgs(t *testing.T, scriptPath string, extraEnv map[stri
 		t.Fatalf("curl stub never recorded args: %v", err)
 	}
 	return string(data)
+}
+
+func bakeHookPathForTest(t *testing.T, scriptPath, hookPath string) {
+	t.Helper()
+	helperPath := filepath.Join(filepath.Dir(scriptPath), "_hardening.sh")
+	b, err := os.ReadFile(helperPath)
+	if err != nil {
+		t.Fatalf("read _hardening.sh: %v", err)
+	}
+	replacement := "DEFENSECLAW_BAKED_HOOK_PATH=" + shellSingleQuoteForTest(hookPath)
+	next := strings.Replace(string(b), `DEFENSECLAW_BAKED_HOOK_PATH=""`, replacement, 1)
+	if next == string(b) {
+		t.Fatalf("_hardening.sh missing DEFENSECLAW_BAKED_HOOK_PATH sentinel")
+	}
+	if err := os.WriteFile(helperPath, []byte(next), 0o644); err != nil {
+		t.Fatalf("write _hardening.sh baked hook path: %v", err)
+	}
+}
+
+func shellSingleQuoteForTest(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // containsAuthBearer returns true if the stubbed curl argv lines contain
@@ -3646,8 +3685,8 @@ func containsAuthBearer(curlArgs, token string) bool {
 
 func TestHookScripts_ReturnsList(t *testing.T) {
 	scripts := HookScripts()
-	if len(scripts) != 11 {
-		t.Errorf("HookScripts() returned %d scripts, want 11", len(scripts))
+	if len(scripts) != 13 {
+		t.Errorf("HookScripts() returned %d scripts, want 13", len(scripts))
 	}
 }
 
@@ -4087,8 +4126,8 @@ func TestDiscoverPlugins_EmptyDir(t *testing.T) {
 		t.Fatalf("DiscoverPlugins on empty dir: %v", err)
 	}
 	// Should still have only built-in connectors
-	if r.Len() != 9 {
-		t.Errorf("expected 9 built-in connectors, got %d", r.Len())
+	if r.Len() != 11 {
+		t.Errorf("expected 11 built-in connectors, got %d", r.Len())
 	}
 }
 
@@ -5444,13 +5483,12 @@ func TestClaudeCodeHookScript_NoStructuredOutput_FallsBackToExitTwo(t *testing.T
 	}
 }
 
-// TestCodexHookScript_NoStructuredOutput_FallsBackToExitTwo pins the
-// fallback path: if the gateway ever returns action=block but does
-// NOT include a codex_output mirror (legacy callers, future codex
-// events not yet wired up), the hook must use the exit-2-with-stderr
-// path so Codex still blocks. The reason MUST land on stderr —
-// emitting an empty stderr was the original bug.
-func TestCodexHookScript_NoStructuredOutput_FallsBackToExitTwo(t *testing.T) {
+// TestCodexHookScript_NoStructuredOutput_EmitsInlineBlockJSON pins the
+// fallback path: if the gateway returns action=block but does NOT include
+// a codex_output mirror, the hook constructs minimal structured block JSON
+// and exits 0 so Codex v0.130+ treats it as a block decision rather than
+// "hook failed" (which is what exit 2 means on UserPromptSubmit).
+func TestCodexHookScript_NoStructuredOutput_EmitsInlineBlockJSON(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell scripts not supported on windows")
 	}
@@ -5485,17 +5523,16 @@ func TestCodexHookScript_NoStructuredOutput_FallsBackToExitTwo(t *testing.T) {
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	err := cmd.Run()
-	if err == nil {
-		t.Fatalf("hook should exit 2 when gateway block has no structured codex_output, got exit 0\nstdout=%q\nstderr=%q",
-			stdout.String(), stderr.String())
+	if err != nil {
+		t.Fatalf("hook should exit 0 with inline block JSON, got error: %v\nstdout=%q\nstderr=%q",
+			err, stdout.String(), stderr.String())
 	}
-	if exitErr, ok := err.(*exec.ExitError); ok {
-		if exitErr.ExitCode() != 2 {
-			t.Errorf("exit code = %d, want 2 (legacy block fallback)", exitErr.ExitCode())
-		}
+	out := stdout.String()
+	if !strings.Contains(out, `"decision":"block"`) {
+		t.Errorf("stdout must contain decision=block JSON, got: %q", out)
 	}
-	if !strings.Contains(stderr.String(), "hypothetical legacy verdict") {
-		t.Errorf("stderr must carry the block reason on the legacy path, got: %q", stderr.String())
+	if !strings.Contains(out, "hypothetical legacy verdict") {
+		t.Errorf("stdout must carry the block reason in the inline JSON, got: %q", out)
 	}
 }
 
@@ -5727,6 +5764,7 @@ func TestConnector_AgentPathProvider_AllBuiltinsImplement(t *testing.T) {
 		{"windsurf", func() Connector { return NewWindsurfConnector() }},
 		{"geminicli", func() Connector { return NewGeminiCLIConnector() }},
 		{"copilot", func() Connector { return NewCopilotConnector() }},
+		{"openhands", func() Connector { return NewOpenHandsConnector() }},
 	}
 
 	for _, c := range cases {
@@ -5810,6 +5848,8 @@ func TestConnector_AgentPaths_HookScriptsCoverAll(t *testing.T) {
 		{func() Connector { return NewWindsurfConnector() }, "windsurf", withVendor("windsurf-hook.sh")},
 		{func() Connector { return NewGeminiCLIConnector() }, "geminicli", withVendor("geminicli-hook.sh")},
 		{func() Connector { return NewCopilotConnector() }, "copilot", withVendor("copilot-hook.sh")},
+		{func() Connector { return NewOpenHandsConnector() }, "openhands", withVendor("openhands-hook.sh")},
+		{func() Connector { return NewAntigravityConnector() }, "antigravity", withVendor("antigravity-hook.sh")},
 	}
 
 	for _, tc := range cases {
@@ -5858,6 +5898,7 @@ func TestConnector_HookScriptProvider_MatchesAgentPaths(t *testing.T) {
 		NewWindsurfConnector(),
 		NewGeminiCLIConnector(),
 		NewCopilotConnector(),
+		NewOpenHandsConnector(),
 	}
 	for _, conn := range connectors {
 		hsp, ok := conn.(HookScriptProvider)
@@ -5899,6 +5940,7 @@ func TestConnector_EnvRequirementsProvider_AllBuiltinsImplement(t *testing.T) {
 		{"windsurf", func() Connector { return NewWindsurfConnector() }, []EnvScope{EnvScopeNone}},
 		{"geminicli", func() Connector { return NewGeminiCLIConnector() }, []EnvScope{EnvScopeNone}},
 		{"copilot", func() Connector { return NewCopilotConnector() }, []EnvScope{EnvScopeNone}},
+		{"openhands", func() Connector { return NewOpenHandsConnector() }, []EnvScope{EnvScopeNone}},
 	}
 
 	for _, c := range cases {
@@ -5944,7 +5986,8 @@ func TestConnector_EnvRequirementsProvider_AllBuiltinsImplement(t *testing.T) {
 // contract: every proxy-bound built-in connector exposes a
 // HasUsableProviders() hook so the sidecar boot path can refuse to
 // start when no LLM upstream is configured. Hook-only connectors
-// (codex, claudecode, hermes, cursor, windsurf, geminicli, copilot)
+// (codex, claudecode, hermes, cursor, windsurf, geminicli, copilot,
+// openhands)
 // do not interpose on chat traffic, so the probe does not apply.
 func TestConnector_ProviderProbe_ProxyBuiltinsImplement(t *testing.T) {
 	connectors := []Connector{
@@ -6092,6 +6135,8 @@ func TestHookScriptOwner_BuiltinSurface(t *testing.T) {
 		{"windsurf", func() Connector { return NewWindsurfConnector() }, []string{"windsurf-hook.sh"}},
 		{"geminicli", func() Connector { return NewGeminiCLIConnector() }, []string{"geminicli-hook.sh"}},
 		{"copilot", func() Connector { return NewCopilotConnector() }, []string{"copilot-hook.sh"}},
+		{"openhands", func() Connector { return NewOpenHandsConnector() }, []string{"openhands-hook.sh"}},
+		{"antigravity", func() Connector { return NewAntigravityConnector() }, []string{"antigravity-hook.sh"}},
 		{"openclaw", func() Connector { return NewOpenClawConnector() }, nil},
 		{"zeptoclaw", func() Connector { return NewZeptoClawConnector() }, nil},
 	}
@@ -6294,6 +6339,42 @@ func TestHardening_SweepStaleHookDirs(t *testing.T) {
 	}
 	if _, err := os.Stat(unrelated); err != nil {
 		t.Errorf("unrelated dir %s was swept; the sweep must only touch hook-tmp.*: %v", unrelated, err)
+	}
+}
+
+func TestHardening_IgnoresRuntimeHookPathOverride(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	helperBytes, err := hookFS.ReadFile("hooks/_hardening.sh")
+	if err != nil {
+		t.Fatalf("read embed: %v", err)
+	}
+	tmp := t.TempDir()
+	helperPath := filepath.Join(tmp, "_hardening.sh")
+	if err := os.WriteFile(helperPath, helperBytes, 0o600); err != nil {
+		t.Fatalf("write helper: %v", err)
+	}
+
+	cmd := exec.Command("bash", "-c", `source "$1"; defenseclaw_harden_env; printf '%s\n' "$PATH"; printf '%s\n' "${DEFENSECLAW_HOOK_PATH-unset}"`, "bash", helperPath)
+	cmd.Env = append(os.Environ(),
+		"DEFENSECLAW_HOME="+filepath.Join(tmp, "home"),
+		"DEFENSECLAW_HOOK_PATH="+filepath.Join(tmp, "evil"),
+		"DEFENSECLAW_HOOK_PATH_TRUSTED=1",
+	)
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("run hardening helper: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("unexpected helper output %q", out)
+	}
+	if strings.Contains(lines[0], "evil") {
+		t.Fatalf("runtime DEFENSECLAW_HOOK_PATH influenced PATH: %q", lines[0])
+	}
+	if lines[1] != "unset" {
+		t.Fatalf("DEFENSECLAW_HOOK_PATH after harden = %q, want unset", lines[1])
 	}
 }
 

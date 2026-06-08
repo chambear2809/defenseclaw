@@ -48,10 +48,10 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from click.testing import CliRunner
-
 from defenseclaw.commands.cmd_mcp import mcp
 from defenseclaw.config import MCPServerEntry
 from defenseclaw.models import Finding, ScanResult
+
 from tests.helpers import cleanup_app, make_app_context
 
 
@@ -158,7 +158,7 @@ class TestScanAllUX(_MCPScanUXBase):
         servers = [
             MCPServerEntry(name=n, url=u) for n, u in names_urls
         ]
-        self.app.cfg.mcp_servers = lambda: servers
+        self.app.cfg.mcp_servers = lambda connector=None: servers
 
     @patch("defenseclaw.scanner.mcp.MCPScannerWrapper.scan")
     def test_scan_all_renders_preamble_and_summary(self, mock_scan) -> None:
@@ -201,7 +201,7 @@ class TestScanAllUX(_MCPScanUXBase):
         self.assertIn("Summary: 1 MCP server scanned", result.output)
 
     def test_scan_all_no_servers_message(self) -> None:
-        self.app.cfg.mcp_servers = lambda: []
+        self.app.cfg.mcp_servers = lambda connector=None: []
         result = self.invoke(["scan", "--all"])
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertIn("No MCP servers configured", result.output)

@@ -28,8 +28,7 @@ import subprocess
 
 import click
 
-from defenseclaw import ux
-from defenseclaw.connector_paths import KNOWN_CONNECTORS
+from defenseclaw import connector_paths, ux
 from defenseclaw.context import AppContext, pass_ctx
 from defenseclaw.inventory import agent_discovery
 from defenseclaw.paths import (
@@ -49,10 +48,23 @@ from defenseclaw.paths import (
 @click.option("--rescan-agents", is_flag=True, help="Refresh cached local agent discovery before choosing a connector.")
 @click.option(
     "--connector",
-    type=click.Choice([
-        "codex", "claudecode", "claude-code", "zeptoclaw", "openclaw",
-        "hermes", "cursor", "windsurf", "geminicli", "copilot",
-    ], case_sensitive=False),
+    type=click.Choice(
+        [
+            "codex",
+            "claudecode",
+            "claude-code",
+            "zeptoclaw",
+            "openclaw",
+            "hermes",
+            "cursor",
+            "windsurf",
+            "geminicli",
+            "copilot",
+            "openhands",
+            "antigravity",
+        ],
+        case_sensitive=False,
+    ),
     default=None,
     help="Agent connector to configure.",
 )
@@ -223,6 +235,7 @@ def init_cmd(  # noqa: PLR0913 - first-run CLI mirrors the setup surface.
     ux.banner("Environment")
 
     from defenseclaw import __version__
+
     click.echo(f"  DefenseClaw:   {ux.bold('v' + __version__)}")
     gw_version = _get_gateway_version()
     if gw_version:
@@ -247,8 +260,10 @@ def init_cmd(  # noqa: PLR0913 - first-run CLI mirrors the setup surface.
     click.echo(f"  Claw home:     {cfg.claw_home_dir()}")
 
     dirs = [
-        cfg.data_dir, cfg.quarantine_dir,
-        cfg.plugin_dir, cfg.policy_dir,
+        cfg.data_dir,
+        cfg.quarantine_dir,
+        cfg.plugin_dir,
+        cfg.policy_dir,
     ]
 
     data_dir_real = os.path.realpath(cfg.data_dir)
@@ -299,7 +314,8 @@ def init_cmd(  # noqa: PLR0913 - first-run CLI mirrors the setup surface.
 
     ux.banner("Notifications")
     _onboard_notifications(
-        cfg, logger,
+        cfg,
+        logger,
         non_interactive=non_interactive,
         yes=yes,
         is_new_config=is_new_config,
@@ -307,7 +323,8 @@ def init_cmd(  # noqa: PLR0913 - first-run CLI mirrors the setup surface.
 
     ux.banner("Notifications")
     _onboard_notifications(
-        cfg, logger,
+        cfg,
+        logger,
         non_interactive=non_interactive,
         yes=yes,
         is_new_config=is_new_config,
@@ -328,17 +345,27 @@ def init_cmd(  # noqa: PLR0913 - first-run CLI mirrors the setup surface.
         else:
             ux.banner("Sandbox")
             from defenseclaw.commands.cmd_init_sandbox import _init_sandbox
+
             sandbox_ok = _init_sandbox(cfg, logger)
 
             if sandbox_ok:
                 ux.banner("Sandbox Networking")
                 from defenseclaw.commands.cmd_setup_sandbox import setup_sandbox
+
                 app.cfg = cfg
                 ctx = click.Context(setup_sandbox, parent=click.get_current_context())
-                ctx.invoke(setup_sandbox, sandbox_ip="10.200.0.2", host_ip="10.200.0.1",
-                           sandbox_home=None, openclaw_port=18789, dns="8.8.8.8,1.1.1.1",
-                           policy="default", no_auto_pair=False, disable=False,
-                           non_interactive=True)
+                ctx.invoke(
+                    setup_sandbox,
+                    sandbox_ip="10.200.0.2",
+                    host_ip="10.200.0.1",
+                    sandbox_home=None,
+                    openclaw_port=18789,
+                    dns="8.8.8.8,1.1.1.1",
+                    policy="default",
+                    no_auto_pair=False,
+                    disable=False,
+                    non_interactive=True,
+                )
 
     sidecar_started = False
     if not sandbox:
@@ -360,36 +387,16 @@ def init_cmd(  # noqa: PLR0913 - first-run CLI mirrors the setup surface.
     click.echo()
     click.echo("  " + ux.bold("Next steps:"))
     if sandbox and not guardrail_ok:
-        click.echo(
-            f"    {ux.accent('defenseclaw setup guardrail')}   "
-            + ux.dim("Enable LLM traffic inspection")
-        )
+        click.echo(f"    {ux.accent('defenseclaw setup guardrail')}   " + ux.dim("Enable LLM traffic inspection"))
     elif not guardrail_ok:
-        click.echo(
-            f"    {ux.accent('defenseclaw setup guardrail')}   "
-            + ux.dim("Enable LLM traffic inspection")
-        )
+        click.echo(f"    {ux.accent('defenseclaw setup guardrail')}   " + ux.dim("Enable LLM traffic inspection"))
     if not sidecar_started and not sandbox:
-        click.echo(
-            f"    {ux.accent('defenseclaw-gateway start')}     "
-            + ux.dim("Start the sidecar")
-        )
-    click.echo(
-        f"    {ux.accent('defenseclaw setup')}            "
-        + ux.dim("Customize scanners and policies")
-    )
-    click.echo(
-        f"    {ux.accent('defenseclaw doctor')}           "
-        + ux.dim("Verify connectivity and credentials")
-    )
-    click.echo(
-        f"    {ux.accent('defenseclaw skill scan all')}   "
-        + ux.dim("Scan installed agent skills")
-    )
-    click.echo(
-        f"    {ux.accent('defenseclaw mcp scan --all')}   "
-        + ux.dim("Scan configured MCP servers")
-    )
+        click.echo(f"    {ux.accent('defenseclaw-gateway start')}     " + ux.dim("Start the sidecar"))
+    click.echo(f"    {ux.accent('defenseclaw setup')}            " + ux.dim("Customize scanners and policies"))
+    click.echo(f"    {ux.accent('defenseclaw doctor')}           " + ux.dim("Verify connectivity and credentials"))
+    click.echo(f"    {ux.accent('defenseclaw skill scan all')}   " + ux.dim("Scan installed agent skills"))
+    click.echo(f"    {ux.accent('defenseclaw mcp scan --all')}   " + ux.dim("Scan configured MCP servers"))
+    click.echo(f"    {ux.accent('defenseclaw setup <connector>')} " + ux.dim("Add another agent (codex, claudecode)"))
 
     store.close()
 
@@ -468,15 +475,12 @@ def _run_first_run_cmd(  # noqa: PLR0913 - mirrors click options.
     from defenseclaw.bootstrap import FirstRunOptions, run_first_run
     from defenseclaw.ux import CLIRenderer
 
+    connector_settings: list[dict] | None = None
     if not non_interactive and not yes and not json_summary and _stdin_is_tty():
         (
-            connector,
-            profile,
+            connector_settings,
             scanner_mode,
             with_judge,
-            fail_mode,
-            human_approval,
-            hilt_min_severity,
             start_gateway,
             verify,
         ) = _prompt_first_run(
@@ -492,26 +496,45 @@ def _run_first_run_cmd(  # noqa: PLR0913 - mirrors click options.
             rescan_agents=rescan_agents,
         )
 
-    connector = _normalize_connector_arg(
-        connector,
-        discover_default=True,
-        refresh_agents=rescan_agents,
-    )
-    if profile is None:
-        profile = "observe"
+    # Non-interactive / no-TTY path keeps the legacy single-connector
+    # contract: one connector from --connector (or discovery), one set of
+    # policy flags. The interactive path may instead hand back several
+    # connectors, each with its own profile/fail-mode/HITL.
+    if not connector_settings:
+        connector_settings = [
+            {
+                "connector": _normalize_connector_arg(
+                    connector,
+                    discover_default=True,
+                    refresh_agents=rescan_agents,
+                ),
+                "profile": profile if profile is not None else "observe",
+                "fail_mode": fail_mode,
+                "human_approval": human_approval,
+                "hilt_min_severity": hilt_min_severity,
+            }
+        ]
     if start_gateway is None:
         start_gateway = False
     if verify is None:
         verify = True
 
+    primary = connector_settings[0]
+    extras = connector_settings[1:]
+    # When extra connectors will be merged in after the primary bootstrap,
+    # defer the gateway start to a single reconcile at the end so its
+    # set-difference setup wires hooks for EVERY connector in one pass
+    # (instead of starting with only the primary in the map).
+    defer_gateway = bool(extras) and bool(start_gateway)
+
     opts = FirstRunOptions(
-        connector=connector,
-        profile=profile,
+        connector=primary["connector"],
+        profile=primary["profile"] or "observe",
         scanner_mode=scanner_mode,
         with_judge=with_judge,
         skip_install=skip_install,
         sandbox=sandbox,
-        start_gateway=start_gateway,
+        start_gateway=(False if defer_gateway else start_gateway),
         verify=verify,
         verbose=verbose,
         llm_provider=llm_provider,
@@ -526,56 +549,116 @@ def _run_first_run_cmd(  # noqa: PLR0913 - mirrors click options.
         # bootstrap layer treats "" as a no-op so first-run flows
         # that don't surface this option don't accidentally reset
         # an operator's earlier choice.
-        hook_fail_mode=(fail_mode or "").lower(),
+        hook_fail_mode=(primary["fail_mode"] or "").lower(),
         # HITL: ``None`` is "leave alone", ``True``/``False`` set
         # the toggle. Empty severity preserves the existing floor;
         # bootstrap normalizes case and falls back to ``HIGH`` on
         # invalid values.
-        human_approval=human_approval,
-        hilt_min_severity=hilt_min_severity or "",
+        human_approval=primary["human_approval"],
+        hilt_min_severity=primary["hilt_min_severity"] or "",
     )
     report = run_first_run(opts)
+
+    activated = [primary["connector"]]
+    if extras:
+        activated = _activate_additional_connectors(
+            primary,
+            extras,
+            start_gateway=bool(start_gateway),
+        )
+
     if json_summary:
-        click.echo(json.dumps(report.to_dict(), indent=2))
+        payload = report.to_dict()
+        if len(activated) > 1:
+            payload["connectors"] = activated
+        click.echo(json.dumps(payload, indent=2))
         return
     _render_first_run_report(report, CLIRenderer())
+    if len(activated) > 1:
+        click.echo()
+        click.echo("  Configured connectors: " + ", ".join(activated))
     if report.status == "needs_attention":
         raise SystemExit(1)
 
 
-def _prompt_first_run(
+def _parse_connector_list(raw: str | None) -> list[str]:
+    """Parse a comma/space-separated connector string into an ordered,
+    de-duplicated, normalized list. Empty/blank entries are dropped."""
+    out: list[str] = []
+    for part in (raw or "").replace(" ", ",").split(","):
+        token = part.strip()
+        if not token:
+            continue
+        norm = _normalize_connector_arg(token)
+        if norm and norm not in out:
+            out.append(norm)
+    return out
+
+
+def _installed_hook_connectors(disc) -> list[str]:
+    """Installed connectors that can run as multi-connector hook peers.
+
+    Used to pre-fill the first-run connector prompt so an operator with
+    codex + claudecode + antigravity installed can bring all of them up in
+    one pass. Proxy-backed connectors (e.g. openclaw) are excluded — they
+    cannot be multi-connector peers."""
+    from defenseclaw.commands.cmd_setup import _HOOK_ENFORCED_CONNECTORS
+
+    order = getattr(agent_discovery, "DISCOVERY_PRECEDENCE", None) or sorted(disc.agents)
+    names: list[str] = []
+    for name in order:
+        sig = disc.agents.get(name)
+        if sig and sig.installed and name in _HOOK_ENFORCED_CONNECTORS and name not in names:
+            names.append(name)
+    return names
+
+
+def _prompt_connector_selection(connector: str | None, rescan_agents: bool) -> list[str]:
+    """Prompt for ONE OR MORE connectors to configure during first run.
+
+    Returns an ordered, de-duplicated list (first = primary). A single name
+    keeps the legacy single-connector setup; multiple names fan the
+    wizard's per-connector questions out so several agents can be brought
+    up in one pass. Defaults to every installed hook connector so the
+    common "start everything I have" case is a single Enter."""
+    if connector:
+        names = _parse_connector_list(connector)
+        if names:
+            return names
+    disc = agent_discovery.discover_agents(refresh=rescan_agents)
+    table = agent_discovery.render_discovery_table(disc).rstrip()
+    if table:
+        click.echo(table)
+        click.echo()
+    installed = _installed_hook_connectors(disc)
+    default = ",".join(installed) if installed else agent_discovery.first_installed(disc, "codex")
+    ux.subhead(
+        "Enter one connector, or a comma-separated list to set up several at once "
+        "(e.g. codex,claudecode,antigravity).",
+    )
+    raw = click.prompt("  Connector(s)", default=default, show_default=True)
+    names = _parse_connector_list(raw)
+    if not names:
+        names = [agent_discovery.first_installed(disc, "codex")]
+    return names
+
+
+def _prompt_connector_policy(
+    connector: str,
     *,
-    connector: str | None,
     profile: str | None,
-    scanner_mode: str,
-    with_judge: bool,
     fail_mode: str | None,
     human_approval: bool | None,
     hilt_min_severity: str | None,
-    start_gateway: bool | None,
-    verify: bool | None,
-    rescan_agents: bool,
-) -> tuple[str, str, str, bool, str, bool | None, str | None, bool, bool]:
-    ux.section("DefenseClaw First-Run Setup")
-    ux.subhead(
-        "This wizard writes config.yaml, then runs targeted readiness checks.",
-    )
-    click.echo()
-    connector_choices = list(KNOWN_CONNECTORS)
-    if connector:
-        connector = _normalize_connector_arg(connector)
-    else:
-        disc = agent_discovery.discover_agents(refresh=rescan_agents)
-        table = agent_discovery.render_discovery_table(disc).rstrip()
-        if table:
-            click.echo(table)
-            click.echo()
-        connector = click.prompt(
-            "  Connector",
-            type=click.Choice(connector_choices, case_sensitive=False),
-            default=agent_discovery.first_installed(disc, "codex"),
-            show_choices=True,
-        )
+    multi: bool,
+) -> tuple[str, str, bool | None, str | None]:
+    """Ask the wizard's existing per-connector questions for one connector.
+
+    These are the genuinely per-connector policy knobs (protection profile,
+    hook fail-mode, HITL), so one peer can run observe while another runs
+    action. When ``multi`` is set each connector gets its own header."""
+    if multi:
+        ux.section(f"Connector: {connector}")
     if profile is None:
         profile = click.prompt(
             "  " + ux.bold("Protection profile"),
@@ -583,13 +666,6 @@ def _prompt_first_run(
             default="observe",
             show_choices=True,
         )
-    scanner_mode = click.prompt(
-        "  " + ux.bold("Scanner mode"),
-        type=click.Choice(["local", "remote", "both"], case_sensitive=False),
-        default=scanner_mode or "local",
-        show_choices=True,
-    )
-    with_judge = click.confirm("  " + ux.bold("Enable LLM judge now?"), default=with_judge)
     # Hook fail-mode: surface the choice so first-run operators
     # don't have to discover `defenseclaw guardrail fail-mode` to
     # change it later. We only ask when the operator hasn't already
@@ -602,8 +678,7 @@ def _prompt_first_run(
             "What hooks do when the gateway returns 4xx, malformed JSON, or no action.",
         )
         ux.subhead(
-            "Transport failures (gateway down / 5xx) ALWAYS allow unless "
-            "DEFENSECLAW_STRICT_AVAILABILITY=1.",
+            "Transport failures (gateway down / 5xx) ALWAYS allow unless DEFENSECLAW_STRICT_AVAILABILITY=1.",
         )
         fail_mode = click.prompt(
             "  " + ux.bold("Fail mode"),
@@ -624,8 +699,7 @@ def _prompt_first_run(
             "Action mode can pause risky tool calls and ask you to approve them.",
         )
         ux.subhead(
-            "CRITICAL findings always block — HITL covers the lower severities you "
-            "want to review first.",
+            "CRITICAL findings always block — HITL covers the lower severities you want to review first.",
         )
         human_approval = click.confirm(
             "  " + ux.bold("Require human approval for risky actions?"),
@@ -641,6 +715,63 @@ def _prompt_first_run(
                 default="HIGH",
                 show_choices=True,
             ).upper()
+    return profile, fail_mode, human_approval, hilt_min_severity
+
+
+def _prompt_first_run(
+    *,
+    connector: str | None,
+    profile: str | None,
+    scanner_mode: str,
+    with_judge: bool,
+    fail_mode: str | None,
+    human_approval: bool | None,
+    hilt_min_severity: str | None,
+    start_gateway: bool | None,
+    verify: bool | None,
+    rescan_agents: bool,
+) -> tuple[list[dict], str, bool, bool, bool]:
+    ux.section("DefenseClaw First-Run Setup")
+    ux.subhead(
+        "This wizard writes config.yaml, then runs targeted readiness checks.",
+    )
+    click.echo()
+    connectors = _prompt_connector_selection(connector, rescan_agents)
+    multi = len(connectors) > 1
+
+    # Scanner mode and the LLM judge are process-wide guardrail config
+    # fields (not per-connector), so they are asked once regardless of how
+    # many connectors are being configured.
+    scanner_mode = click.prompt(
+        "  " + ux.bold("Scanner mode"),
+        type=click.Choice(["local", "remote", "both"], case_sensitive=False),
+        default=scanner_mode or "local",
+        show_choices=True,
+    )
+    with_judge = click.confirm("  " + ux.bold("Enable LLM judge now?"), default=with_judge)
+
+    connector_settings: list[dict] = []
+    for c in connectors:
+        # Pre-supplied flags seed a single-connector run; for a multi-select
+        # each connector is prompted independently so its policy can differ.
+        c_profile, c_fail, c_human, c_sev = _prompt_connector_policy(
+            c,
+            profile=(profile if not multi else None),
+            fail_mode=(fail_mode if not multi else None),
+            human_approval=(human_approval if not multi else None),
+            hilt_min_severity=(hilt_min_severity if not multi else None),
+            multi=multi,
+        )
+        connector_settings.append(
+            {
+                "connector": c,
+                "profile": c_profile,
+                "fail_mode": c_fail,
+                "human_approval": c_human,
+                "hilt_min_severity": c_sev,
+            }
+        )
+
     start_gateway = click.confirm(
         "  " + ux.bold("Start gateway after setup?"),
         default=bool(start_gateway),
@@ -649,17 +780,103 @@ def _prompt_first_run(
         "  " + ux.bold("Run targeted readiness checks?"),
         default=True if verify is None else bool(verify),
     )
-    return (
-        connector,
-        profile,
-        scanner_mode,
-        with_judge,
-        fail_mode,
-        human_approval,
-        hilt_min_severity,
-        start_gateway,
-        verify,
+    return connector_settings, scanner_mode, with_judge, start_gateway, verify
+
+
+def _activate_additional_connectors(
+    primary: dict,
+    extras: list[dict],
+    *,
+    start_gateway: bool,
+) -> list[str]:
+    """Merge the extra first-run connectors into ``guardrail.connectors``.
+
+    The primary connector was already bootstrapped via ``run_first_run``
+    (scanners, device key, observability, its own global mode/fail/HITL).
+    This folds each additional connector into the multi-connector map with
+    its OWN per-connector overrides (mode / hook_fail_mode / HITL), seeds
+    the primary into the map so ``active_connectors()`` lists them all, and
+    keeps the singular ``guardrail.connector`` / ``claw.mode`` mirror at the
+    sorted-first primary for backward-compatible readers. Hooks for every
+    connector are installed by the gateway's set-difference reconcile on the
+    single (re)start below. Returns the full sorted active-connector list."""
+    from defenseclaw import config as cfg_mod
+    from defenseclaw.commands.cmd_setup import (
+        _check_connector_version_supported_for_setup,
     )
+    from defenseclaw.config import HILTConfig, PerConnectorGuardrailConfig
+
+    primary_name = connector_paths.normalize(primary["connector"])
+    try:
+        cfg = cfg_mod.load()
+    except Exception as exc:  # noqa: BLE001 — surface and fall back to primary-only.
+        click.echo(f"  ✗ could not reload config to add connectors: {exc}", err=True)
+        return [primary_name]
+
+    gc = cfg.guardrail
+    if not getattr(gc, "connectors", None):
+        gc.connectors = {}
+    # Seed the primary so the multi map represents every active connector.
+    # An empty override means it inherits the global mode/fail/HITL that
+    # run_first_run already wrote for it.
+    gc.connectors.setdefault(primary_name, PerConnectorGuardrailConfig())
+
+    for s in extras:
+        key = connector_paths.normalize(s["connector"])
+        pc = gc.connectors.get(key) or PerConnectorGuardrailConfig()
+        mode = (s["profile"] or "observe").lower()
+        # Parity with single-connector setup: an extra connector may only be
+        # configured in enforcing (action) mode when its installed version maps
+        # to a known hook contract. Otherwise downgrade it to observe (still
+        # guarded, just non-blocking) and tell the operator. The Go gateway
+        # applies the same gate at boot (skipping unverified action connectors),
+        # so without this the CLI would silently write an action-mode connector
+        # the gateway then refuses to enforce.
+        if mode == "action" and not _check_connector_version_supported_for_setup(
+            key, mode="action", emit=False, data_dir=getattr(cfg, "data_dir", None)
+        ):
+            click.echo(
+                f"  ⚠ {key}: installed version is not verified against a known "
+                "hook contract; configuring in observe mode. Set "
+                "DEFENSECLAW_ALLOW_HOOK_CONTRACT_DRIFT=1 only for exploratory testing.",
+                err=True,
+            )
+            mode = "observe"
+        pc.mode = "action" if mode == "action" else "observe"
+        if s["fail_mode"]:
+            pc.hook_fail_mode = "closed" if s["fail_mode"].lower() == "closed" else "open"
+        if s["human_approval"] is not None:
+            pc.hilt = HILTConfig(
+                enabled=bool(s["human_approval"]),
+                min_severity=(s["hilt_min_severity"] or "HIGH").upper(),
+            )
+        gc.connectors[key] = pc
+
+    # Keep the singular mirror pointing at the sorted-first connector so
+    # legacy single-connector readers (older Go binaries, single-connector
+    # Python paths) keep working.
+    primary_key = sorted(gc.connectors)[0]
+    gc.connector = primary_key
+    cfg.claw.mode = primary_key
+
+    try:
+        cfg.save()
+    except OSError as exc:
+        click.echo(f"  ✗ failed to save multi-connector config: {exc}", err=True)
+        return [primary_key]
+
+    active = sorted(gc.connectors)
+    click.echo("  ✓ Configured connectors: " + ", ".join(active))
+    if start_gateway:
+        from defenseclaw.bootstrap import _start_gateway_structured
+
+        step = _start_gateway_structured(cfg)
+        click.echo(f"  • Sidecar: {step.detail}")
+    else:
+        click.echo(
+            "  • Gateway not started — run 'defenseclaw-gateway start' to wire every connector's hooks.",
+        )
+    return active
 
 
 def _normalize_connector_arg(
@@ -692,6 +909,7 @@ def _render_first_run_report(report, renderer) -> None:
     renderer.section("Next")
     for cmd in report.next_commands[:5]:
         renderer.echo(f"  {cmd}")
+    renderer.echo("  Adding another agent later: defenseclaw setup <connector>")
 
 
 def _seed_rego_policies(policy_dir: str) -> None:
@@ -800,9 +1018,7 @@ def _seed_local_observability_stack(data_dir: str) -> None:
     _ensure_observability_stack_executables(dest)
     if refreshed:
         joined = ", ".join(sorted(refreshed))
-        click.echo(
-            f"  Observability stack: preserved existing ({dest}); refreshed {joined}"
-        )
+        click.echo(f"  Observability stack: preserved existing ({dest}); refreshed {joined}")
     else:
         click.echo(f"  Observability stack: preserved existing ({dest})")
 
@@ -920,12 +1136,9 @@ def _ensure_device_key(path: str) -> None:
         serialization.NoEncryption(),
     )
     import base64
+
     b64_seed = base64.b64encode(seed).decode()
-    pem_data = (
-        "-----BEGIN ED25519 PRIVATE KEY-----\n"
-        f"{b64_seed}\n"
-        "-----END ED25519 PRIVATE KEY-----\n"
-    )
+    pem_data = f"-----BEGIN ED25519 PRIVATE KEY-----\n{b64_seed}\n-----END ED25519 PRIVATE KEY-----\n"
     # Create the file with 0o600 atomically so the key is never
     # world-readable, even for the brief window between open() and
     # the previous chmod(). ``O_EXCL`` ensures we don't overwrite a
@@ -1022,19 +1235,28 @@ def _setup_gateway_defaults(cfg, logger, is_new_config: bool = True) -> None:
 
     if connector == "openclaw" and gw_info["token"]:
         from defenseclaw.commands.cmd_setup import _save_secret_to_dotenv
+
         _save_secret_to_dotenv("OPENCLAW_GATEWAY_TOKEN", gw_info["token"], cfg.data_dir)
         cfg.gateway.token = ""
         cfg.gateway.token_env = "OPENCLAW_GATEWAY_TOKEN"
         token_configured = True
     elif gw_info["token"]:
         from defenseclaw.commands.cmd_setup import _save_secret_to_dotenv
+
         env_name = f"{connector.upper()}_GATEWAY_TOKEN"
         _save_secret_to_dotenv(env_name, gw_info["token"], cfg.data_dir)
         cfg.gateway.token = ""
         cfg.gateway.token_env = env_name
         token_configured = True
     else:
-        cfg.gateway.token_env = cfg.gateway.token_env or "OPENCLAW_GATEWAY_TOKEN"
+        # Default token_env to the canonical DEFENSECLAW_ name (the
+        # Go gateway auto-generates it on first boot and writes it to
+        # ~/.defenseclaw/.env). Preserve any operator-set value to
+        # respect explicit overrides from `defenseclaw setup gateway`.
+        # `resolved_token()` falls back to OPENCLAW_GATEWAY_TOKEN
+        # automatically, so upgraders with only the legacy var still
+        # authenticate without any manual remediation.
+        cfg.gateway.token_env = cfg.gateway.token_env or "DEFENSECLAW_GATEWAY_TOKEN"
         token_configured = bool(cfg.gateway.resolved_token())
 
     if not cfg.gateway.device_key_file:
@@ -1046,27 +1268,26 @@ def _setup_gateway_defaults(cfg, logger, is_new_config: bool = True) -> None:
     # Plan B2 / S0.2: the sidecar synthesizes a CSPRNG token on first
     # boot and persists it to ~/.defenseclaw/.env (mode 0600). The
     # "none" branch is now an instruction, not a security mode.
-    token_status = (
-        "configured"
-        if token_configured
-        else "auto-generated on first boot (~/.defenseclaw/.env)"
-    )
+    token_status = "configured" if token_configured else "auto-generated on first boot (~/.defenseclaw/.env)"
     click.echo(f"  Token:         {token_status}")
     click.echo(f"  API port:      {cfg.gateway.api_port}")
     click.echo(f"  Watcher:       enabled={cfg.gateway.watcher.enabled}")
     click.echo(f"  AI discovery:  enabled={cfg.ai_discovery.enabled}, mode={cfg.ai_discovery.mode}")
-    click.echo(f"  Skill watch:   enabled={cfg.gateway.watcher.skill.enabled}, "
-               f"take_action={cfg.gateway.watcher.skill.take_action}")
+    click.echo(
+        f"  Skill watch:   enabled={cfg.gateway.watcher.skill.enabled}, "
+        f"take_action={cfg.gateway.watcher.skill.take_action}"
+    )
     plugin_dirs = cfg.gateway.watcher.plugin.dirs or cfg.plugin_dirs()
-    click.echo(f"  Plugin watch:  enabled={cfg.gateway.watcher.plugin.enabled}, "
-               f"take_action={cfg.gateway.watcher.plugin.take_action}")
+    click.echo(
+        f"  Plugin watch:  enabled={cfg.gateway.watcher.plugin.enabled}, "
+        f"take_action={cfg.gateway.watcher.plugin.take_action}"
+    )
     click.echo(f"  Plugin dirs:   {', '.join(plugin_dirs)}")
     click.echo(f"  Device key:    {cfg.gateway.device_key_file}")
     click.echo()
     click.echo("  Run 'defenseclaw setup gateway' to customize.")
 
-    logger.log_action("init-gateway", "config",
-                       f"host={cfg.gateway.host} port={cfg.gateway.port}")
+    logger.log_action("init-gateway", "config", f"host={cfg.gateway.host} port={cfg.gateway.port}")
 
 
 def _install_guardrail(cfg, logger, skip: bool) -> None:
@@ -1087,7 +1308,8 @@ def _ensure_uv() -> None:
     try:
         subprocess.run(
             ["sh", "-c", "curl -LsSf https://astral.sh/uv/install.sh | sh"],
-            capture_output=True, check=True,
+            capture_output=True,
+            check=True,
         )
         _add_uv_to_path()
         click.echo(" done")
@@ -1111,7 +1333,8 @@ def _install_with_uv(pkg: str) -> bool:
     try:
         result = subprocess.run(
             [uv, "tool", "install", "--python", "3.13", pkg],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         if result.returncode == 0 or "already installed" in result.stderr:
             return True
@@ -1149,9 +1372,9 @@ def _onboard_notifications(
         print the current state for visibility. Re-running ``init``
         on a configured install must not re-litigate onboarding.
       * ``--non-interactive`` or ``--yes`` or non-TTY stdin (CI) →
-        keep the default setting, print a one-liner pointing at
+        keep platform default, print a one-liner pointing at
         ``setup notifications``.
-      * Otherwise → ``click.confirm`` with the current configured
+      * Otherwise → ``click.confirm`` with the platform-aware
         default.
 
     The ``cfg`` mutation is in-memory; the caller does the
@@ -1168,17 +1391,13 @@ def _onboard_notifications(
         # rule is: ask only at first-install. Operators flip the
         # toggle later via ``defenseclaw setup notifications``.
         state = "ON" if nc.enabled else "OFF"
-        click.echo(
-            f"  Notifications: {ux.dim('preserving current setting')} ({state})"
-        )
+        click.echo(f"  Notifications: {ux.dim('preserving current setting')} ({state})")
         click.echo("  " + ux.dim("Toggle later with: defenseclaw setup notifications"))
         return
 
     if non_interactive or yes or not _stdin_is_tty():
         state = "ON" if nc.enabled else "OFF"
-        click.echo(
-            f"  Notifications: {ux.dim('default setting')} ({state})"
-        )
+        click.echo(f"  Notifications: {ux.dim('platform default')} ({state})")
         click.echo("  " + ux.dim("Toggle later with: defenseclaw setup notifications"))
         return
 
@@ -1189,8 +1408,7 @@ def _onboard_notifications(
 
     if desired == bool(nc.enabled):
         state = "ON" if desired else "OFF"
-        click.echo("  Notifications: " + ux._style(state, fg="green") +
-                   ux.dim(" (unchanged)"))
+        click.echo("  Notifications: " + ux._style(state, fg="green") + ux.dim(" (unchanged)"))
         return
 
     nc.enabled = desired
@@ -1213,6 +1431,7 @@ def _stdin_is_tty() -> bool:
     redirected stdin.
     """
     import sys
+
     try:
         return sys.stdin.isatty()
     except (AttributeError, ValueError, OSError):
@@ -1241,9 +1460,9 @@ def _onboard_notifications(
         print the current state for visibility. Re-running ``init``
         on a configured install must not re-litigate onboarding.
       * ``--non-interactive`` or ``--yes`` or non-TTY stdin (CI) →
-        keep the default setting, print a one-liner pointing at
+        keep platform default, print a one-liner pointing at
         ``setup notifications``.
-      * Otherwise → ``click.confirm`` with the current configured
+      * Otherwise → ``click.confirm`` with the platform-aware
         default.
 
     The ``cfg`` mutation is in-memory; the caller does the
@@ -1260,17 +1479,13 @@ def _onboard_notifications(
         # rule is: ask only at first-install. Operators flip the
         # toggle later via ``defenseclaw setup notifications``.
         state = "ON" if nc.enabled else "OFF"
-        click.echo(
-            f"  Notifications: {ux.dim('preserving current setting')} ({state})"
-        )
+        click.echo(f"  Notifications: {ux.dim('preserving current setting')} ({state})")
         click.echo("  " + ux.dim("Toggle later with: defenseclaw setup notifications"))
         return
 
     if non_interactive or yes or not _stdin_is_tty():
         state = "ON" if nc.enabled else "OFF"
-        click.echo(
-            f"  Notifications: {ux.dim('default setting')} ({state})"
-        )
+        click.echo(f"  Notifications: {ux.dim('platform default')} ({state})")
         click.echo("  " + ux.dim("Toggle later with: defenseclaw setup notifications"))
         return
 
@@ -1281,8 +1496,7 @@ def _onboard_notifications(
 
     if desired == bool(nc.enabled):
         state = "ON" if desired else "OFF"
-        click.echo("  Notifications: " + ux._style(state, fg="green") +
-                   ux.dim(" (unchanged)"))
+        click.echo("  Notifications: " + ux._style(state, fg="green") + ux.dim(" (unchanged)"))
         return
 
     nc.enabled = desired
@@ -1305,6 +1519,7 @@ def _stdin_is_tty() -> bool:
     redirected stdin.
     """
     import sys
+
     try:
         return sys.stdin.isatty()
     except (AttributeError, ValueError, OSError):
@@ -1353,7 +1568,8 @@ def _setup_guardrail_inline(app, cfg, logger) -> bool:
         )
         click.echo("  To disable:    " + ux.accent("defenseclaw setup guardrail --disable"))
         logger.log_action(
-            "init-guardrail", "config",
+            "init-guardrail",
+            "config",
             f"mode={gc.mode} scanner_mode={gc.scanner_mode} port={gc.port} model={gc.model}",
         )
 
@@ -1379,7 +1595,9 @@ def _start_gateway(cfg, logger) -> None:
     try:
         result = subprocess.run(
             ["defenseclaw-gateway", "start"],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         if result.returncode == 0:
             click.echo(" " + ux._style("✓", fg="green", bold=True))
@@ -1415,7 +1633,10 @@ def _get_gateway_version() -> str | None:
         return None
     try:
         result = subprocess.run(
-            [gw, "--version"], capture_output=True, text=True, timeout=5,
+            [gw, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         if result.returncode == 0:
             return result.stdout.strip().split()[-1] if result.stdout.strip() else None
@@ -1431,7 +1652,10 @@ def _restart_gateway_quiet() -> None:
         return
     try:
         subprocess.run(
-            [gw, "restart"], capture_output=True, text=True, timeout=15,
+            [gw, "restart"],
+            capture_output=True,
+            text=True,
+            timeout=15,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         pass
@@ -1458,6 +1682,7 @@ def _read_pid(pid_file: str) -> int | None:
             return int(raw)
         except ValueError:
             import json
+
             return json.loads(raw)["pid"]
     except (FileNotFoundError, ValueError, KeyError, OSError):
         return None

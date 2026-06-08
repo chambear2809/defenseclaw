@@ -17,7 +17,7 @@
 package gateway
 
 // Verdict cache metrics + LLM judge spans are implemented in llm_judge.go and
-// internal/guardrail/verdict_cache.go (Track 3).
+// internal/guardrail/verdict_cache.go (judge verdict cache).
 
 import (
 	"context"
@@ -41,16 +41,22 @@ var defaultLogWriter io.Writer = os.Stderr
 
 // ScanVerdict is the result of a guardrail inspection.
 type ScanVerdict struct {
-	Action         string                `json:"action"`
-	Severity       string                `json:"severity"`
-	Reason         string                `json:"reason"`
-	Findings       []string              `json:"findings"`
-	EntityCount    int                   `json:"entity_count,omitempty"`
-	Scanner        string                `json:"scanner,omitempty"`
-	ScannerSources []string              `json:"scanner_sources,omitempty"`
-	CiscoElapsedMs float64               `json:"cisco_elapsed_ms,omitempty"`
-	JudgeFailed    bool                  `json:"-"`
-	AgentControl   *agentControlDecision `json:"agent_control,omitempty"`
+	Action         string   `json:"action"`
+	Severity       string   `json:"severity"`
+	Reason         string   `json:"reason"`
+	Findings       []string `json:"findings"`
+	EntityCount    int      `json:"entity_count,omitempty"`
+	Scanner        string   `json:"scanner,omitempty"`
+	ScannerSources []string `json:"scanner_sources,omitempty"`
+	CiscoElapsedMs float64  `json:"cisco_elapsed_ms,omitempty"`
+	JudgeFailed    bool     `json:"-"`
+	// EvaluationID + RuleIDs are populated by the guardrail Inspect
+	// runtime emitter so downstream observers (recordTelemetry,
+	// EventVerdict, BlockEvent) can join this verdict to the
+	// per-finding scan_findings rows it produced. Not serialized on
+	// the wire; for in-process correlation only.
+	EvaluationID string   `json:"-"`
+	RuleIDs      []string `json:"-"`
 }
 
 func allowVerdict(scanner string) *ScanVerdict {
@@ -118,8 +124,9 @@ type TriageSignal struct {
 // opa, finalize) so operators can drill past stage-level latency
 // into the exact phase that dominated the budget.
 type guardrailSpanEmitter struct {
-	start      func(ctx context.Context, stage, direction, model string) (context.Context, func(action, severity, reason string, latencyMs int64))
-	startPhase func(ctx context.Context, phase string) (context.Context, func(action, severity string, latencyMs int64))
+	start       func(ctx context.Context, stage, direction, model string) (context.Context, func(action, severity, reason string, latencyMs int64))
+	startPhase  func(ctx context.Context, phase string) (context.Context, func(action, severity string, latencyMs int64))
+	recordPanic func(ctx context.Context)
 }
 
 // GuardrailInspector orchestrates local pattern scanning, Cisco AI Defense,
@@ -190,7 +197,7 @@ func (g *GuardrailInspector) SetTracerFunc(
 		// phase tracer is still live.
 		if g.tracer != nil {
 			g.tracer.start = nil
-			if g.tracer.startPhase == nil {
+			if g.tracer.startPhase == nil && g.tracer.recordPanic == nil {
 				g.tracer = nil
 			}
 		}
@@ -214,7 +221,7 @@ func (g *GuardrailInspector) SetPhaseTracerFunc(
 	if start == nil {
 		if g.tracer != nil {
 			g.tracer.startPhase = nil
-			if g.tracer.start == nil {
+			if g.tracer.start == nil && g.tracer.recordPanic == nil {
 				g.tracer = nil
 			}
 		}
@@ -224,6 +231,32 @@ func (g *GuardrailInspector) SetPhaseTracerFunc(
 		g.tracer = &guardrailSpanEmitter{}
 	}
 	g.tracer.startPhase = start
+}
+
+// SetPanicRecorderFunc installs the recovered-panic metric callback used by
+// judge-first worker goroutines. It is separate from span wiring so metrics
+// still record when tracing is disabled.
+func (g *GuardrailInspector) SetPanicRecorderFunc(record func(ctx context.Context)) {
+	if record == nil {
+		if g.tracer != nil {
+			g.tracer.recordPanic = nil
+			if g.tracer.start == nil && g.tracer.startPhase == nil {
+				g.tracer = nil
+			}
+		}
+		return
+	}
+	if g.tracer == nil {
+		g.tracer = &guardrailSpanEmitter{}
+	}
+	g.tracer.recordPanic = record
+}
+
+func (g *GuardrailInspector) recordRecoveredPanic(ctx context.Context) {
+	if g == nil || g.tracer == nil || g.tracer.recordPanic == nil {
+		return
+	}
+	g.tracer.recordPanic(ctx)
 }
 
 // startPhaseSpan is the internal helper every phase call site uses.
@@ -639,6 +672,7 @@ func (g *GuardrailInspector) inspectJudgeFirst(ctx context.Context, direction, c
 		go func() {
 			defer func() {
 				if rec := recover(); rec != nil {
+					g.recordRecoveredPanic(ctx)
 					fmt.Fprintf(defaultLogWriter, "[guardrail] judge_first: judge goroutine panic recovered: %v\n", rec)
 					judgeCh <- result{verdict: nil, err: true}
 				}
@@ -656,6 +690,7 @@ func (g *GuardrailInspector) inspectJudgeFirst(ctx context.Context, direction, c
 	go func() {
 		defer func() {
 			if rec := recover(); rec != nil {
+				g.recordRecoveredPanic(ctx)
 				fmt.Fprintf(defaultLogWriter, "[guardrail] judge_first: triage goroutine panic recovered: %v\n", rec)
 				triageCh <- nil
 			}

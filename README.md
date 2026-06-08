@@ -213,7 +213,7 @@ Start local observability with:
 
 ```bash
 defenseclaw setup local-observability up
-defenseclaw gateway
+defenseclaw-gateway start
 defenseclaw setup local-observability status
 ```
 

@@ -3,8 +3,11 @@ name: CI
 on:
   push:
     branches: [main]
+  # Run CI on every pull request regardless of base branch so PRs that
+  # target an integration branch (not just main) are gated too — otherwise
+  # their checks (incl. the Windows hook path) never execute until the
+  # change reaches a main-targeting PR.
   pull_request:
-    branches: [main]
 
 permissions:
   contents: read
@@ -138,11 +141,6 @@ jobs:
       - run: uv pip install pip pip-audit
       # TODO: Remove --ignore-vuln CVE-2026-4539 once pygments >= 2.19.3 is released
       # CVE-2026-4539: Low severity ReDoS in AdlLexer (local attack vector only)
-      # TODO: Remove --ignore-vuln CVE-2026-28684 once cisco-ai-skill-scanner
-      # releases a version that allows python-dotenv >= 1.2.2. Scanner 2.0.9
-      # (the latest as of this commit) still pins python-dotenv==1.2.1.
-      # CVE-2026-28684: python-dotenv 1.2.1 — pulled in only via out-of-process
-      # Python scanner subprocesses, not linked into the gateway.
       # TODO: Remove --ignore-vuln CVE-2026-3219 once a fixed pip version is
       # released. No fix version available as of 2026-04-24. pip is only used
       # by pip-audit itself, not by DefenseClaw at runtime.
@@ -151,7 +149,20 @@ jobs:
       # archives. Medium severity; impacts only attacker-supplied package
       # archives. We install exclusively from PyPI via uv with locked hashes
       # (uv.lock), so this attack surface is not exposed in CI or runtime.
-      - run: uv run pip-audit --ignore-vuln CVE-2026-4539 --ignore-vuln CVE-2026-28684 --ignore-vuln CVE-2026-3219
+      #
+      # TODO: Remove --ignore-vuln PYSEC-2026-196 once the CI base image ships
+      # pip >= 26.1.2. Same rationale as CVE-2026-3219: pip is only used by
+      # pip-audit here, not by DefenseClaw at runtime, and we install
+      # exclusively from PyPI via uv with locked hashes (uv.lock).
+      #
+      # Previously ignored, now fixed by bumping cisco-ai-skill-scanner to
+      # >=2.0.11 + overriding starlette>=1.0.1 and python-dotenv>=1.2.2 in
+      # pyproject.toml:
+      #   - PYSEC-2026-161 (GHSA-86qp-5c8j-p5mr, starlette host-header)
+      #   - CVE-2026-28684 (python-dotenv arbitrary file read)
+      # aiohttp>=3.14.0 (CVE-2026-34993, CVE-2026-47265) and pyjwt>=2.13.0
+      # (PYSEC-2026-175/177/178/179) are likewise pinned in pyproject.toml.
+      - run: uv run pip-audit --ignore-vuln CVE-2026-4539 --ignore-vuln CVE-2026-3219 --ignore-vuln PYSEC-2026-196
 
   ts-build-test:
     name: TypeScript Build & Test
@@ -234,3 +245,57 @@ jobs:
       # tests landed.
       - run: make dev-pycli
       - run: make test
+
+  windows-hook-path:
+    name: Windows Hook Path
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: astral-sh/setup-uv@v8.1.0
+      # The gateway embeds the OpenClaw extension tree, normally generated
+      # by `make sync-openclaw-extension`. Windows is hook-only and needs no
+      # OpenClaw plugin, so drop the same `.placeholder` marker that target
+      # writes when extensions/defenseclaw/dist is absent. Done in bash
+      # (Git Bash ships on the runner) to avoid GNU make's flaky shell
+      # resolution on Windows.
+      - name: Generate OpenClaw extension placeholder
+        shell: bash
+        run: |
+          set -euo pipefail
+          embed_dir=internal/gateway/connector/openclaw_extension
+          mkdir -p "$embed_dir"
+          printf '%s\n' \
+            "OpenClaw extension not built." \
+            "Run 'make extensions' (or 'make plugin') to populate the embedded tree." \
+            > "$embed_dir/.placeholder"
+      # Prove the Windows hook surfaces compile and vet cleanly.
+      - name: Go build (hook surfaces + binary)
+        run: go build ./internal/gateway/connector/... ./internal/cli/... ./internal/daemon/... ./internal/notify/... ./cmd/defenseclaw
+      - name: Go vet (hook surfaces)
+        run: go vet ./internal/gateway/connector/... ./internal/cli/... ./internal/daemon/... ./internal/notify/...
+      # Prove every test binary on the hook surfaces builds on Windows
+      # (compiles all test files, runs zero tests).
+      - name: Go test-compile (all hook-surface tests build on Windows)
+        run: go test -run "^$" ./internal/gateway/connector/... ./internal/cli/... ./internal/daemon/... ./internal/notify/...
+      # Execute the native Go hook decision engine end to end — this is the
+      # whole Windows hook path (stdin cap, token, HTTP, per-connector
+      # output/exit, fail-open/closed, Codex/Claude block schema).
+      - name: Go test - native hook engine
+        run: go test ./internal/gateway/connector/hookexec/...
+      # Execute the per-OS connector capability model and hook-wiring tests.
+      - name: Go test - connector capability + hook wiring
+        run: go test ./internal/gateway/connector/ -run "ProxyConnector|IsProxyConnector|ConnectorSupportedOnOS|RegistryNamesFilter|HookInvocationCommand|ShellWordPassesNativeCommandThrough|BuildCodexHooksTableHashesTheCommand|IsOwnedHookRecognizesNativeCommand"
+      # Execute the native `defenseclaw hook` entrypoint + sidecar resolution.
+      - name: Go test - hook entrypoint
+        run: go test ./internal/cli/ -run "BuildHookOptions|ReadHookSidecar|HookCommandRegistered"
+      - name: Sync Python env
+        shell: bash
+        run: uv sync
+      # Execute the per-OS connector gating and the Windows config-lock
+      # contention test natively on Windows.
+      - name: Python test - platform gating + config lock
+        shell: bash
+        run: uv run python -m pytest cli/tests/test_platform_support.py cli/tests/test_config_lock_mutex.py -q
