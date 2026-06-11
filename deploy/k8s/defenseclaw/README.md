@@ -117,10 +117,10 @@ make docker-gateway-runtime-push \
   OVERLAY_IMAGE_TAG=0.6.6-web-tui-20260607-runtime-2
 
 # Built by the splunk-cisco-skills-bundle workflow from pinned source commit
-# 9bb131a104830b166dc0918b1be89332a7a8ada4. Runtime pods never pull GitHub
+# e26f6aa5c7b3ee2ec6807e00c7d411787566e9bc. Runtime pods never pull GitHub
 # or install Python dependencies from PyPI.
 gh workflow run splunk-cisco-skills-bundle.yml \
-  -f source_sha=9bb131a104830b166dc0918b1be89332a7a8ada4 \
+  -f source_sha=e26f6aa5c7b3ee2ec6807e00c7d411787566e9bc \
   -f publish=true
 
 kubectl apply -f deploy/k8s/defenseclaw/isovalent-demo-core.yaml
@@ -150,7 +150,7 @@ kubectl -n defenseclaw-tokenomics rollout status deploy/c3-agent-tokenomics-mfe
 helm -n otel-splunk status splunk-otel-collector
 
 kubectl -n defenseclaw exec deploy/openclaw -- \
-  sh -c 'release=/home/node/.openclaw/splunk-cisco-skills/releases/9bb131a104830b166dc0918b1be89332a7a8ada4; test -f "$release/.complete" && test "$(cat "$release/.revision")" = "9bb131a104830b166dc0918b1be89332a7a8ada4"'
+  sh -c 'release=/home/node/.openclaw/splunk-cisco-skills/releases/e26f6aa5c7b3ee2ec6807e00c7d411787566e9bc; test -f "$release/.complete" && test "$(cat "$release/.revision")" = "9bb131a104830b166dc0918b1be89332a7a8ada4"'
 
 kubectl -n defenseclaw exec deploy/openclaw -- \
   sh -c 'kubectl version --client=true && kubectl auth can-i get pods -n teastore && test -s "$THOUSANDEYES_TOKEN_FILE" && test -s "$SPLUNK_O11Y_TOKEN_FILE"'
