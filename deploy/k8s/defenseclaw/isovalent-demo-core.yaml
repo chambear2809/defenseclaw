@@ -305,7 +305,7 @@ data:
           enabled: true
           take_action: false
           dirs:
-            - /home/node/.openclaw/splunk-cisco-skills/releases/9bb131a104830b166dc0918b1be89332a7a8ada4/skills
+            - /home/node/.openclaw/splunk-cisco-skills/releases/efb120551b3462748debaf84039788a195858640/skills
         plugin:
           enabled: false
           take_action: false
@@ -1176,7 +1176,7 @@ data:
         "load": {
           "watch": true,
           "extraDirs": [
-            "/home/node/.openclaw/splunk-cisco-skills/releases/9bb131a104830b166dc0918b1be89332a7a8ada4/skills"
+            "/home/node/.openclaw/splunk-cisco-skills/releases/efb120551b3462748debaf84039788a195858640/skills"
           ]
         }
       },
@@ -1217,11 +1217,11 @@ data:
             "type": "stdio",
             "command": "python3",
             "args": [
-              "/home/node/.openclaw/splunk-cisco-skills/releases/9bb131a104830b166dc0918b1be89332a7a8ada4/agent/run-splunk-cisco-skills-mcp.py"
+              "/home/node/.openclaw/splunk-cisco-skills/releases/efb120551b3462748debaf84039788a195858640/agent/run-splunk-cisco-skills-mcp.py"
             ],
-            "cwd": "/home/node/.openclaw/splunk-cisco-skills/releases/9bb131a104830b166dc0918b1be89332a7a8ada4",
+            "cwd": "/home/node/.openclaw/splunk-cisco-skills/releases/efb120551b3462748debaf84039788a195858640",
             "env": {
-              "PYTHONPATH": "/home/node/.openclaw/splunk-cisco-skills/releases/9bb131a104830b166dc0918b1be89332a7a8ada4/vendor/python:/home/node/.openclaw/splunk-cisco-skills/releases/9bb131a104830b166dc0918b1be89332a7a8ada4/agent",
+              "PYTHONPATH": "/home/node/.openclaw/splunk-cisco-skills/releases/efb120551b3462748debaf84039788a195858640/vendor/python:/home/node/.openclaw/splunk-cisco-skills/releases/efb120551b3462748debaf84039788a195858640/agent",
               "SPLUNK_CREDENTIALS_FILE": "/var/run/splunk-cisco-skills/credentials",
               "SPLUNK_CISCO_SKILLS_MCP_NO_VENV": "1",
               "SPLUNK_SKILLS_MCP_ALLOW_MUTATION": "1",
@@ -1328,7 +1328,7 @@ spec:
         fsGroupChangePolicy: OnRootMismatch
       initContainers:
         - name: splunk-cisco-skills-bootstrap
-          image: 637423309390.dkr.ecr.us-east-1.amazonaws.com/splunk-cisco-skills-bundle@sha256:f09b7cca5c2d796c4e9abb8636f80a58b9e5d6c9b45df4302148fd51dd6c3cd4
+          image: 637423309390.dkr.ecr.us-east-1.amazonaws.com/splunk-cisco-skills-bundle:efb120551b3462748debaf84039788a195858640
           imagePullPolicy: IfNotPresent
           command:
             - sh
@@ -1653,7 +1653,7 @@ spec:
         defenseclaw.io/mcp-bridge-writable-state: 2026-05-23
         defenseclaw.io/openclaw-version: 2026.4.9
         defenseclaw.io/splunk-o11y-mcp-gateway: 2026-05-23
-        defenseclaw.io/splunk-cisco-skills-source-sha: 9bb131a104830b166dc0918b1be89332a7a8ada4
+        defenseclaw.io/splunk-cisco-skills-source-sha: efb120551b3462748debaf84039788a195858640
         defenseclaw.io/thousandeyes-mcp-gateway: 2026-05-23
         defenseclaw.io/workspace-perms-fix: 2026-04-10-2
         instrumentation.opentelemetry.io/inject-nodejs: "false"
@@ -1701,7 +1701,7 @@ spec:
             - mountPath: /var/openclaw
               name: openclaw-data
         - name: splunk-cisco-skills-bootstrap
-          image: 637423309390.dkr.ecr.us-east-1.amazonaws.com/splunk-cisco-skills-bundle@sha256:f09b7cca5c2d796c4e9abb8636f80a58b9e5d6c9b45df4302148fd51dd6c3cd4
+          image: 637423309390.dkr.ecr.us-east-1.amazonaws.com/splunk-cisco-skills-bundle:efb120551b3462748debaf84039788a195858640
           imagePullPolicy: IfNotPresent
           command:
             - sh
@@ -1738,7 +1738,7 @@ spec:
             - mountPath: /var/openclaw
               name: openclaw-data
         - name: splunk-cisco-credentials-preflight
-          image: 637423309390.dkr.ecr.us-east-1.amazonaws.com/splunk-cisco-skills-bundle@sha256:f09b7cca5c2d796c4e9abb8636f80a58b9e5d6c9b45df4302148fd51dd6c3cd4
+          image: 637423309390.dkr.ecr.us-east-1.amazonaws.com/splunk-cisco-skills-bundle:efb120551b3462748debaf84039788a195858640
           imagePullPolicy: IfNotPresent
           command:
             - sh
@@ -1778,7 +1778,7 @@ spec:
             - mountPath: /var/run/splunk-cisco-skills
               name: splunk-cisco-credentials
         - name: splunk-cisco-credentials-verify
-          image: 637423309390.dkr.ecr.us-east-1.amazonaws.com/splunk-cisco-skills-bundle@sha256:f09b7cca5c2d796c4e9abb8636f80a58b9e5d6c9b45df4302148fd51dd6c3cd4
+          image: 637423309390.dkr.ecr.us-east-1.amazonaws.com/splunk-cisco-skills-bundle:efb120551b3462748debaf84039788a195858640
           imagePullPolicy: IfNotPresent
           command:
             - sh
@@ -1862,7 +1862,7 @@ spec:
               test -s "${src}"
               if [ ! -s "${dst}" ] || \
                 ! grep -q 'splunk-cisco-skills' "${dst}" 2>/dev/null || \
-                ! grep -q 'splunk-cisco-skills/releases/9bb131a104830b166dc0918b1be89332a7a8ada4' "${dst}" 2>/dev/null || \
+                ! grep -q 'splunk-cisco-skills/releases/efb120551b3462748debaf84039788a195858640' "${dst}" 2>/dev/null || \
                 ! grep -q '"bridgeit"' "${dst}" 2>/dev/null || \
                 ! grep -q 'bridgeit-rag' "${dst}" 2>/dev/null || \
                 ! grep -q 'splunk-observability-cloud' "${dst}" 2>/dev/null || \
@@ -1954,7 +1954,7 @@ spec:
             - name: OPENCLAW_CONTROL_UI_ALLOWED_ORIGIN
               value: https://acbe4270cfe0e4ca7b3ae74a848f9454-231483608.us-east-1.elb.amazonaws.com
             - name: PYTHONPATH
-              value: /home/node/.openclaw/splunk-cisco-skills/releases/9bb131a104830b166dc0918b1be89332a7a8ada4/vendor/python:/home/node/.openclaw/splunk-cisco-skills/releases/9bb131a104830b166dc0918b1be89332a7a8ada4/agent
+              value: /home/node/.openclaw/splunk-cisco-skills/releases/efb120551b3462748debaf84039788a195858640/vendor/python:/home/node/.openclaw/splunk-cisco-skills/releases/efb120551b3462748debaf84039788a195858640/agent
             - name: SPLUNK_CREDENTIALS_FILE
               value: /var/run/splunk-cisco-skills/credentials
             - name: SPLUNK_O11Y_REALM
