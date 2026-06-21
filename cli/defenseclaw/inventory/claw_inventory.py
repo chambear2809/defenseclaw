@@ -146,13 +146,14 @@ def build_claw_aibom(
         "errors": errors,
     }
     _attach_connector_paths(out, cfg, connector)
+    _sync_legacy_connector_paths(out)
     out["summary"] = _build_summary(out)
     return out
 
 
 def claw_aibom_to_scan_result(inv: dict[str, Any], cfg: Config) -> ScanResult:
     """One INFO finding per category so audit logging stays compact."""
-    target = _expand(cfg.claw.config_file)
+    target = _aibom_target_path(inv, cfg)
     ts = datetime.now(timezone.utc)
     category_labels = [
         ("skills", "Skills"),
@@ -578,16 +579,9 @@ def format_claw_aibom_human(
 # ---------------------------------------------------------------------------
 # Polymorphic-path attachment
 #
-# These keys ride alongside the historical ``openclaw_config`` /
-# ``claw_home`` for back-compat (existing TUI / Go consumers still
-# parse those). New consumers should prefer ``connector_home`` /
-# ``connector_config_files`` / ``connector_skill_dirs`` /
-# ``connector_plugin_dirs`` / ``connector_mcp_files`` because they
-# carry the right value for non-OpenClaw connectors instead of an
-# ``~/.openclaw`` fallback that confuses operators running the CLI
-# against e.g. Codex or Claude Code. See ``internal/tui/inventory.go``
-# for the renderer side that picks the polymorphic value when it's
-# present and falls back to the legacy keys otherwise.
+# Connector-aware path metadata lives in ``connector_*`` fields. The
+# historical ``openclaw_config`` field is retained only for OpenClaw
+# inventories; non-OpenClaw JSON should not imply OpenClaw is installed.
 # ---------------------------------------------------------------------------
 
 def _attach_connector_paths(
@@ -596,9 +590,7 @@ def _attach_connector_paths(
     """Populate ``connector_*`` polymorphic path fields on *out*.
 
     Best-effort: any helper that raises is silently elided so a
-    misconfigured cfg never hijacks the inventory pipeline. The
-    legacy ``openclaw_config`` / ``claw_home`` keys remain populated
-    by the caller — this helper only ADDs polymorphic siblings.
+    misconfigured cfg never hijacks the inventory pipeline.
     """
     try:
         out["connector_home"] = connector_paths.connector_home(
@@ -627,6 +619,41 @@ def _attach_connector_paths(
         out["connector_mcp_files"] = list(_collect_mcp_config_files(connector, cfg))
     except Exception:
         out["connector_mcp_files"] = []
+
+
+def _sync_legacy_connector_paths(out: dict[str, Any]) -> None:
+    """Publish a connector-neutral primary config path.
+
+    ``openclaw_config`` predates multi-connector inventory and is now emitted
+    only for actual OpenClaw scans. ``connector_config`` is the neutral single
+    primary path; ``connector_config_files`` remains the full ordered list.
+    """
+    connector = str(out.get("connector") or out.get("claw_mode") or "").lower()
+    home = str(out.get("connector_home") or "")
+    if home:
+        out["claw_home"] = home
+
+    config_files = out.get("connector_config_files") or []
+    if isinstance(config_files, list) and config_files:
+        first = config_files[0]
+        if first:
+            out["connector_config"] = first
+            if connector == "openclaw":
+                out["openclaw_config"] = first
+    if connector != "openclaw":
+        out.pop("openclaw_config", None)
+
+
+def _aibom_target_path(inv: dict[str, Any], cfg: Config) -> str:
+    config_files = inv.get("connector_config_files") or []
+    if isinstance(config_files, list) and config_files:
+        first = config_files[0]
+        if first:
+            return str(first)
+    legacy = inv.get("openclaw_config")
+    if legacy:
+        return str(legacy)
+    return _expand(cfg.claw.config_file)
 
 
 def _collect_mcp_config_files(connector: str, cfg: Config) -> list[str]:
@@ -1479,6 +1506,8 @@ def _tools_for_connector(connector: str, cfg: Config) -> list[dict[str, Any]]:
     * claudecode — ``~/.claude/settings.json`` ``tools`` field
     * codex      — ``~/.codex/config.toml`` ``[tools]`` table
     * zeptoclaw  — ``~/.zeptoclaw/agents.json`` (tools are inline)
+    * opencode   — ``opencode.json`` tool map + ``tools/`` JS/TS files
+    * antigravity — plugin/global slash command files as invokable tools
     """
     home = os.path.expanduser("~")
     name = (connector or "").lower()
@@ -1494,6 +1523,10 @@ def _tools_for_connector(connector: str, cfg: Config) -> list[dict[str, Any]]:
         return _tools_from_zeptoclaw_json(
             os.path.join(home, ".zeptoclaw", "agents.json"),
         )
+    if name == "opencode":
+        return _tools_from_opencode(cfg)
+    if name == "antigravity":
+        return _tools_from_antigravity(cfg)
     return []
 
 
@@ -1721,6 +1754,165 @@ def _tools_from_zeptoclaw_json(path: str) -> list[dict[str, Any]]:
     return rows
 
 
+def _tools_from_opencode(cfg: Config) -> list[dict[str, Any]]:
+    workspace = _connector_workspace_dir(cfg)
+    rows: list[dict[str, Any]] = []
+    for path in connector_paths._opencode_config_paths(workspace):  # type: ignore[attr-defined]
+        rows.extend(_tools_from_opencode_config(path))
+    rows.extend(
+        _tools_from_script_dirs(
+            _opencode_tool_dirs(workspace),
+            kind="custom-tool",
+            extensions=(".js", ".mjs", ".cjs", ".ts", ".mts", ".cts"),
+        )
+    )
+    return _dedup_tool_rows(rows)
+
+
+def _tools_from_antigravity(cfg: Config) -> list[dict[str, Any]]:
+    workspace = _connector_workspace_dir(cfg)
+    return _dedup_tool_rows(
+        _tools_from_script_dirs(
+            _antigravity_command_dirs(workspace),
+            kind="slash-command",
+            extensions=(".md", ".txt", ".json", ".yaml", ".yml"),
+        )
+    )
+
+
+def _connector_workspace_dir(cfg: Config) -> str:
+    try:
+        return cfg.connector_workspace_dir()
+    except Exception:
+        return ""
+
+
+def _opencode_tool_dirs(workspace_dir: str) -> list[str]:
+    home = os.path.expanduser("~")
+    custom = os.environ.get("OPENCODE_CONFIG_DIR", "").strip()
+    return _dedup_paths(
+        [
+            os.path.join(workspace_dir, ".opencode", "tools") if workspace_dir else "",
+            os.path.join(home, ".config", "opencode", "tools"),
+            os.path.join(os.path.expanduser(custom), "tools") if custom else "",
+        ]
+    )
+
+
+def _antigravity_command_dirs(workspace_dir: str) -> list[str]:
+    home = os.path.expanduser("~")
+    plugin_dirs = connector_paths.plugin_dirs("antigravity", workspace_dir=workspace_dir)
+    return _dedup_paths(
+        [
+            os.path.join(workspace_dir, ".agents", "commands") if workspace_dir else "",
+            os.path.join(workspace_dir, "_agents", "commands") if workspace_dir else "",
+            os.path.join(home, ".gemini", "antigravity-cli", "commands"),
+            *list(_plugin_component_dirs(plugin_dirs, "commands")),
+        ]
+    )
+
+
+def _plugin_component_dirs(plugin_dirs: list[str], component: str) -> list[str]:
+    out: list[str] = []
+    for plugin_dir in plugin_dirs:
+        if not os.path.isdir(plugin_dir):
+            continue
+        try:
+            entries = sorted(os.listdir(plugin_dir))
+        except OSError:
+            continue
+        for entry in entries:
+            plugin_root = os.path.join(plugin_dir, entry)
+            if not os.path.isdir(plugin_root):
+                continue
+            component_dir = os.path.join(plugin_root, component)
+            if os.path.isdir(component_dir):
+                out.append(component_dir)
+    return _dedup_paths(out)
+
+
+def _tools_from_opencode_config(path: str) -> list[dict[str, Any]]:
+    data = connector_paths._load_json_or_jsonc(path)  # type: ignore[attr-defined]
+    if not isinstance(data, dict):
+        return []
+    raw_tools = data.get("tool")
+    if raw_tools is None:
+        raw_tools = data.get("tools")
+    if not isinstance(raw_tools, dict):
+        return []
+    rows: list[dict[str, Any]] = []
+    for tool_id, body in raw_tools.items():
+        if isinstance(body, dict):
+            rows.append({
+                "id": str(tool_id),
+                "name": str(body.get("name") or tool_id),
+                "description": str(body.get("description", "")),
+                "source": path,
+                "kind": "config-tool",
+            })
+        else:
+            rows.append({
+                "id": str(tool_id),
+                "name": str(tool_id),
+                "source": path,
+                "kind": "config-tool",
+            })
+    return rows
+
+
+def _tools_from_script_dirs(
+    dirs: list[str],
+    *,
+    kind: str,
+    extensions: tuple[str, ...],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for root in dirs:
+        if not os.path.isdir(root):
+            continue
+        try:
+            entries = sorted(os.listdir(root))
+        except OSError:
+            continue
+        for entry in entries:
+            full = os.path.join(root, entry)
+            if not os.path.isfile(full):
+                continue
+            stem, ext = os.path.splitext(entry)
+            if ext.lower() not in extensions:
+                continue
+            rows.append({
+                "id": stem,
+                "name": stem,
+                "source": full,
+                "kind": kind,
+            })
+    return rows
+
+
+def _dedup_tool_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[str] = set()
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        key = str(row.get("id") or row.get("name") or row.get("source") or "")
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(row)
+    return out
+
+
+def _dedup_paths(paths: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for path in paths:
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        out.append(path)
+    return out
+
+
 def _providers_from_env(
     base_url_var: str,
     api_key_var: str,
@@ -1870,6 +2062,7 @@ def _build_aibom_from_filesystem(
         "errors": errors,
     }
     _attach_connector_paths(out, cfg, connector)
+    _sync_legacy_connector_paths(out)
     out["summary"] = _build_summary(out)
     return out
 

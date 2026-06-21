@@ -128,7 +128,16 @@ def evaluate_admission(
     still subject to the policy's ``allow_list_bypass_scan`` setting.
     """
     blocked_reason = _action_reason(action_entry, default=f"{target_type} '{name}' is on the block list")
-    if pe.is_blocked(target_type, name):
+    # N2: honor a per-connector block at the admission gate. When a connector is
+    # in play, resolve most-specific-wins (connector-scoped entry, else global)
+    # via the *_for_connector engine method; the bare (global) path keeps the
+    # pre-N2 call so duck-typed callers/fakes without the connector dimension are
+    # unaffected (connector="" is equivalent to the global check anyway).
+    if (
+        pe.is_blocked_for_connector(target_type, name, connector)
+        if connector
+        else pe.is_blocked(target_type, name)
+    ):
         return AdmissionDecision("blocked", blocked_reason, source="manual-block")
 
     asset_decision = evaluate_asset_policy(
@@ -147,7 +156,11 @@ def evaluate_admission(
         return asset_decision
 
     allowed_reason = _action_reason(action_entry, default=f"{target_type} '{name}' is on the allow list — scan skipped")
-    if pe.is_allowed(target_type, name):
+    if (
+        pe.is_allowed_for_connector(target_type, name, connector)
+        if connector
+        else pe.is_allowed(target_type, name)
+    ):
         # an explicit operator allow that
         # was registered with a source_path MUST NOT auto-allow a
         # different on-disk asset just because it shares the
@@ -165,7 +178,7 @@ def evaluate_admission(
         # pin as a match. An empty presented path cannot prove it is the
         # pinned asset, so treat it as a mismatch and fail closed instead
         # of falling through to an allow.
-        existing = pe.get_action(target_type, name) if hasattr(pe, "get_action") else None
+        existing = _effective_action_entry(pe, target_type, name, connector)
         existing_path = getattr(existing, "source_path", None) if existing else None
         if existing_path and existing_path != source_path:
             presented = source_path or "(no source path presented)"
@@ -180,7 +193,12 @@ def evaluate_admission(
             )
         return AdmissionDecision("allowed", allowed_reason, source="manual-allow")
 
-    if include_quarantine and pe.is_quarantined(target_type, name):
+    quarantined = (
+        pe.is_quarantined_for_connector(target_type, name, connector)
+        if connector
+        else pe.is_quarantined(target_type, name)
+    )
+    if include_quarantine and quarantined:
         reason = _action_reason(action_entry, default="quarantined")
         return AdmissionDecision("rejected", f"quarantined: {reason}", source="quarantine")
 
@@ -239,9 +257,26 @@ def evaluate_asset_policy(
     if not getattr(asset_policy, "enabled", False):
         return AdmissionDecision("allowed", "asset policy disabled", source="asset-policy-disabled")
 
-    policy = getattr(asset_policy, target_type, None)
+    # Per-connector resolution (OTHER-7): prefer the AssetPolicyConfig
+    # resolvers so a connector with an override gets its own scalar settings
+    # (default / registry_required / registry_empty_action) and mode. Stay
+    # duck-typed — callers/tests that pass a bare object without the resolvers
+    # fall back to the global per-type policy and global mode, which is the
+    # legacy behavior and also exactly what the resolvers return when no
+    # per-connector override is configured.
+    type_resolver = getattr(asset_policy, "effective_asset_type_policy", None)
+    if callable(type_resolver):
+        policy = type_resolver(connector, target_type)
+    else:
+        policy = getattr(asset_policy, target_type, None)
     if policy is None:
         return AdmissionDecision("allowed", "asset policy unsupported target", source="asset-policy-unsupported")
+
+    mode_resolver = getattr(asset_policy, "effective_mode", None)
+    if callable(mode_resolver):
+        mode = mode_resolver(connector)
+    else:
+        mode = getattr(asset_policy, "mode", "observe")
 
     rule_args = args or []
     if rule := _find_asset_rule(
@@ -253,9 +288,10 @@ def evaluate_asset_policy(
         command,
         rule_args,
         transport,
+        connector_scope="scoped",
     ):
         reason = getattr(rule, "reason", "") or f"{target_type} {name!r} is denied by asset policy"
-        return _asset_policy_block_or_observe(asset_policy, reason, "asset-policy-deny")
+        return _asset_policy_block_or_observe(mode, reason, "asset-policy-deny")
 
     if rule := _find_asset_rule(
         getattr(policy, "allowed", []),
@@ -266,6 +302,35 @@ def evaluate_asset_policy(
         command,
         rule_args,
         transport,
+        connector_scope="scoped",
+    ):
+        reason = getattr(rule, "reason", "") or f"{target_type} {name!r} is explicitly allowed"
+        return AdmissionDecision("allowed", reason, source="asset-policy-allow")
+
+    if rule := _find_asset_rule(
+        getattr(policy, "denied", []),
+        name,
+        connector,
+        source_path,
+        url,
+        command,
+        rule_args,
+        transport,
+        connector_scope="global",
+    ):
+        reason = getattr(rule, "reason", "") or f"{target_type} {name!r} is denied by asset policy"
+        return _asset_policy_block_or_observe(mode, reason, "asset-policy-deny")
+
+    if rule := _find_asset_rule(
+        getattr(policy, "allowed", []),
+        name,
+        connector,
+        source_path,
+        url,
+        command,
+        rule_args,
+        transport,
+        connector_scope="global",
     ):
         reason = getattr(rule, "reason", "") or f"{target_type} {name!r} is explicitly allowed"
         return AdmissionDecision("allowed", reason, source="asset-policy-allow")
@@ -293,15 +358,33 @@ def evaluate_asset_policy(
         return AdmissionDecision("allowed", f"{target_type} {name!r} is registered", source="asset-policy-registry")
 
     if getattr(policy, "registry_required", False):
-        return _asset_policy_block_or_observe(
-            asset_policy,
-            f"{target_type} {name!r} is not in the approved registry",
-            "asset-policy-registry-required",
-        )
+        # Split "registry configured but unmatched" from "registry empty",
+        # mirroring the Go gateway (internal/config/asset_policy.go
+        # EvaluateAssetPolicy): a *configured* (non-empty) registry that does
+        # not list this asset is always a hard "not approved" block.
+        if registry:
+            return _asset_policy_block_or_observe(
+                mode,
+                f"{target_type} {name!r} is not in the approved registry",
+                "asset-policy-registry-required",
+            )
+        # Registry required but empty → governed by registry_empty_action.
+        # Only "deny" blocks; "warn"/"allow" fall through to the default check
+        # below. The Go gateway now resolves "warn" the same way (warn → allow),
+        # so this matches the runtime (see _normalize_registry_empty_action).
+        if _normalize_registry_empty_action(
+            getattr(policy, "registry_empty_action", "deny")
+        ) == "deny":
+            return _asset_policy_block_or_observe(
+                mode,
+                f"{target_type} {name!r} is blocked because asset policy "
+                f"requires a registry but none is configured",
+                "asset-policy-registry-required-empty",
+            )
 
     if str(getattr(policy, "default", "allow")).strip().lower() in {"deny", "block"}:
         return _asset_policy_block_or_observe(
-            asset_policy,
+            mode,
             f"{target_type} {name!r} is denied by default asset policy",
             "asset-policy-default-deny",
         )
@@ -313,10 +396,40 @@ def evaluate_asset_policy(
     )
 
 
-def _asset_policy_block_or_observe(asset_policy: Any, reason: str, source: str) -> AdmissionDecision:
-    if str(getattr(asset_policy, "mode", "observe")).strip().lower() == "action":
+def _asset_policy_block_or_observe(mode: Any, reason: str, source: str) -> AdmissionDecision:
+    """Block in action mode, observe (allow + ``-observe`` source) otherwise.
+
+    ``mode`` is the already-resolved effective mode for the connector (see
+    OTHER-7 per-connector resolution in :func:`evaluate_asset_policy`), not
+    the AssetPolicyConfig object — so a connector overriding ``mode: action``
+    blocks while one inheriting ``observe`` only flags would-block.
+    """
+    if str(mode).strip().lower() == "action":
         return AdmissionDecision("blocked", reason, source=source)
     return AdmissionDecision("allowed", reason, source=source + "-observe")
+
+
+def _normalize_registry_empty_action(value: Any) -> str:
+    """Canonicalize registry_empty_action for an empty-but-required registry.
+
+    Returns one of ``"deny"`` / ``"warn"`` / ``"allow"`` (the three values
+    documented on ``config.AssetTypePolicy.registry_empty_action``). Only
+    ``"deny"`` blocks; both ``"warn"`` and ``"allow"`` fall through to the
+    default check. ``"deny"``/``"block"``/``""`` and any unrecognised value
+    stay fail-closed as ``"deny"``.
+
+    Python↔Go parity: the Go gateway's ``normalizeRegistryEmptyAction``
+    (internal/config/asset_policy.go) now also treats ``"warn"`` as
+    fall-through (warn → allow), so both sides agree that ``"warn"`` is
+    "log-but-don't-block at the empty-registry gate". The earlier divergence
+    (Go collapsing ``"warn"`` into ``"deny"``) is closed.
+    """
+    v = str(value).strip().lower()
+    if v == "allow":
+        return "allow"
+    if v == "warn":
+        return "warn"
+    return "deny"
 
 
 def _find_asset_rule(
@@ -330,13 +443,40 @@ def _find_asset_rule(
     transport: str,
     *,
     strict: bool = False,
+    connector_scope: str | None = None,
 ) -> Any | None:
     for rule in rules:
+        rule_connector = str(getattr(rule, "connector", "") or "").strip()
+        if connector_scope == "scoped":
+            if not rule_connector:
+                continue
+            if connector_paths.normalize(rule_connector) != connector_paths.normalize(connector):
+                continue
+        elif connector_scope == "global" and rule_connector:
+            continue
         if _asset_rule_matches(
             rule, name, connector, source_path, url, command, args, transport, strict=strict
         ):
             return rule
     return None
+
+
+def _effective_action_entry(
+    pe: Any,
+    target_type: str,
+    name: str,
+    connector: str = "",
+) -> Any | None:
+    if not hasattr(pe, "get_action"):
+        return None
+    if connector:
+        try:
+            scoped = pe.get_action(target_type, name, connector)
+        except TypeError:
+            scoped = None
+        if scoped is not None and getattr(getattr(scoped, "actions", None), "install", ""):
+            return scoped
+    return pe.get_action(target_type, name)
 
 
 def _asset_rule_matches(

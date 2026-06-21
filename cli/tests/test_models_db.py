@@ -119,6 +119,34 @@ class ModelsDbTests(unittest.TestCase):
         self.assertEqual(len(alerts), 1)
         self.assertEqual(alerts[0].severity, "HIGH")
 
+    def test_get_enforcement_counts_skips_alert_count(self):
+        pe = PolicyEngine(self.store)
+        pe.block("skill", "blocked-skill", "test")
+        pe.allow("skill", "allowed-skill", "test")
+        pe.block("mcp", "blocked-mcp", "test")
+        pe.allow("mcp", "allowed-mcp", "test")
+
+        logger = Logger(self.store)
+        logger.log_scan(
+            ScanResult(
+                scanner="skill-scanner",
+                target="/tmp/skill",
+                timestamp=datetime.now(timezone.utc),
+                findings=[],
+                duration=timedelta(milliseconds=50),
+            )
+        )
+        self.store.log_event(Event(action="scan", target="/tmp/skill", severity="HIGH"))
+
+        counts = self.store.get_enforcement_counts()
+
+        self.assertEqual(counts.blocked_skills, 1)
+        self.assertEqual(counts.allowed_skills, 1)
+        self.assertEqual(counts.blocked_mcps, 1)
+        self.assertEqual(counts.allowed_mcps, 1)
+        self.assertEqual(counts.total_scans, 1)
+        self.assertEqual(counts.alerts, 0)
+
     def test_store_init_creates_network_egress_schema_and_counts(self):
         tables = {
             row[0]
@@ -210,6 +238,41 @@ class ModelsDbTests(unittest.TestCase):
         self.assertEqual(events[0].structured["schema"], "defenseclaw.hook.v1")
         self.assertEqual(events[0].structured["connector"], "codex")
 
+    def test_summary_readers_avoid_heavy_payloads_but_get_event_hydrates_full_row(self):
+        details = "connector=codex " + ("x" * 6000)
+        evt = Event(
+            action="connector-hook",
+            target="PreToolUse",
+            severity="INFO",
+            details=details,
+            structured={"payload": "y" * 6000},
+        )
+        self.store.log_event(evt)
+
+        event_summary = self.store.list_event_summaries(1)[0]
+        alert_summary = self.store.list_alert_summaries(1)[0]
+        full_event = self.store.get_event(event_summary.id)
+
+        self.assertLess(len(event_summary.details), len(details))
+        self.assertEqual(event_summary.structured, {})
+        self.assertEqual(alert_summary.details, event_summary.details)
+        self.assertIsNotNone(full_event)
+        assert full_event is not None
+        self.assertEqual(full_event.details, details)
+        self.assertEqual(full_event.structured["payload"], "y" * 6000)
+
+    def test_actionable_summary_readers_skip_low_signal_rows(self):
+        self.store.log_event(Event(id="info", action="connector-hook", target="preToolUse", severity="INFO"))
+        self.store.log_event(Event(id="medium", action="scan", target="skill://one", severity="MEDIUM"))
+        self.store.log_event(Event(id="high", action="scan", target="skill://two", severity="HIGH"))
+        self.store.log_event(Event(id="failure", action="sink-failure", target="splunk", severity="ERROR"))
+
+        audit_ids = [event.id for event in self.store.list_actionable_event_summaries(10)]
+        alert_ids = [event.id for event in self.store.list_actionable_alert_summaries(10)]
+
+        self.assertEqual(audit_ids, ["failure", "high"])
+        self.assertEqual(alert_ids, ["failure", "high"])
+
     def test_logger_uses_run_id_from_env(self):
         old = os.environ.get("DEFENSECLAW_RUN_ID")
         os.environ["DEFENSECLAW_RUN_ID"] = "python-run-id"
@@ -270,6 +333,144 @@ class ModelsDbTests(unittest.TestCase):
                 os.environ.pop("DEFENSECLAW_RUN_ID", None)
             else:
                 os.environ["DEFENSECLAW_RUN_ID"] = old
+
+    # -- SK-4: per-connector actions column migration --
+
+    def test_store_init_migrates_connector_column(self):
+        """An old DB (no connector column, legacy 2-col unique index) upgrades
+        in place without data loss, and the uniqueness index becomes
+        connector-aware."""
+        self.store.close()
+        os.unlink(self.tmp.name)
+
+        # Rebuild the actions table in the pre-SK-4 shape and seed two global
+        # rows (a block and an allow) under the legacy 2-column unique index.
+        conn = sqlite3.connect(self.tmp.name)
+        conn.executescript(
+            """
+            CREATE TABLE actions (
+                id TEXT PRIMARY KEY,
+                target_type TEXT NOT NULL,
+                target_name TEXT NOT NULL,
+                source_path TEXT,
+                actions_json TEXT NOT NULL DEFAULT '{}',
+                reason TEXT,
+                updated_at DATETIME NOT NULL
+            );
+            CREATE UNIQUE INDEX idx_actions_type_name ON actions(target_type, target_name);
+            """
+        )
+        now = datetime.now(timezone.utc).isoformat()
+        conn.execute(
+            "INSERT INTO actions (id, target_type, target_name, source_path, actions_json, reason, updated_at)"
+            " VALUES (?, ?, ?, NULL, ?, ?, ?)",
+            ("a1", "skill", "legacy-skill", '{"install":"block"}', "old block", now),
+        )
+        conn.execute(
+            "INSERT INTO actions (id, target_type, target_name, source_path, actions_json, reason, updated_at)"
+            " VALUES (?, ?, ?, NULL, ?, ?, ?)",
+            ("a2", "mcp", "legacy-mcp", '{"install":"allow"}', "old allow", now),
+        )
+        conn.commit()
+        conn.close()
+
+        # Upgrade.
+        self.store = Store(self.tmp.name)
+        self.store.init()
+
+        # Column added.
+        cols = {
+            row[1] for row in self.store.db.execute("PRAGMA table_info(actions)").fetchall()
+        }
+        self.assertIn("connector", cols)
+
+        # Index swapped: legacy 2-col gone, connector-aware 3-col present.
+        index_names = {
+            row[1] for row in self.store.db.execute("PRAGMA index_list(actions)").fetchall()
+        }
+        self.assertNotIn("idx_actions_type_name", index_names)
+        self.assertIn("idx_actions_type_name_conn", index_names)
+
+        # Legacy rows preserved, now global (connector='') — nothing lost.
+        block = self.store.get_action("skill", "legacy-skill")
+        self.assertIsNotNone(block)
+        self.assertEqual(block.actions.install, "block")
+        self.assertEqual(block.reason, "old block")
+        self.assertEqual(block.connector, "")
+        allow = self.store.get_action("mcp", "legacy-mcp")
+        self.assertIsNotNone(allow)
+        self.assertEqual(allow.actions.install, "allow")
+        self.assertEqual(allow.connector, "")
+        # Pre-existing global block stays in force.
+        self.assertTrue(self.store.has_action("skill", "legacy-skill", "install", "block"))
+
+        # A per-connector row for the SAME (type, name) now coexists with the
+        # global one — proving the uniqueness index is connector-aware.
+        self.store.set_action_field(
+            "skill", "legacy-skill", "install", "allow", "hermes ok", connector="hermes"
+        )
+        self.assertTrue(
+            self.store.has_action("skill", "legacy-skill", "install", "allow", connector="hermes")
+        )
+        # Global entry untouched and still a block; the per-connector lookup
+        # does not see the global block (exact-match).
+        self.assertTrue(self.store.has_action("skill", "legacy-skill", "install", "block"))
+        self.assertFalse(
+            self.store.has_action("skill", "legacy-skill", "install", "block", connector="hermes")
+        )
+
+    def test_connector_scoped_actions_isolation(self):
+        """Per-connector and global entries on the same target are isolated for
+        exact-match reads/writes, and list_actions_by_type filters by
+        connector."""
+        self.store.set_action_field("skill", "x", "install", "block", "global block")
+        self.store.set_action_field(
+            "skill", "x", "install", "allow", "hermes allow", connector="hermes"
+        )
+
+        # Exact-match reads are scoped to their connector.
+        self.assertTrue(self.store.has_action("skill", "x", "install", "block"))
+        self.assertFalse(self.store.has_action("skill", "x", "install", "block", connector="hermes"))
+        self.assertTrue(self.store.has_action("skill", "x", "install", "allow", connector="hermes"))
+        self.assertFalse(self.store.has_action("skill", "x", "install", "allow"))
+
+        g = self.store.get_action("skill", "x")
+        self.assertEqual(g.connector, "")
+        self.assertEqual(g.actions.install, "block")
+        h = self.store.get_action("skill", "x", connector="hermes")
+        self.assertEqual(h.connector, "hermes")
+        self.assertEqual(h.actions.install, "allow")
+
+        # Default list returns both connectors; filtered lists return one each.
+        all_entries = self.store.list_actions_by_type("skill")
+        self.assertEqual({e.connector for e in all_entries}, {"", "hermes"})
+        hermes_only = self.store.list_actions_by_type("skill", connector="hermes")
+        self.assertEqual([e.connector for e in hermes_only], ["hermes"])
+        global_only = self.store.list_actions_by_type("skill", connector="")
+        self.assertEqual([e.connector for e in global_only], [""])
+
+        # remove_action is connector-scoped.
+        self.store.remove_action("skill", "x")
+        self.assertIsNone(self.store.get_action("skill", "x"))
+        self.assertIsNotNone(self.store.get_action("skill", "x", connector="hermes"))
+
+    def test_connector_migration_idempotent(self):
+        """Re-running init() on an already-migrated DB is a no-op: it must not
+        recreate the legacy 2-col index (which would reject per-connector rows)
+        nor drop existing per-connector data."""
+        self.store.set_action_field(
+            "skill", "y", "install", "block", "codex block", connector="codex"
+        )
+        self.store.init()  # second init on an already-migrated DB
+
+        index_names = {
+            row[1] for row in self.store.db.execute("PRAGMA index_list(actions)").fetchall()
+        }
+        self.assertIn("idx_actions_type_name_conn", index_names)
+        self.assertNotIn("idx_actions_type_name", index_names)
+        self.assertTrue(
+            self.store.has_action("skill", "y", "install", "block", connector="codex")
+        )
 
 
 if __name__ == "__main__":

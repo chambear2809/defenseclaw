@@ -20,7 +20,7 @@ import sys
 import tempfile
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -30,6 +30,7 @@ from defenseclaw.commands.cmd_doctor import (
     _bedrock_region,
     _check_antigravity_hooks,
     _check_cisco_ai_defense,
+    _check_connector_residue,
     _check_copilot_hooks,
     _check_custom_provider_overlay,
     _check_guardrail_proxy,
@@ -48,6 +49,7 @@ from defenseclaw.config import (
     GuardrailConfig,
     LLMConfig,
     OpenShellConfig,
+    PerConnectorGuardrailConfig,
 )
 
 
@@ -349,6 +351,26 @@ class DoctorGuardrailTests(unittest.TestCase):
         self.assertEqual(result.failed, 0)
         self.assertEqual(result.warned, 1)
         self.assertIn("no native ask surface", result.checks[0]["detail"])
+
+    def test_hilt_observe_warning_names_connector_mode(self):
+        cfg = Config(
+            data_dir="/tmp/defenseclaw",
+            audit_db="/tmp/defenseclaw/audit.db",
+            quarantine_dir="/tmp/defenseclaw/quarantine",
+            plugin_dir="/tmp/defenseclaw/plugins",
+            policy_dir="/tmp/defenseclaw/policies",
+            guardrail=GuardrailConfig(enabled=True, mode="observe", connector="hermes"),
+            gateway=GatewayConfig(),
+            openshell=OpenShellConfig(),
+        )
+        cfg.guardrail.hilt.enabled = True
+
+        result = _DoctorResult()
+        _check_hilt_support(cfg, "hermes", result)
+
+        self.assertEqual(result.warned, 1)
+        self.assertIn("hermes mode is observe", result.checks[0]["detail"])
+        self.assertNotIn("guardrail.mode", result.checks[0]["detail"])
 
     def test_hilt_new_connector_support_matrix(self):
         cfg = Config(
@@ -1243,6 +1265,173 @@ class CiscoAIDefenseProbeTests(unittest.TestCase):
         self.assertIn("preview.api.inspect.aidefense.aiteam.cisco.com", printed)
 
 
+class DoctorGeneratedHookFreshnessTests(unittest.TestCase):
+    def _make_cfg(self, data_dir: str) -> Config:
+        return Config(
+            data_dir=data_dir,
+            audit_db=os.path.join(data_dir, "audit.db"),
+            quarantine_dir=os.path.join(data_dir, "quarantine"),
+            plugin_dir=os.path.join(data_dir, "plugins"),
+            policy_dir=os.path.join(data_dir, "policies"),
+            llm=LLMConfig(),
+            guardrail=GuardrailConfig(connector="codex"),
+            gateway=GatewayConfig(),
+            openshell=OpenShellConfig(),
+        )
+
+    def _write_hook(self, data_dir: str, filename: str, text: str) -> None:
+        hook_dir = os.path.join(data_dir, "hooks")
+        os.makedirs(hook_dir, exist_ok=True)
+        with open(os.path.join(hook_dir, filename), "w", encoding="utf-8") as fh:
+            fh.write(text)
+
+    def test_stale_generated_hook_reasons_detect_old_codex_scripts(self):
+        from defenseclaw.commands import cmd_doctor
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._make_cfg(tmp)
+            self._write_hook(tmp, "codex-hook.sh", "fail_response() { echo \"$1\"; }\n")
+            self._write_hook(tmp, "_hardening.sh", "defenseclaw_read_stdin_capped() { cat; }\n")
+
+            reasons = cmd_doctor._stale_generated_hook_reasons(cfg, "codex")
+
+        self.assertTrue(any("codex-hook.sh missing" in reason for reason in reasons), reasons)
+        self.assertTrue(any("_hardening.sh missing" in reason for reason in reasons), reasons)
+
+    def test_codex_hook_check_warns_when_generated_script_is_stale(self):
+        from defenseclaw.commands import cmd_doctor
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._make_cfg(tmp)
+            self._write_hook(tmp, "codex-hook.sh", "fail_response() { echo \"$1\"; }\n")
+            self._write_hook(tmp, "_hardening.sh", "defenseclaw_read_stdin_capped() { cat; }\n")
+            result = _DoctorResult()
+
+            cmd_doctor._check_codex_hooks(cfg, result)
+
+        freshness = [c for c in result.checks if c["label"] == "Codex hooks freshness"]
+        self.assertEqual(len(freshness), 1, result.checks)
+        self.assertEqual(freshness[0]["status"], "warn")
+        self.assertIn("defenseclaw-gateway restart", freshness[0]["detail"])
+        # Warning is advisory only — it must NOT promise `doctor --fix` will
+        # repair it (the fixer was intentionally removed; the real remedy is
+        # updating DefenseClaw and restarting the gateway).
+        self.assertNotIn("doctor --fix", freshness[0]["detail"])
+
+
+class DoctorGatewayHomeMismatchTests(unittest.TestCase):
+    """`_check_gateway_home_mismatch` warns when a gateway from a different
+    DEFENSECLAW_HOME (e.g. a leftover /tmp sandbox) is holding the API port —
+    the exact failure that makes every hook 401 while each half looks healthy.
+    """
+
+    def _make_cfg(self, data_dir: str) -> Config:
+        return Config(
+            data_dir=data_dir,
+            audit_db=os.path.join(data_dir, "audit.db"),
+            quarantine_dir=os.path.join(data_dir, "quarantine"),
+            plugin_dir=os.path.join(data_dir, "plugins"),
+            policy_dir=os.path.join(data_dir, "policies"),
+            llm=LLMConfig(),
+            guardrail=GuardrailConfig(connector="codex"),
+            gateway=GatewayConfig(),
+            openshell=OpenShellConfig(),
+        )
+
+    def test_warns_when_foreign_home_holds_the_port(self):
+        from defenseclaw.commands import cmd_doctor
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._make_cfg(tmp)  # this config = the real home
+            result = _DoctorResult()
+            with (
+                patch.object(cmd_doctor, "_http_probe", return_value=(200, "{}")),
+                # This home's tracked gateway is NOT alive (no/stale pid file).
+                patch.object(cmd_doctor, "_read_pid_from_file", return_value=0),
+                # A foreign gateway is the actual listener...
+                patch.object(cmd_doctor, "_gateway_listener_pid", return_value=4321),
+                # ...rooted at a /tmp sandbox home.
+                patch.object(
+                    cmd_doctor,
+                    "_read_process_env_var",
+                    return_value="/tmp/defenseclaw-pr365-sandbox",
+                ),
+            ):
+                cmd_doctor._check_gateway_home_mismatch(cfg, result)
+
+        rows = [c for c in result.checks if c["label"] == "Gateway home"]
+        self.assertEqual(len(rows), 1, result.checks)
+        self.assertEqual(rows[0]["status"], "warn")
+        self.assertIn("/tmp/defenseclaw-pr365-sandbox", rows[0]["detail"])
+        self.assertIn("unset DEFENSECLAW_HOME", rows[0]["detail"])
+
+    def test_passes_when_this_homes_gateway_is_alive(self):
+        from defenseclaw.commands import cmd_doctor
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._make_cfg(tmp)
+            result = _DoctorResult()
+            with (
+                patch.object(cmd_doctor, "_http_probe", return_value=(200, "{}")),
+                patch.object(cmd_doctor, "_read_pid_from_file", return_value=999),
+            ):
+                cmd_doctor._check_gateway_home_mismatch(cfg, result)
+
+        rows = [c for c in result.checks if c["label"] == "Gateway home"]
+        self.assertEqual(len(rows), 1, result.checks)
+        self.assertEqual(rows[0]["status"], "pass")
+
+    def test_silent_when_listener_home_cannot_be_identified(self):
+        from defenseclaw.commands import cmd_doctor
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._make_cfg(tmp)
+            result = _DoctorResult()
+            with (
+                patch.object(cmd_doctor, "_http_probe", return_value=(200, "{}")),
+                patch.object(cmd_doctor, "_read_pid_from_file", return_value=0),
+                patch.object(cmd_doctor, "_gateway_listener_pid", return_value=4321),
+                # Can't read the listener's env (perms / no var) -> "can't tell".
+                patch.object(cmd_doctor, "_read_process_env_var", return_value=None),
+            ):
+                cmd_doctor._check_gateway_home_mismatch(cfg, result)
+
+        # No mismatch row emitted — indeterminacy must not nag.
+        rows = [c for c in result.checks if c["label"] == "Gateway home"]
+        self.assertEqual(rows, [], result.checks)
+
+    def test_passes_when_listener_home_matches_this_config(self):
+        from defenseclaw.commands import cmd_doctor
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._make_cfg(tmp)
+            result = _DoctorResult()
+            with (
+                patch.object(cmd_doctor, "_http_probe", return_value=(200, "{}")),
+                # Stale pid file, but the live listener is THIS home's gateway.
+                patch.object(cmd_doctor, "_read_pid_from_file", return_value=0),
+                patch.object(cmd_doctor, "_gateway_listener_pid", return_value=4321),
+                patch.object(cmd_doctor, "_read_process_env_var", return_value=tmp),
+            ):
+                cmd_doctor._check_gateway_home_mismatch(cfg, result)
+
+        rows = [c for c in result.checks if c["label"] == "Gateway home"]
+        self.assertEqual(len(rows), 1, result.checks)
+        self.assertEqual(rows[0]["status"], "pass")
+
+    def test_silent_when_api_not_reachable(self):
+        from defenseclaw.commands import cmd_doctor
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._make_cfg(tmp)
+            result = _DoctorResult()
+            with patch.object(cmd_doctor, "_http_probe", return_value=(0, "")):
+                cmd_doctor._check_gateway_home_mismatch(cfg, result)
+
+        rows = [c for c in result.checks if c["label"] == "Gateway home"]
+        self.assertEqual(rows, [], result.checks)
+
+
 class DoctorFixDryRunTests(unittest.TestCase):
     """``doctor --fix --dry-run`` previews fixers without mutating disk.
 
@@ -1278,6 +1467,7 @@ class DoctorFixDryRunTests(unittest.TestCase):
             patch.object(cmd_doctor, "_fix_gateway_token_drift") as fix_drift,
             patch.object(cmd_doctor, "_fix_dotenv_perms") as fix_dotenv,
             patch.object(cmd_doctor, "_fix_pristine_backup") as fix_pristine,
+            patch.object(cmd_doctor, "_fix_plugin_registry_required") as fix_plugin_reg,
             patch.object(cmd_doctor, "_fix_connector_residue") as fix_residue,
         ):
             cmd_doctor._run_fixers(
@@ -1290,15 +1480,28 @@ class DoctorFixDryRunTests(unittest.TestCase):
             fix_drift.assert_not_called()
             fix_dotenv.assert_not_called()
             fix_pristine.assert_not_called()
+            # OTHER-5: the plugin-registry dead-end fixer is wired into --fix
+            # but, like the rest, must not run under --dry-run.
+            fix_plugin_reg.assert_not_called()
+            # D7: the connector-teardown fixer was removed from --fix entirely,
+            # so it is never invoked even though it remains importable.
             fix_residue.assert_not_called()
 
-        # Each fixer should have produced a "skip" record so the TUI
-        # can list every step the real run would touch.
+        # Each remaining fixer should have produced a "skip" record so the TUI
+        # can list every step the real run would touch. The teardown fixer was
+        # removed (D7); the plugin-registry dead-end fixer was added (OTHER-5).
+        # Stale generated hooks are detected as a warning only — there is no
+        # auto-fixer for them, so they do not appear here.
         fix_records = [c for c in result.checks if c["label"].startswith("fix:")]
         self.assertEqual(len(fix_records), 7)
         for record in fix_records:
             self.assertEqual(record["status"], "skip")
             self.assertIn("dry-run", record["detail"])
+        # Doctor must NEVER offer connector teardown from --fix (D7).
+        self.assertNotIn(
+            "fix: connector residue",
+            [c["label"] for c in fix_records],
+        )
 
     def test_real_fix_invokes_each_fixer_when_dry_run_false(self):
         from defenseclaw.commands import cmd_doctor
@@ -1312,16 +1515,28 @@ class DoctorFixDryRunTests(unittest.TestCase):
             patch.object(cmd_doctor, "_fix_gateway_token_drift", return_value=("pass", "ok")),
             patch.object(cmd_doctor, "_fix_dotenv_perms", return_value=("pass", "ok")),
             patch.object(cmd_doctor, "_fix_pristine_backup", return_value=("pass", "ok")),
-            patch.object(cmd_doctor, "_fix_connector_residue", return_value=("pass", "ok")),
+            patch.object(cmd_doctor, "_fix_plugin_registry_required", return_value=("pass", "ok")),
+            # _fix_connector_residue is intentionally NOT wired into --fix (D7);
+            # patch it so a regression that re-adds it would surface as an extra row.
+            patch.object(cmd_doctor, "_fix_connector_residue", return_value=("pass", "ok")) as fix_residue,
         ):
             cmd_doctor._run_fixers(
                 cfg, result, assume_yes=True, json_out=True, dry_run=False,
             )
 
         fix_records = [c for c in result.checks if c["label"].startswith("fix:")]
+        # Seven fixers run: the connector-teardown fixer was removed (D7) and
+        # the plugin-registry dead-end fixer was added (OTHER-5). Stale
+        # generated hooks are warning-only (no auto-fixer), so they are not
+        # counted here.
         self.assertEqual(len(fix_records), 7)
         for record in fix_records:
             self.assertEqual(record["status"], "pass")
+        fix_residue.assert_not_called()
+        self.assertNotIn(
+            "fix: connector residue",
+            [c["label"] for c in fix_records],
+        )
 
     def test_dry_run_flag_is_exposed_on_click_command(self):
         from defenseclaw.commands.cmd_doctor import doctor
@@ -1553,6 +1768,143 @@ class DoctorHttpProbeRedirectTests(unittest.TestCase):
         status, body = _http_probe(self._url("/ok"), timeout=5.0)
         self.assertEqual(status, 200, (status, body))
         self.assertIn("reached", body)
+
+
+class GuardrailProxyMultiConnectorTests(unittest.TestCase):
+    """D6: whether the proxy port is 'intentionally closed' is decided over the
+    FULL active set. A proxy peer (openclaw/zeptoclaw) that binds port 4000
+    forces the real liveliness probe even when the primary is hook-enforced.
+    """
+
+    def _cfg(self, connectors, mode="observe"):
+        cfg = MagicMock()
+        cfg.active_connectors.return_value = connectors
+        cfg.guardrail = SimpleNamespace(mode=mode)
+        return cfg
+
+    def test_all_hook_enforced_reports_closed(self):
+        from defenseclaw.commands.cmd_doctor import (
+            _guardrail_proxy_intentionally_closed,
+        )
+
+        detail = _guardrail_proxy_intentionally_closed(self._cfg(["hermes", "codex"]))
+        self.assertIn("proxy port intentionally closed", detail)
+        self.assertIn("codex", detail)
+        self.assertIn("hermes", detail)
+
+    def test_mixed_hook_connector_modes_are_rendered_per_connector(self):
+        from defenseclaw.commands.cmd_doctor import (
+            _guardrail_proxy_intentionally_closed,
+        )
+
+        cfg = self._cfg(["codex", "hermes"], mode="observe")
+        cfg.guardrail.connectors = {
+            "codex": PerConnectorGuardrailConfig(mode="action"),
+            "hermes": PerConnectorGuardrailConfig(mode="observe"),
+        }
+        cfg.guardrail.effective_mode = lambda name: (
+            cfg.guardrail.connectors[name].mode or cfg.guardrail.mode
+        )
+
+        detail = _guardrail_proxy_intentionally_closed(cfg)
+
+        self.assertIn("codex (mode=action via PreToolUse deny)", detail)
+        self.assertIn("hermes (mode=observe)", detail)
+        self.assertNotIn("codex, hermes (mode=observe)", detail)
+        self.assertIn("proxy port intentionally closed", detail)
+
+    def test_multi_hook_action_mode_reports_action_once_when_uniform(self):
+        from defenseclaw.commands.cmd_doctor import (
+            _guardrail_proxy_intentionally_closed,
+        )
+
+        detail = _guardrail_proxy_intentionally_closed(
+            self._cfg(["codex", "hermes"], mode="action")
+        )
+
+        self.assertIn("hook-enforced for codex, hermes", detail)
+        self.assertIn("mode=action via PreToolUse deny", detail)
+        self.assertIn("proxy port intentionally closed", detail)
+
+    def test_proxy_peer_forces_real_probe(self):
+        """hermes (hook) + openclaw (proxy): openclaw needs port 4000, so the
+        helper returns '' and _check_guardrail_proxy runs the real probe — the
+        exact case the singular-primary scoping masked."""
+        from defenseclaw.commands.cmd_doctor import (
+            _guardrail_proxy_intentionally_closed,
+        )
+
+        self.assertEqual(
+            _guardrail_proxy_intentionally_closed(self._cfg(["hermes", "openclaw"])),
+            "",
+        )
+
+    def test_zeptoclaw_peer_forces_real_probe(self):
+        from defenseclaw.commands.cmd_doctor import (
+            _guardrail_proxy_intentionally_closed,
+        )
+
+        self.assertEqual(
+            _guardrail_proxy_intentionally_closed(self._cfg(["codex", "zeptoclaw"])),
+            "",
+        )
+
+    def test_empty_active_set_runs_probe(self):
+        from defenseclaw.commands.cmd_doctor import (
+            _guardrail_proxy_intentionally_closed,
+        )
+
+        self.assertEqual(_guardrail_proxy_intentionally_closed(self._cfg([])), "")
+
+    def test_single_connector_message_unchanged(self):
+        from defenseclaw.commands.cmd_doctor import (
+            _guardrail_proxy_intentionally_closed,
+        )
+
+        detail = _guardrail_proxy_intentionally_closed(self._cfg(["geminicli"]))
+        self.assertIn("hook-driven for geminicli", detail)
+        self.assertIn("mode=observe", detail)
+        self.assertIn("proxy port intentionally closed", detail)
+
+
+class DoctorFixHelpTextTests(unittest.TestCase):
+    """D8: ``--fix`` help + docstring must disclose the gateway-sidecar restart
+    blast radius and must no longer advertise connector teardown."""
+
+    def test_fix_help_mentions_restart_and_dry_run(self):
+        from defenseclaw.commands.cmd_doctor import doctor
+
+        opts = {p.name: p for p in doctor.params}
+        help_text = " ".join((opts["do_fix"].help or "").split()).lower()
+        self.assertIn("restart", help_text)
+        self.assertIn("--dry-run", help_text)
+
+    def test_fix_docstring_discloses_restart_and_drops_teardown(self):
+        from defenseclaw.commands.cmd_doctor import doctor
+
+        doc = " ".join((doctor.help or "").split()).lower()
+        self.assertIn("restart the gateway sidecar", doc)
+        self.assertIn("no longer tears connectors down", doc)
+
+    def test_connector_residue_warning_points_to_gateway_teardown_directly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            open(os.path.join(tmp, "codex_backup.json"), "w").close()
+            cfg = SimpleNamespace(
+                data_dir=tmp,
+                claw=SimpleNamespace(config_file=""),
+                active_connectors=lambda: ["hermes"],
+            )
+            result = _DoctorResult()
+
+            _check_connector_residue(cfg, "hermes", result)
+
+        warn = next(c for c in result.checks if c["label"] == "Connector residue")
+        self.assertEqual(warn["status"], "warn")
+        self.assertIn(
+            "defenseclaw-gateway connector teardown --connector <name>",
+            warn["detail"],
+        )
+        self.assertNotIn("doctor --fix", warn["detail"])
 
 
 if __name__ == "__main__":

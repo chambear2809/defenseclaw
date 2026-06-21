@@ -28,11 +28,17 @@ from types import SimpleNamespace
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from defenseclaw.config import SeverityAction
+from defenseclaw.config import (
+    AssetPolicyConfig,
+    PerConnectorAssetPolicy,
+    PerConnectorAssetTypePolicy,
+    SeverityAction,
+)
 from defenseclaw.enforce.admission import (
     AdmissionPolicyData,
     effective_action_for,
     evaluate_admission,
+    evaluate_asset_policy,
     load_admission_policy,
 )
 from defenseclaw.enforce.policy import PolicyEngine
@@ -106,15 +112,94 @@ class TestEvaluateAdmissionAllowed(_StoreTestBase):
         self.assertEqual(d.source, "policy-allow")
 
 
+class TestEvaluateAdmissionConnectorScope(_StoreTestBase):
+    """N2: the admission gate honors a per-connector block/allow.
+
+    A block scoped to connector A blocks at A's gate but not B's; a global
+    (connector="") block blocks at connectors with no scoped install action;
+    scoped install actions are authoritative for their connector.
+    """
+
+    def test_per_connector_block_only_blocks_that_connector(self):
+        self.pe.block_for_connector("mcp", "demo", "codex", "scoped block")
+        blocked = evaluate_admission(
+            self.pe, policy_dir=self.policy_dir,
+            target_type="mcp", name="demo", connector="codex",
+        )
+        self.assertEqual(blocked.verdict, "blocked")
+        self.assertEqual(blocked.source, "manual-block")
+        # A different connector is NOT blocked by the codex-scoped entry.
+        other = evaluate_admission(
+            self.pe, policy_dir=self.policy_dir,
+            target_type="mcp", name="demo", connector="opencode",
+        )
+        self.assertNotEqual(other.verdict, "blocked")
+
+    def test_global_block_blocks_every_connector(self):
+        self.pe.block("mcp", "demo", "global block")
+        for connector in ("codex", "opencode", ""):
+            d = evaluate_admission(
+                self.pe, policy_dir=self.policy_dir,
+                target_type="mcp", name="demo", connector=connector,
+            )
+            self.assertEqual(d.verdict, "blocked", connector)
+
+    def test_per_connector_allow_only_allows_that_connector(self):
+        self.pe.allow_for_connector("mcp", "demo", "codex", "scoped allow")
+        allowed = evaluate_admission(
+            self.pe, policy_dir=self.policy_dir,
+            target_type="mcp", name="demo", connector="codex",
+        )
+        self.assertEqual(allowed.verdict, "allowed")
+        self.assertEqual(allowed.source, "manual-allow")
+        # Another connector falls through to scan (no scoped/global allow).
+        other = evaluate_admission(
+            self.pe, policy_dir=self.policy_dir,
+            target_type="mcp", name="demo", connector="opencode",
+        )
+        self.assertEqual(other.verdict, "scan")
+
+    def test_connector_allow_overrides_global_block_for_that_connector(self):
+        self.pe.block("mcp", "demo", "global block")
+        self.pe.allow_for_connector("mcp", "demo", "codex", "scoped allow")
+        d = evaluate_admission(
+            self.pe, policy_dir=self.policy_dir,
+            target_type="mcp", name="demo", connector="codex",
+        )
+        self.assertEqual(d.verdict, "allowed")
+        self.assertEqual(d.source, "manual-allow")
+        other = evaluate_admission(
+            self.pe, policy_dir=self.policy_dir,
+            target_type="mcp", name="demo", connector="opencode",
+        )
+        self.assertEqual(other.verdict, "blocked")
+
+    def test_connector_block_wins_over_global_allow_for_that_connector(self):
+        self.pe.allow("mcp", "demo", "global allow")
+        self.pe.block_for_connector("mcp", "demo", "codex", "scoped block")
+        d = evaluate_admission(
+            self.pe, policy_dir=self.policy_dir,
+            target_type="mcp", name="demo", connector="codex",
+        )
+        self.assertEqual(d.verdict, "blocked")
+        other = evaluate_admission(
+            self.pe, policy_dir=self.policy_dir,
+            target_type="mcp", name="demo", connector="opencode",
+        )
+        self.assertEqual(other.verdict, "allowed")
+
+
 class TestEvaluateAdmissionAssetPolicy(_StoreTestBase):
     def _asset_policy(self, *, mode="action", default="allow", registry_required=False,
-                      registry=None, allowed=None, denied=None):
+                      registry=None, allowed=None, denied=None,
+                      registry_empty_action="deny"):
         target_policy = SimpleNamespace(
             default=default,
             registry_required=registry_required,
             registry=registry or [],
             allowed=allowed or [],
             denied=denied or [],
+            registry_empty_action=registry_empty_action,
         )
         return SimpleNamespace(
             enabled=True,
@@ -165,6 +250,45 @@ class TestEvaluateAdmissionAssetPolicy(_StoreTestBase):
         self.assertEqual(d.verdict, "blocked")
         self.assertEqual(d.source, "asset-policy-deny")
 
+    def test_connector_allowed_rule_overrides_global_denied_rule(self):
+        policy = self._asset_policy(
+            denied=[SimpleNamespace(name="tool")],
+            allowed=[SimpleNamespace(name="tool", connector="codex")],
+        )
+        codex = evaluate_asset_policy(
+            policy, target_type="mcp", name="tool", connector="codex",
+        )
+        self.assertEqual(codex.verdict, "allowed")
+        self.assertEqual(codex.source, "asset-policy-allow")
+
+        hermes = evaluate_asset_policy(
+            policy, target_type="mcp", name="tool", connector="hermes",
+        )
+        self.assertEqual(hermes.verdict, "blocked")
+        self.assertEqual(hermes.source, "asset-policy-deny")
+
+    def test_connector_denied_rule_overrides_global_allowed_rule(self):
+        policy = self._asset_policy(
+            allowed=[SimpleNamespace(name="tool")],
+            denied=[SimpleNamespace(name="tool", connector="codex")],
+        )
+        d = evaluate_asset_policy(
+            policy, target_type="mcp", name="tool", connector="codex",
+        )
+        self.assertEqual(d.verdict, "blocked")
+        self.assertEqual(d.source, "asset-policy-deny")
+
+    def test_connector_denied_rule_wins_over_connector_allowed_rule(self):
+        policy = self._asset_policy(
+            allowed=[SimpleNamespace(name="tool", connector="codex")],
+            denied=[SimpleNamespace(name="tool", connector="codex")],
+        )
+        d = evaluate_asset_policy(
+            policy, target_type="mcp", name="tool", connector="codex",
+        )
+        self.assertEqual(d.verdict, "blocked")
+        self.assertEqual(d.source, "asset-policy-deny")
+
     def test_registry_required_blocks_unregistered(self):
         policy = self._asset_policy(
             registry_required=True,
@@ -177,6 +301,89 @@ class TestEvaluateAdmissionAssetPolicy(_StoreTestBase):
         )
         self.assertEqual(d.verdict, "blocked")
         self.assertEqual(d.source, "asset-policy-registry-required")
+
+    # --- OTHER-6: empty-but-required registry honors registry_empty_action,
+    # mirroring the Go gateway (internal/config/asset_policy.go). These probe
+    # evaluate_asset_policy directly because evaluate_admission folds a
+    # non-blocked asset verdict into the downstream scan flow.
+
+    def test_empty_required_registry_denies_by_default(self):
+        policy = self._asset_policy(registry_required=True, registry=[])
+        d = evaluate_asset_policy(policy, target_type="mcp", name="demo")
+        self.assertEqual(d.verdict, "blocked")
+        self.assertEqual(d.source, "asset-policy-registry-required-empty")
+
+    def test_empty_required_registry_allow_falls_through_to_default(self):
+        policy = self._asset_policy(
+            registry_required=True, registry=[], registry_empty_action="allow",
+        )
+        d = evaluate_asset_policy(policy, target_type="mcp", name="demo")
+        self.assertEqual(d.verdict, "allowed")
+        self.assertEqual(d.source, "asset-policy-default-allow")
+
+    def test_empty_required_registry_allow_still_honors_default_deny(self):
+        # registry_empty_action="allow" only relaxes the empty-registry gate;
+        # a default=deny policy still blocks.
+        policy = self._asset_policy(
+            registry_required=True, registry=[],
+            registry_empty_action="allow", default="deny",
+        )
+        d = evaluate_asset_policy(policy, target_type="mcp", name="demo")
+        self.assertEqual(d.verdict, "blocked")
+        self.assertEqual(d.source, "asset-policy-default-deny")
+
+    def test_empty_required_registry_warn_falls_through_to_default(self):
+        # "warn" is treated like "allow" — it falls through to the default
+        # check. The Go gateway now resolves "warn" the same way (warn-Go
+        # ruling), so the Python preview and the runtime agree.
+        policy = self._asset_policy(
+            registry_required=True, registry=[], registry_empty_action="warn",
+        )
+        d = evaluate_asset_policy(policy, target_type="mcp", name="demo")
+        self.assertEqual(d.verdict, "allowed")
+        self.assertEqual(d.source, "asset-policy-default-allow")
+
+    def test_empty_required_registry_warn_still_honors_default_deny(self):
+        # "warn" only relaxes the empty-registry gate, not the default policy.
+        policy = self._asset_policy(
+            registry_required=True, registry=[],
+            registry_empty_action="warn", default="deny",
+        )
+        d = evaluate_asset_policy(policy, target_type="mcp", name="demo")
+        self.assertEqual(d.verdict, "blocked")
+        self.assertEqual(d.source, "asset-policy-default-deny")
+
+    def test_empty_required_registry_observe_downgrades_block(self):
+        policy = self._asset_policy(
+            mode="observe", registry_required=True, registry=[],
+        )
+        d = evaluate_asset_policy(policy, target_type="mcp", name="demo")
+        self.assertEqual(d.verdict, "allowed")
+        self.assertEqual(d.source, "asset-policy-registry-required-empty-observe")
+
+    def test_nonempty_required_registry_unmatched_unchanged(self):
+        # The configured (non-empty) registry path is unchanged by OTHER-6.
+        policy = self._asset_policy(
+            registry_required=True,
+            registry=[SimpleNamespace(name="github")],
+        )
+        d = evaluate_asset_policy(policy, target_type="mcp", name="rogue")
+        self.assertEqual(d.verdict, "blocked")
+        self.assertEqual(d.source, "asset-policy-registry-required")
+
+    def test_empty_required_registry_allow_not_blocked_end_to_end(self):
+        # Through the full admission path the empty+allow case must reach the
+        # normal scan flow rather than the old unconditional block.
+        policy = self._asset_policy(
+            registry_required=True, registry=[], registry_empty_action="allow",
+        )
+        d = evaluate_admission(
+            self.pe, policy_dir=self.policy_dir,
+            target_type="mcp", name="demo",
+            asset_policy=policy,
+        )
+        self.assertEqual(d.verdict, "scan")
+        self.assertEqual(d.source, "scan-required")
 
     def test_observe_mode_does_not_block_install_flow(self):
         policy = self._asset_policy(mode="observe", default="deny")
@@ -467,6 +674,130 @@ class TestBundledPolicyProvenance(unittest.TestCase):
         self.assertEqual(d.source, "policy-allow")
 
 
+class TestEvaluateAssetPolicyPerConnector(unittest.TestCase):
+    """OTHER-7: per-connector asset_policy resolution through the real
+    :class:`AssetPolicyConfig` resolvers (not a duck-typed namespace), so the
+    ``effective_mode`` / ``effective_asset_type_policy`` overlay is exercised
+    end to end and stays in lockstep with the Go ``assetPolicyFor`` overlay.
+    """
+
+    def test_per_connector_mode_action_blocks_while_inheritor_observes(self):
+        # codex overrides mode=action; hermes inherits the global observe.
+        # Same denied rule, different connector → different verdict.
+        policy = AssetPolicyConfig(
+            enabled=True,
+            mode="observe",
+            connectors={"codex": PerConnectorAssetPolicy(mode="action")},
+        )
+        policy.mcp.denied = [SimpleNamespace(name="rogue")]
+
+        codex = evaluate_asset_policy(
+            policy, target_type="mcp", name="rogue", connector="codex",
+        )
+        self.assertEqual(codex.verdict, "blocked")
+        self.assertEqual(codex.source, "asset-policy-deny")
+
+        hermes = evaluate_asset_policy(
+            policy, target_type="mcp", name="rogue", connector="hermes",
+        )
+        self.assertEqual(hermes.verdict, "allowed")
+        self.assertEqual(hermes.source, "asset-policy-deny-observe")
+
+    def test_per_connector_registry_required_overlay(self):
+        # codex requires a registry (empty → fail-closed deny); hermes
+        # inherits the global registry_required=False and is allowed.
+        policy = AssetPolicyConfig(
+            enabled=True,
+            mode="action",
+            connectors={
+                "codex": PerConnectorAssetPolicy(
+                    mcp=PerConnectorAssetTypePolicy(registry_required=True),
+                ),
+            },
+        )
+
+        codex = evaluate_asset_policy(
+            policy, target_type="mcp", name="demo", connector="codex",
+        )
+        self.assertEqual(codex.verdict, "blocked")
+        self.assertEqual(codex.source, "asset-policy-registry-required-empty")
+
+        hermes = evaluate_asset_policy(
+            policy, target_type="mcp", name="demo", connector="hermes",
+        )
+        self.assertEqual(hermes.verdict, "allowed")
+        self.assertEqual(hermes.source, "asset-policy-default-allow")
+
+    def test_per_connector_registry_empty_action_overlay(self):
+        # codex requires a registry but opts into allow-on-empty, so it falls
+        # through to the (allow) default — composing OTHER-6 with OTHER-7.
+        policy = AssetPolicyConfig(
+            enabled=True,
+            mode="action",
+            connectors={
+                "codex": PerConnectorAssetPolicy(
+                    mcp=PerConnectorAssetTypePolicy(
+                        registry_required=True, registry_empty_action="allow",
+                    ),
+                ),
+            },
+        )
+        d = evaluate_asset_policy(
+            policy, target_type="mcp", name="demo", connector="codex",
+        )
+        self.assertEqual(d.verdict, "allowed")
+        self.assertEqual(d.source, "asset-policy-default-allow")
+
+    def test_per_connector_default_overlay_blocks(self):
+        # codex overrides default=deny on skills; the global default stays allow.
+        policy = AssetPolicyConfig(
+            enabled=True,
+            mode="action",
+            connectors={
+                "codex": PerConnectorAssetPolicy(
+                    skill=PerConnectorAssetTypePolicy(default="deny"),
+                ),
+            },
+        )
+        codex = evaluate_asset_policy(
+            policy, target_type="skill", name="x", connector="codex",
+        )
+        self.assertEqual(codex.verdict, "blocked")
+        self.assertEqual(codex.source, "asset-policy-default-deny")
+
+        hermes = evaluate_asset_policy(
+            policy, target_type="skill", name="x", connector="hermes",
+        )
+        self.assertEqual(hermes.verdict, "allowed")
+        self.assertEqual(hermes.source, "asset-policy-default-allow")
+
+    def test_global_only_config_unaffected(self):
+        # No connectors map → behaves exactly like the global policy for any
+        # connector (single-connector / legacy parity).
+        policy = AssetPolicyConfig(enabled=True, mode="action")
+        policy.mcp.default = "deny"
+        d = evaluate_asset_policy(
+            policy, target_type="mcp", name="x", connector="codex",
+        )
+        self.assertEqual(d.verdict, "blocked")
+        self.assertEqual(d.source, "asset-policy-default-deny")
+
+    def test_alias_keyed_override_resolves(self):
+        # An override keyed on the documented alias "open-hands" applies to the
+        # registry-canonical connector "openhands" (normalize parity with Go).
+        policy = AssetPolicyConfig(
+            enabled=True,
+            mode="observe",
+            connectors={"open-hands": PerConnectorAssetPolicy(mode="action")},
+        )
+        policy.mcp.denied = [SimpleNamespace(name="rogue")]
+        d = evaluate_asset_policy(
+            policy, target_type="mcp", name="rogue", connector="openhands",
+        )
+        self.assertEqual(d.verdict, "blocked")
+        self.assertEqual(d.source, "asset-policy-deny")
+
+
 class TestEvaluateAdmissionFirstPartyNoBypass(_StoreTestBase):
     def setUp(self):
         super().setUp()
@@ -676,6 +1007,64 @@ class TestLoadAdmissionPolicy(unittest.TestCase):
             f.write("{not json")
         policy = load_admission_policy(tmp)
         self.assertTrue(policy.allow_list_bypass_scan)
+
+
+class TestPolicyEngineToolConnectorScope(_StoreTestBase):
+    """T2: connector-scoped tool helpers (the @<connector>/<tool> gate).
+
+    Mirrors internal/enforce/policy_test.go::TestPolicyEngineToolConnectorScope.
+    """
+
+    def test_connector_block_isolated(self):
+        self.pe.block_tool_for_connector("delete_file", "hermes", "scoped")
+        self.assertTrue(self.pe.is_tool_blocked_for_connector("delete_file", "hermes"))
+        self.assertFalse(self.pe.is_tool_blocked_for_connector("delete_file", "codex"))
+        self.assertFalse(self.pe.is_tool_blocked_for_connector("delete_file", ""))
+        self.assertFalse(self.pe.is_tool_blocked_for_connector("delete_file"))
+
+    def test_global_block_hits_all_connectors(self):
+        self.pe.block_tool_for_connector("delete_file", "", "global")
+        for connector in ("", "hermes", "codex"):
+            self.assertTrue(
+                self.pe.is_tool_blocked_for_connector("delete_file", connector)
+            )
+
+    def test_connector_allow_isolated(self):
+        self.pe.allow_tool_for_connector("search", "hermes", "scoped")
+        self.assertTrue(self.pe.is_tool_allowed_for_connector("search", "hermes"))
+        self.assertFalse(self.pe.is_tool_allowed_for_connector("search", "codex"))
+        self.assertFalse(self.pe.is_tool_allowed_for_connector("search", ""))
+
+    def test_global_allow_applies_to_all_connectors(self):
+        self.pe.allow_tool_for_connector("search", "", "global")
+        for connector in ("", "hermes", "codex"):
+            self.assertTrue(
+                self.pe.is_tool_allowed_for_connector("search", connector)
+            )
+
+    def test_connector_allow_overrides_global_block_for_connector(self):
+        # Connector-scoped rows are authoritative before the global fallback.
+        self.pe.block_tool_for_connector("write_file", "", "global block")
+        self.pe.allow_tool_for_connector("write_file", "hermes", "scoped allow")
+        self.assertFalse(self.pe.is_tool_blocked_for_connector("write_file", "hermes"))
+        self.assertTrue(self.pe.is_tool_allowed_for_connector("write_file", "hermes"))
+        self.assertTrue(self.pe.is_tool_blocked_for_connector("write_file", "codex"))
+        self.assertFalse(self.pe.is_tool_allowed_for_connector("write_file", "codex"))
+
+    def test_connector_allow_clears_enforcement(self):
+        target = "@hermes/run"
+        self.store.set_action_field("tool", target, "file", "quarantine", "scan")
+        self.store.set_action_field("tool", target, "runtime", "disable", "scan")
+        self.pe.allow_tool_for_connector("run", "hermes", "approved")
+        self.assertFalse(self.store.has_action("tool", target, "file", "quarantine"))
+        self.assertFalse(self.store.has_action("tool", target, "runtime", "disable"))
+
+    def test_connector_scope_orthogonal_to_source_scope(self):
+        # "@C/T" (connector) and "S/T" (source) are distinct namespaces: a
+        # connector-scoped block must not satisfy a source-scoped lookup.
+        self.pe.block_tool_for_connector("x", "hermes", "conn")
+        self.assertTrue(self.pe.is_tool_blocked_for_connector("x", "hermes"))
+        self.assertFalse(self.pe.is_tool_blocked("x", source="hermes"))
 
 
 if __name__ == "__main__":

@@ -828,7 +828,7 @@ def _connector_readiness(cfg: Config, connector: str) -> StepResult:
             "Connector",
             "warn",
             f"OpenClaw config missing: {cfg.claw.config_file}",
-            "defenseclaw setup mode openclaw",
+            "defenseclaw setup openclaw",
         )
     if connector == "codex":
         path = os.path.expanduser("~/.codex/config.toml")
@@ -844,27 +844,27 @@ def _connector_readiness(cfg: Config, connector: str) -> StepResult:
         path = os.path.expanduser("~/.zeptoclaw/config.json")
         if os.path.isfile(path):
             return StepResult("Connector", "pass", "ZeptoClaw config found")
-        return StepResult("Connector", "warn", "ZeptoClaw config not found yet", "defenseclaw setup mode zeptoclaw")
+        return StepResult("Connector", "warn", "ZeptoClaw config not found yet", "defenseclaw setup zeptoclaw")
     if connector == "hermes":
         path = os.path.expanduser("~/.hermes/config.yaml")
         if os.path.isfile(path):
             return StepResult("Connector", "pass", "Hermes config found")
-        return StepResult("Connector", "warn", "Hermes config not found yet", "defenseclaw setup mode hermes")
+        return StepResult("Connector", "warn", "Hermes config not found yet", "defenseclaw setup hermes")
     if connector == "cursor":
         path = os.path.expanduser("~/.cursor/hooks.json")
         if os.path.isfile(path):
             return StepResult("Connector", "pass", "Cursor hooks found")
-        return StepResult("Connector", "warn", "Cursor hooks not found yet", "defenseclaw setup mode cursor")
+        return StepResult("Connector", "warn", "Cursor hooks not found yet", "defenseclaw setup cursor")
     if connector == "windsurf":
         path = os.path.expanduser("~/.codeium/windsurf/hooks.json")
         if os.path.isfile(path):
             return StepResult("Connector", "pass", "Windsurf hooks found")
-        return StepResult("Connector", "warn", "Windsurf hooks not found yet", "defenseclaw setup mode windsurf")
+        return StepResult("Connector", "warn", "Windsurf hooks not found yet", "defenseclaw setup windsurf")
     if connector == "geminicli":
         path = os.path.expanduser("~/.gemini/settings.json")
         if os.path.isfile(path):
             return StepResult("Connector", "pass", "Gemini CLI settings found")
-        return StepResult("Connector", "warn", "Gemini CLI settings not found yet", "defenseclaw setup mode geminicli")
+        return StepResult("Connector", "warn", "Gemini CLI settings not found yet", "defenseclaw setup geminicli")
     if connector == "copilot":
         claw_cfg = getattr(cfg, "claw", None)
         workspace = (getattr(claw_cfg, "workspace_dir", "") or "").strip()
@@ -874,7 +874,7 @@ def _connector_readiness(cfg: Config, connector: str) -> StepResult:
             path = os.path.expanduser("~/.copilot/hooks/defenseclaw.json")
         if os.path.isfile(path):
             return StepResult("Connector", "pass", "Copilot hooks found")
-        return StepResult("Connector", "warn", "Copilot hooks not found yet", "defenseclaw setup mode copilot")
+        return StepResult("Connector", "warn", "Copilot hooks not found yet", "defenseclaw setup copilot")
     if connector == "openhands":
         claw_cfg = getattr(cfg, "claw", None)
         workspace = (getattr(claw_cfg, "workspace_dir", "") or "").strip()
@@ -885,7 +885,7 @@ def _connector_readiness(cfg: Config, connector: str) -> StepResult:
             candidates.insert(0, os.path.join(workspace, ".openhands", "hooks.json"))
         if any(os.path.isfile(path) for path in candidates):
             return StepResult("Connector", "pass", "OpenHands hooks found")
-        return StepResult("Connector", "warn", "OpenHands hooks not found yet", "defenseclaw setup mode openhands")
+        return StepResult("Connector", "warn", "OpenHands hooks not found yet", "defenseclaw setup openhands")
     if connector == "antigravity":
         # Antigravity is global-only by design — agy merges discovered
         # hooks files, so DefenseClaw never writes to a workspace copy.
@@ -903,7 +903,7 @@ def _connector_readiness(cfg: Config, connector: str) -> StepResult:
             "Connector",
             "warn",
             "Antigravity hooks not found yet",
-            "defenseclaw setup mode antigravity",
+            "defenseclaw setup antigravity",
         )
     if connector == "opencode":
         # opencode is governed by a bridge plugin DefenseClaw writes into
@@ -915,7 +915,7 @@ def _connector_readiness(cfg: Config, connector: str) -> StepResult:
             "Connector",
             "warn",
             "OpenCode bridge plugin not found yet",
-            "defenseclaw setup mode opencode",
+            "defenseclaw setup opencode",
         )
     return StepResult("Connector", "warn", f"unknown connector {connector!r}")
 
@@ -1106,17 +1106,24 @@ def _apply_gateway_defaults(cfg: Config, is_new_config: bool) -> bool:
     """
     from defenseclaw.commands.cmd_init import (
         _ensure_device_key,
-        _resolve_openclaw_gateway,
+        _resolve_gateway_for_connector,
     )
     from defenseclaw.commands.cmd_setup import _save_secret_to_dotenv
 
-    oc_gw = _resolve_openclaw_gateway(cfg.claw.config_file)
+    # SU-03/ND-2: this used to read openclaw.json unconditionally and pin
+    # OPENCLAW_GATEWAY_TOKEN whenever a token was reachable — with NO connector
+    # gate at all — leaking a proxy secret (and OpenClaw's gateway endpoint)
+    # onto hook-only installs that never touch the proxy. Route through the
+    # shared _resolve_gateway_for_connector, which resolves the OpenClaw gateway
+    # (host/port/token) only when openclaw is a genuinely active connector and
+    # returns loopback defaults with no token otherwise.
+    gw = _resolve_gateway_for_connector(cfg)
     if is_new_config:
-        cfg.gateway.host = oc_gw["host"]
-        cfg.gateway.port = oc_gw["port"]
+        cfg.gateway.host = gw["host"]
+        cfg.gateway.port = gw["port"]
 
     token_configured = False
-    token = oc_gw.get("token", "")
+    token = gw.get("token", "")
     if token:
         _save_secret_to_dotenv("OPENCLAW_GATEWAY_TOKEN", token, cfg.data_dir)
         cfg.gateway.token = ""

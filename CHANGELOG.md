@@ -30,6 +30,12 @@ deleted.
 
 ### Behaviour changes (no flag)
 
+- **Antigravity local surfaces now match the PR #365 contract**:
+  MCP reads/writes `~/.gemini/config/mcp_config.json` and
+  `<workspace>/.agents/mcp_config.json`; hooks remain global-only at
+  `~/.gemini/config/hooks.json`; AgentSkills folder form is supported
+  while rules/plugins/plugin-contained agents remain discovery-only
+  unless Google documents a write contract.
 - **W3C trace propagation is enabled for trusted hook routes**
   (`/api/v1/<connector>/hook`, `/api/v1/codex/notify`) when the
   caller is loopback and the connector route is registered. The
@@ -635,8 +641,7 @@ Claude Code now talk directly to their native upstreams in both
 - Python CLI test suite updated:
   - `test_cmd_init.py` and `test_cmd_doctor.py` no longer assert
     on `codex_enforcement_enabled`.
-  - `test_cmd_setup_mode.py`,
-    `test_cmd_setup_observability.py`,
+  - `test_cmd_setup_observability.py`,
     `test_cmd_setup_codex_claudecode_alias.py`, and
     `test_guardrail.py` were rewritten to cover the hook-driven
     mode contract end-to-end.

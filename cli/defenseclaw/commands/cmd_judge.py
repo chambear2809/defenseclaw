@@ -183,6 +183,56 @@ def _gate_label(gate: list[str]) -> str:
     return str(gate)
 
 
+#: Detection-strategy values under which the judge actually runs. Mirrors
+#: the Go hook lane (``hookJudgeInspect`` in
+#: ``internal/gateway/inspect.go``): ``judge_first`` and ``regex_judge``
+#: reach the judge, while everything else — ``regex_only``, unset, or an
+#: unrecognized value — hits the ``default`` branch and returns early, so
+#: the judge never runs for that direction.
+_JUDGE_RUNNING_STRATEGIES = frozenset({"regex_judge", "judge_first"})
+
+#: Hook-lane message directions the judge can cover. ``tool_call`` is a
+#: separate (currently inert) lane, not part of the message lane that
+#: ``judge list`` describes, so it is intentionally omitted.
+_HOOK_JUDGE_DIRECTIONS = ("prompt", "completion")
+
+
+def _effective_strategy(gc, direction: str) -> str:
+    """Detection strategy in force for ``direction`` on this config.
+
+    Mirrors Go ``GuardrailConfig.EffectiveStrategy``
+    (``internal/config/config.go``): a non-empty per-direction override
+    wins, else the global ``detection_strategy``, else the ``regex_judge``
+    default — so the CLI agrees with the gateway about whether the judge
+    actually runs. ``getattr`` keeps the resolver working against
+    pre-strategy configs (same defensive posture as the
+    ``active_connectors`` guards below).
+    """
+    override = ""
+    if direction == "prompt":
+        override = getattr(gc, "detection_strategy_prompt", "") or ""
+    elif direction == "completion":
+        override = getattr(gc, "detection_strategy_completion", "") or ""
+    elif direction == "tool_call":
+        override = getattr(gc, "detection_strategy_tool_call", "") or ""
+    if override:
+        return override
+    return getattr(gc, "detection_strategy", "") or "regex_judge"
+
+
+def _judged_directions(gc) -> list[str]:
+    """Hook-lane directions whose effective strategy actually runs the judge.
+
+    Empty means the judge never runs for this connector even when gated
+    and enabled — the case ``judge list`` must not paper over as "judged".
+    """
+    return [
+        d
+        for d in _HOOK_JUDGE_DIRECTIONS
+        if _effective_strategy(gc, d) in _JUDGE_RUNNING_STRATEGIES
+    ]
+
+
 def _save_and_restart(app: AppContext, gc, *, restart: bool, action: str) -> None:
     try:
         app.cfg.save()
@@ -246,19 +296,35 @@ def judge() -> None:
     ),
 )
 @click.option(
+    "--enable",
+    is_flag=True,
+    default=False,
+    help=(
+        "Also set guardrail.judge.enabled=true. By default 'judge add' only "
+        "edits the hook gate and warns when the judge is off — the gate has "
+        "no effect until the judge is enabled (via 'setup guardrail' or this "
+        "flag)."
+    ),
+)
+@click.option(
     "--restart/--no-restart",
     default=True,
     help="Restart the gateway so the gate takes effect (default: on).",
 )
 @pass_ctx
 def judge_add(
-    app: AppContext, connector: str, hook_timeout: float | None, restart: bool
+    app: AppContext,
+    connector: str,
+    hook_timeout: float | None,
+    enable: bool,
+    restart: bool,
 ) -> None:
     """Opt CONNECTOR into the hook-lane LLM judge ('all' = every hook connector).
 
     \b
     Examples:
       defenseclaw guardrail judge add hermes
+      defenseclaw guardrail judge add hermes --enable
       defenseclaw guardrail judge add all
       defenseclaw guardrail judge add opencode --timeout 8
     """
@@ -284,6 +350,18 @@ def judge_add(
             gc.judge.hook_timeout = hook_timeout
             timeout_changed = True
 
+    # --enable is the J1 convenience opt-in: `judge add` populates the hook
+    # gate but, by design, never flips judge.enabled — so a connector can be
+    # "added" while the judge stays globally off and the gate sits inert.
+    # Operators who want the add to also turn the judge on pass --enable
+    # instead of running a separate `setup guardrail`. Idempotent: only a
+    # real off→on transition counts as a change, so re-passing --enable on an
+    # already-enabled judge never forces a needless save+restart.
+    enable_changed = False
+    if enable and not gc.judge.enabled:
+        gc.judge.enabled = True
+        enable_changed = True
+
     # Gate update: compute the change and stash the no-op reason instead
     # of echoing it inline — "nothing to do" must only print when the
     # WHOLE command is a no-op. A gate no-op combined with a --timeout
@@ -292,6 +370,8 @@ def judge_add(
     gate_changed = False
     noop_reason = None
     click.echo()
+    if enable_changed:
+        click.echo("  " + ux.dim("enabling guardrail.judge.enabled (was off)."))
     if name == ALL_CONNECTORS:
         if _gate_is_all(gate):
             noop_reason = "hook_connectors is already all"
@@ -315,13 +395,18 @@ def judge_add(
         gc.judge.hook_connectors = gate
         gate_changed = True
 
-    if not gate_changed and not timeout_changed:
+    if not gate_changed and not timeout_changed and not enable_changed:
         click.echo("  " + ux.dim(f"{noop_reason} — nothing to do."))
         _warn_if_inert(app, gc)
         click.echo()
         return
     if not gate_changed and noop_reason:
-        click.echo("  " + ux.dim(f"{noop_reason} — saving hook_timeout only."))
+        saved = []
+        if enable_changed:
+            saved.append("judge.enabled")
+        if timeout_changed:
+            saved.append("hook_timeout")
+        click.echo("  " + ux.dim(f"{noop_reason} — saving {' + '.join(saved)} only."))
 
     _warn_if_unconfigured(app, name)
     _save_and_restart(app, gc, restart=restart, action=f"add {name}")
@@ -363,12 +448,23 @@ def judge_remove(app: AppContext, connector: str, restart: bool) -> None:
             return
         gc.judge.hook_connectors = []
     elif _gate_is_all(gate):
-        raise click.ClickException(
-            f"hook_connectors is all — removing '{name}' "
-            f"alone is ambiguous. Either turn the lane off with "
-            f"`defenseclaw guardrail judge remove all` or replace it "
-            f"with an explicit list via `guardrail judge add <connector>` "
-            f"per connector you want to keep."
+        # Auto-expand the every-connector sentinel (J6): removing one
+        # connector from `*` means "every hook connector except this one".
+        # Materialize `*` into the canonical hook-enforced roster minus the
+        # removed connector rather than erroring. We expand to the full
+        # roster (not just the active connectors) so coverage still matches
+        # what `*` meant — connectors set up later stay judged; only the
+        # named one is dropped. `name` passed _validate_connector above, so
+        # it is guaranteed a member of the roster.
+        hook_enforced, _ = _connector_sets()
+        gate = sorted(hook_enforced - {name})
+        gc.judge.hook_connectors = gate
+        click.echo(
+            "  "
+            + ux.dim(
+                f"hook_connectors was all — expanded to every hook "
+                f"connector except '{name}': {gate}."
+            )
         )
     elif _gate_contains(gate, name):
         gate = _gate_without(gate, name)
@@ -423,8 +519,34 @@ def judge_list(app: AppContext) -> None:
                 state = "unknown connector"
                 note = ""
             elif judged_prereqs and gated:
-                state = "judged (hook lane)"
-                note = ""
+                # Gate + prereqs are necessary but not sufficient: the
+                # judge only runs in a direction whose effective detection
+                # strategy isn't regex_only (mirrors hookJudgeInspect's
+                # regex_only early return). Reporting a gated connector as
+                # "judged (hook lane)" while its strategy keeps the judge
+                # from ever running is the overstatement J5 fixes.
+                judged_dirs = _judged_directions(gc)
+                if not judged_dirs:
+                    state = "regex + AID only"
+                    note = (
+                        " — gated, but the judge never runs under this "
+                        f"strategy (prompt: {_effective_strategy(gc, 'prompt')}"
+                        f", completion: {_effective_strategy(gc, 'completion')})"
+                    )
+                elif len(judged_dirs) == len(_HOOK_JUDGE_DIRECTIONS):
+                    state = "judged (hook lane)"
+                    note = ""
+                else:
+                    # Partial coverage — by default completion is
+                    # regex_only, so a gated connector is usually judged on
+                    # prompts only. Name the covered direction and surface
+                    # the skipped direction's strategy so the gap is honest.
+                    covered = judged_dirs[0]
+                    skipped = next(
+                        d for d in _HOOK_JUDGE_DIRECTIONS if d not in judged_dirs
+                    )
+                    state = f"judged (hook lane: {covered})"
+                    note = f" — {skipped}: {_effective_strategy(gc, skipped)}"
             elif gated:
                 state = "gated on, judge inactive"
                 note = (

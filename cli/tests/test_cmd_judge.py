@@ -27,7 +27,6 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-import click
 from click.testing import CliRunner
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -43,12 +42,21 @@ def make_ctx(
     hook_connectors: list[str] | None = None,
     hook_timeout: float = 0.0,
     connectors: list[str] | None = None,
+    detection_strategy: str = "",
+    detection_strategy_prompt: str = "",
+    detection_strategy_completion: str = "",
+    detection_strategy_tool_call: str = "",
 ):
     """Minimal AppContext for the judge gate commands.
 
     ``connectors`` is the active multi-connector set (defaults to a
     hermes + opencode hook install, matching the scenario the command
     exists for).
+
+    The ``detection_strategy*`` fields default to empty (which the
+    resolver treats as the ``regex_judge`` default — judge runs), so
+    callers that don't care about strategy keep the fully-judged scenario
+    they had before ``judge list`` started honoring strategy (J5).
     """
     actives = connectors if connectors is not None else ["hermes", "opencode"]
     judge_cfg = SimpleNamespace(
@@ -60,6 +68,10 @@ def make_ctx(
         enabled=guardrail_enabled,
         connector=actives[0] if actives else "openclaw",
         judge=judge_cfg,
+        detection_strategy=detection_strategy,
+        detection_strategy_prompt=detection_strategy_prompt,
+        detection_strategy_completion=detection_strategy_completion,
+        detection_strategy_tool_call=detection_strategy_tool_call,
     )
     cfg = SimpleNamespace(
         guardrail=guardrail_cfg,
@@ -245,6 +257,55 @@ class JudgeAddTests(unittest.TestCase):
         self.assertIn("not a configured connector", result.output)
         self.assertEqual(app.cfg.guardrail.judge.hook_connectors, ["codex"])
 
+    @patch.object(cmd_setup, "_restart_services")
+    def test_add_enable_flips_judge_enabled(self, restart):
+        # J1: --enable turns the judge on as part of the add, so a freshly
+        # gated connector isn't left inert behind judge.enabled=false.
+        app = make_ctx(judge_enabled=False)
+        result = invoke(app, ["add", "hermes", "--enable"])
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertTrue(app.cfg.guardrail.judge.enabled)
+        self.assertEqual(app.cfg.guardrail.judge.hook_connectors, ["hermes"])
+        app.cfg.save.assert_called_once()
+        restart.assert_called_once()
+        # With the judge now on, the inert "no effect" warning must not fire.
+        self.assertNotIn("no effect", result.output)
+
+    @patch.object(cmd_setup, "_restart_services")
+    def test_add_without_enable_leaves_judge_disabled(self, restart):
+        # Default is preserved: add never flips judge.enabled, and the inert
+        # warning still fires so the operator knows the gate is dormant.
+        app = make_ctx(judge_enabled=False)
+        result = invoke(app, ["add", "hermes"])
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertFalse(app.cfg.guardrail.judge.enabled)
+        self.assertIn("no effect", result.output)
+
+    @patch.object(cmd_setup, "_restart_services")
+    def test_add_enable_when_already_enabled_is_idempotent(self, restart):
+        # --enable on an already-enabled judge is not itself a change: with
+        # the gate also a no-op there is nothing to save or restart.
+        app = make_ctx(judge_enabled=True, hook_connectors=["hermes"])
+        result = invoke(app, ["add", "hermes", "--enable"])
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertTrue(app.cfg.guardrail.judge.enabled)
+        app.cfg.save.assert_not_called()
+        restart.assert_not_called()
+        self.assertIn("nothing to do", result.output)
+
+    @patch.object(cmd_setup, "_restart_services")
+    def test_add_enable_alone_persists_without_gate_change(self, restart):
+        # Gate no-op (already gated) but judge was off + --enable: a real
+        # change (judge.enabled off→on), so it saves and reports the enable,
+        # never "nothing to do" right before a save+restart.
+        app = make_ctx(judge_enabled=False, hook_connectors=["hermes"])
+        result = invoke(app, ["add", "hermes", "--enable"])
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertTrue(app.cfg.guardrail.judge.enabled)
+        app.cfg.save.assert_called_once()
+        self.assertNotIn("nothing to do", result.output)
+        self.assertIn("judge.enabled", result.output)
+
 
 class JudgeRemoveTests(unittest.TestCase):
     @patch.object(cmd_setup, "_restart_services")
@@ -279,13 +340,31 @@ class JudgeRemoveTests(unittest.TestCase):
         self.assertEqual(result.exit_code, 0, msg=result.output)
         self.assertEqual(app.cfg.guardrail.judge.hook_connectors, [])
 
-    def test_remove_name_under_star_is_ambiguous_error(self):
+    @patch.object(cmd_setup, "_restart_services")
+    def test_remove_name_under_star_expands_minus_removed(self, restart):
+        # J6: removing one connector from `*` materializes the wildcard into
+        # the canonical hook roster minus that connector rather than
+        # erroring, so "every hook connector except hermes" stays
+        # expressible from the CLI.
         app = make_ctx(hook_connectors=["*"])
         result = invoke(app, ["remove", "hermes"])
-        self.assertNotEqual(result.exit_code, 0)
-        self.assertIn("ambiguous", result.output)
-        self.assertEqual(app.cfg.guardrail.judge.hook_connectors, ["*"])
-        app.cfg.save.assert_not_called()
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        expected = sorted(cmd_setup._HOOK_ENFORCED_CONNECTORS - {"hermes"})
+        self.assertEqual(app.cfg.guardrail.judge.hook_connectors, expected)
+        self.assertNotIn("hermes", app.cfg.guardrail.judge.hook_connectors)
+        self.assertIn("expanded", result.output)
+        app.cfg.save.assert_called_once()
+        restart.assert_called_once()
+
+    @patch.object(cmd_setup, "_restart_services")
+    def test_remove_padded_star_expands(self, restart):
+        # Hand-edited ' * ' is live on the Go gate (TrimSpace + EqualFold),
+        # so removing a member from it must expand too, not no-op.
+        app = make_ctx(hook_connectors=[" * "])
+        result = invoke(app, ["remove", "opencode"])
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        expected = sorted(cmd_setup._HOOK_ENFORCED_CONNECTORS - {"opencode"})
+        self.assertEqual(app.cfg.guardrail.judge.hook_connectors, expected)
 
     @patch.object(cmd_setup, "_restart_services")
     def test_remove_nonmember_is_noop(self, restart):
@@ -414,6 +493,46 @@ class JudgeListTests(unittest.TestCase):
         result = invoke(app, ["list"])
         self.assertIn("8s", result.output)
 
+    def test_list_regex_only_strategy_not_overstated(self):
+        # J5: detection_strategy=regex_only keeps the judge from ever
+        # running on any hook direction (hookJudgeInspect early-returns),
+        # so a gated, judge-enabled connector must NOT read as "judged".
+        app = make_ctx(hook_connectors=["hermes"], detection_strategy="regex_only")
+        result = invoke(app, ["list"])
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertNotIn("hermes: judged", result.output)
+        self.assertIn("hermes: regex + AID only", result.output)
+        self.assertIn("the judge never runs", result.output)
+        self.assertIn("prompt: regex_only", result.output)
+        self.assertIn("completion: regex_only", result.output)
+
+    def test_list_completion_regex_only_shows_prompt_only(self):
+        # Post-setup default: completion is pinned regex_only while prompt
+        # inherits regex_judge — the judge covers prompts only, and the
+        # display must say so rather than claim full hook-lane coverage.
+        app = make_ctx(
+            hook_connectors=["hermes"],
+            detection_strategy="regex_judge",
+            detection_strategy_completion="regex_only",
+        )
+        result = invoke(app, ["list"])
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertIn("hermes: judged (hook lane: prompt)", result.output)
+        self.assertIn("completion: regex_only", result.output)
+
+    def test_list_both_directions_judged_no_qualifier(self):
+        # When both directions reach the judge, the honest state is the
+        # unqualified "judged (hook lane)" with no per-direction note.
+        app = make_ctx(
+            hook_connectors=["hermes"],
+            detection_strategy="regex_judge",
+            detection_strategy_completion="judge_first",
+        )
+        result = invoke(app, ["list"])
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertIn("hermes: judged (hook lane)", result.output)
+        self.assertNotIn("judged (hook lane:", result.output)
+
 
 class WizardHookPromptTests(unittest.TestCase):
     """``cmd_setup._prompt_judge_hook_connectors`` — the wizard touch."""
@@ -427,58 +546,81 @@ class WizardHookPromptTests(unittest.TestCase):
 
     def test_proxy_only_install_skips_prompt(self):
         gc = self._gc(connectors=("openclaw",))
-        with patch.object(click, "prompt") as prompt:
+        with patch.object(cmd_setup, "_prompt_checkbox_selection") as prompt:
             cmd_setup._prompt_judge_hook_connectors(gc)
         prompt.assert_not_called()
         self.assertEqual(gc.judge.hook_connectors, [])
 
     def test_fresh_install_defaults_to_none(self):
         gc = self._gc()
-        with patch.object(click, "prompt", return_value="none") as prompt:
+        with patch.object(cmd_setup, "_prompt_checkbox_selection", return_value=[]) as prompt:
             cmd_setup._prompt_judge_hook_connectors(gc)
-        self.assertEqual(prompt.call_args.kwargs.get("default"), "none")
+        self.assertEqual(prompt.call_args.kwargs.get("default_selected"), [])
+        self.assertEqual(prompt.call_args.kwargs.get("empty_ok"), True)
         self.assertEqual(gc.judge.hook_connectors, [])
 
     def test_choice_all_writes_star(self):
         gc = self._gc()
-        with patch.object(click, "prompt", return_value="all"):
+        with patch.object(
+            cmd_setup,
+            "_prompt_checkbox_selection",
+            return_value=["hermes", "opencode"],
+        ):
             cmd_setup._prompt_judge_hook_connectors(gc)
         self.assertEqual(gc.judge.hook_connectors, ["*"])
 
     def test_choice_single_connector(self):
         gc = self._gc()
-        with patch.object(click, "prompt", return_value="hermes"):
+        with patch.object(cmd_setup, "_prompt_checkbox_selection", return_value=["hermes"]):
             cmd_setup._prompt_judge_hook_connectors(gc)
         self.assertEqual(gc.judge.hook_connectors, ["hermes"])
 
     def test_rerun_with_star_defaults_to_all(self):
         gc = self._gc(gate=("*",))
-        with patch.object(click, "prompt", return_value="all") as prompt:
+        with patch.object(
+            cmd_setup,
+            "_prompt_checkbox_selection",
+            return_value=["hermes", "opencode"],
+        ) as prompt:
             cmd_setup._prompt_judge_hook_connectors(gc)
-        self.assertEqual(prompt.call_args.kwargs.get("default"), "all")
+        self.assertEqual(prompt.call_args.kwargs.get("default_selected"), ["hermes", "opencode"])
         self.assertEqual(gc.judge.hook_connectors, ["*"])
 
     def test_rerun_with_single_entry_defaults_to_it(self):
         gc = self._gc(gate=("hermes",))
-        with patch.object(click, "prompt", return_value="hermes") as prompt:
+        with patch.object(cmd_setup, "_prompt_checkbox_selection", return_value=["hermes"]) as prompt:
             cmd_setup._prompt_judge_hook_connectors(gc)
-        self.assertEqual(prompt.call_args.kwargs.get("default"), "hermes")
+        self.assertEqual(prompt.call_args.kwargs.get("default_selected"), ["hermes"])
         self.assertEqual(gc.judge.hook_connectors, ["hermes"])
 
-    def test_rerun_with_multi_entry_defaults_to_keep(self):
-        # An explicit two-connector gate can't be expressed as one
-        # choice — Enter must preserve it, never clear it.
+    def test_rerun_with_multi_entry_preselects_each_connector(self):
         gc = self._gc(connectors=("hermes", "opencode", "codex"), gate=("hermes", "codex"))
-        with patch.object(click, "prompt", return_value="keep") as prompt:
+        with patch.object(
+            cmd_setup,
+            "_prompt_checkbox_selection",
+            return_value=["codex", "hermes"],
+        ) as prompt:
             cmd_setup._prompt_judge_hook_connectors(gc)
-        self.assertEqual(prompt.call_args.kwargs.get("default"), "keep")
-        self.assertEqual(gc.judge.hook_connectors, ["hermes", "codex"])
+        self.assertEqual(prompt.call_args.kwargs.get("default_selected"), ["codex", "hermes"])
+        self.assertEqual(gc.judge.hook_connectors, ["codex", "hermes"])
 
     def test_choice_none_clears_gate(self):
         gc = self._gc(gate=("hermes",))
-        with patch.object(click, "prompt", return_value="none"):
+        with patch.object(cmd_setup, "_prompt_checkbox_selection", return_value=[]):
             cmd_setup._prompt_judge_hook_connectors(gc)
         self.assertEqual(gc.judge.hook_connectors, [])
+
+    def test_checkbox_selector_toggles_with_keys(self):
+        keys = iter([" ", "j", " ", "\r"])
+        with patch.object(cmd_setup.click, "getchar", side_effect=lambda: next(keys)), \
+                patch.object(cmd_setup, "_stdout_is_tty", return_value=False):
+            got = cmd_setup._prompt_checkbox_selection(
+                ["codex", "hermes"],
+                default_selected=["codex"],
+                title="Select hook connectors",
+                empty_ok=True,
+            )
+        self.assertEqual(got, ["hermes"])
 
 
 if __name__ == "__main__":

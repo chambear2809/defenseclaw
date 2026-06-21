@@ -43,7 +43,7 @@ from defenseclaw.tui.executor import CommandAlreadyRunningError, CommandExecutor
 from defenseclaw.tui.models import HintState, ServiceStatus, StatusModel
 from defenseclaw.tui.panels.activity import ActivityPanelModel
 from defenseclaw.tui.panels.ai_discovery import AIDiscoveryPanelModel, AIUsageSnapshot
-from defenseclaw.tui.panels.alerts import AlertEvent, AlertPanelAction, AlertsPanelModel
+from defenseclaw.tui.panels.alerts import AlertPanelAction, AlertsPanelModel
 from defenseclaw.tui.panels.audit import AuditPanelModel, _parse_kv_details
 from defenseclaw.tui.panels.first_run import FirstRunPanelModel
 from defenseclaw.tui.panels.inventory import FAST_SCAN_CATEGORIES, InventoryPanelModel
@@ -73,7 +73,7 @@ from defenseclaw.tui.panels.setup import (
     SetupPanelAction,
     SetupPanelModel,
     SetupWizard,
-    connector_setup_command_for_mode,
+    connector_setup_command,
     llm_model_candidates,
     render_wizard_value,
     wizard_field_value,
@@ -84,6 +84,11 @@ from defenseclaw.tui.panels.tools import ToolsPanelModel
 from defenseclaw.tui.registry import CmdEntry, build_registry
 from defenseclaw.tui.screens.command_preview import CommandPreviewScreen, mask_argv
 from defenseclaw.tui.screens.config_diff import ConfigDiffScreen
+from defenseclaw.tui.screens.consequence import (
+    ConsequenceAction,
+    ConsequenceModalModel,
+    ConsequenceModalScreen,
+)
 from defenseclaw.tui.screens.detail import DetailScreen
 from defenseclaw.tui.screens.judge_history import JudgeHistoryScreen
 from defenseclaw.tui.screens.mcp_set_form import MCPSetFormScreen
@@ -178,13 +183,31 @@ PANELS = (
     ("logs", "8", "Logs"),
     ("audit", "9", "Audit"),
     ("activity", "A", "Activity"),
-    ("tools", "T", "Tools"),
     ("ai", "V", "AI Discovery"),
     ("registries", "R", "Registries"),
     ("setup", "0", "Setup"),
 )
 
 PANEL_SHORTCUTS = {key.lower(): name for name, key, _label in PANELS}
+PANEL_NAMES = {name for name, _key, _label in PANELS}
+
+
+class _BodyStatic(Static):
+    """The shared ``#body`` Static, made mouse-aware for the connector chip.
+
+    E1: the connector-filter chip is rendered as a line of this Static, and
+    Textual's ``@click`` action-link markup crashes the compositor when it is
+    painted into this shared body (``Style.meta`` ``UnpicklingError`` — see the
+    project memory note). So instead of action links, clicks are mapped from
+    coordinates here and handed to :meth:`DefenseClawTUI._handle_body_chip_click`,
+    which resolves the click to a chip segment (or opens the filter picker).
+    """
+
+    def on_click(self, event: events.Click) -> None:
+        handler = getattr(self.app, "_handle_body_chip_click", None)
+        if handler is not None and handler(event.x, event.y):
+            event.stop()
+
 
 class DefenseClawTUI(App[None]):
     """Textual TUI foundation.
@@ -637,8 +660,8 @@ class DefenseClawTUI(App[None]):
         self.executor = CommandExecutor()
         self.config = config
         self.data_dir = _resolve_data_dir(config, data_dir)
-        # Operator's persisted session preferences (active panel,
-        # palette MRU, per-panel "last seen" cursors, last filter).
+        # Operator's persisted session preferences (palette MRU,
+        # per-panel "last seen" cursors, last filter, theme).
         # Stored in ``<data_dir>/tui-state.json`` mode 0600. Tokens
         # never live here — only opaque panel/command names.
         self.state_store = TUIStateStore(self.data_dir)
@@ -646,10 +669,20 @@ class DefenseClawTUI(App[None]):
         if self.first_run_model.active:
             self.active_panel = "setup"
         else:
-            self.active_panel = self.state.active_panel or "overview"
+            # Plain ``defenseclaw tui`` should always land on the
+            # overview dashboard. ``active_panel`` is still written for
+            # older state files and unread-badge bookkeeping, but it is
+            # intentionally not a launch preference.
+            self.active_panel = "overview"
         self.help_open = False
         self.activity_lines: list[str] = []
         self.body_text = ""
+        # E1: per-render map of clickable connector-chip segments,
+        # ``[(col_start, col_end, connector)]`` in visible columns of the chip
+        # line (``connector == ""`` is the All segment). Rebuilt by
+        # :meth:`_connector_chip_text` and consumed by
+        # :meth:`_handle_body_chip_click`; empty when no chip is shown.
+        self._chip_click_segments: list[tuple[int, int, str]] = []
         self.detail_text = ""
         self.status_text = ""
         self.hint_text = ""
@@ -663,7 +696,8 @@ class DefenseClawTUI(App[None]):
         self._diagnose_running = False
         self.commands_run = 0
         self.activity_model = ActivityPanelModel()
-        self.alerts_model = alerts_model or AlertsPanelModel(self.data_dir)
+        audit_store = _audit_store(config)
+        self.alerts_model = alerts_model or AlertsPanelModel(self.data_dir, store=audit_store)
         self.registries_model = registries_model or RegistriesPanelModel(config, data_dir=self.data_dir)
         connector = _active_connector(config)
         self.skills_model = skills_model or SkillsPanelModel(connector=connector)
@@ -671,7 +705,7 @@ class DefenseClawTUI(App[None]):
         self.plugins_model = plugins_model or PluginsPanelModel(connector=connector)
         self.tools_model = tools_model or ToolsPanelModel(_audit_store(config))
         self.logs_model = logs_model or LogsPanelModel(self.data_dir)
-        self.audit_model = audit_model or AuditPanelModel(_audit_store(config))
+        self.audit_model = audit_model or AuditPanelModel(audit_store)
         self.overview_model = overview_model or OverviewPanelModel(_overview_config(config), version=__version__)
         self.inventory_model = inventory_model or InventoryPanelModel(connector=connector)
         self.ai_discovery_model = ai_discovery_model or AIDiscoveryPanelModel()
@@ -698,6 +732,10 @@ class DefenseClawTUI(App[None]):
         self._table_columns: tuple[str, ...] = ()
         self._table_rows: tuple[tuple[str, ...], ...] = ()
         self._periodic_refresh_running = False
+        self._slow_refresh_running = False
+        self._credentials_refresh_running = False
+        self._health_poll_running = False
+        self._ai_usage_poll_running = False
         # Fingerprints of the last payload pushed into the body and
         # detail ``Static`` widgets. Textual's ``Static.update`` forces
         # a layout pass even when the content is byte-for-byte
@@ -742,6 +780,11 @@ class DefenseClawTUI(App[None]):
         self._command_registry = build_registry()
         self._command_palette_values: list[str] = []
         self._last_table_click: tuple[str, int] | None = None
+        # Textual posts Tabs.TabActivated for programmatic ``tabs.active``
+        # changes too. Keep a one-shot count for tab ids that _render_chrome
+        # selected on behalf of the app so delayed sync messages cannot bounce
+        # the operator back to an older tab after rapid mouse clicks.
+        self._suppressed_tab_activations: dict[str, int] = {}
         # Auto-dismissing toast queue. Mirrors the Go TUI's
         # ToastManager: cap of MAX_TOASTS (3), TTLs of 4s/4s/6s/8s for
         # info/success/warn/error. The widget itself is mounted in
@@ -756,11 +799,10 @@ class DefenseClawTUI(App[None]):
         self._last_gateway_started_at: str = ""
 
     def compose(self) -> ComposeResult:
-        # If the persisted ``active_panel`` is now connector-gated
-        # (e.g. operator quit on Plugins, then changed connector before
-        # relaunch), fall back to the first visible panel. Otherwise
-        # Tabs(active="tab-plugins", ...) would resolve to a Tab that
-        # isn't in the list and Textual raises during validate_active.
+        # If the startup panel is connector-gated (e.g. embedded first-run
+        # setup is hidden by a future gate), fall back to the first visible
+        # panel. Otherwise Tabs(active=...) can point at a Tab that is not in
+        # the list and Textual raises during validate_active.
         visible_panels = self._visible_panels() or ["overview"]
         if self.active_panel not in visible_panels:
             self.active_panel = visible_panels[0]
@@ -781,7 +823,7 @@ class DefenseClawTUI(App[None]):
             with Vertical(id="body-panel"):
                 yield OverviewMetrics(self._overview_metric_data(), id="overview-metrics", classes="hidden")
                 with VerticalScroll(id="body-scroll"):
-                    yield Static("", id="body")
+                    yield _BodyStatic("", id="body")
                 with Horizontal(id="overview-controls", classes="panel-controls hidden"):
                     # Click-first quick-actions that mirror the broken
                     # state of the overview. Each button is shown only
@@ -1166,7 +1208,7 @@ class DefenseClawTUI(App[None]):
                     )
                 with Horizontal(id="tools-controls", classes="panel-controls hidden"):
                     yield Input(
-                        placeholder="Filter tools…",
+                        placeholder="Filter tool policy…",
                         id="tools-filter",
                         compact=True,
                     )
@@ -1180,7 +1222,7 @@ class DefenseClawTUI(App[None]):
                         "Refresh",
                         id="tools-refresh",
                         compact=True,
-                        tooltip="Reload tools from the audit store (r)",
+                        tooltip="Reload tool policy rows from the audit store (r)",
                     )
                     yield Button(
                         "Detail",
@@ -1291,7 +1333,7 @@ class DefenseClawTUI(App[None]):
         # warnings that flake the visual snapshot suite.
         self._app_shutting_down = True
         # Best-effort final flush of session state so the next launch
-        # restores active panel + palette MRU + per-panel cursors.
+        # keeps palette MRU, theme, filters, and per-panel cursors.
         try:
             self.state_store.save()
         except Exception:  # noqa: BLE001
@@ -1336,6 +1378,12 @@ class DefenseClawTUI(App[None]):
         # spin up CLI processes for screens the operator doesn't care
         # about.
         self.set_interval(60.0, self._schedule_slow_refresh)
+        self._write_activity(
+            "[bold #22D3EE]Textual backend[/] ready. "
+            "Go backend remains available with --backend go."
+        )
+        if self.first_run_model.active:
+            self._write_activity("[#FBBF24]First-run setup[/] config is missing; embedded init flow is active.")
         self._render_chrome()
 
     def _schedule_slow_refresh(self) -> None:
@@ -1349,26 +1397,28 @@ class DefenseClawTUI(App[None]):
 
         if self.config is None or getattr(self, "_app_shutting_down", False):
             return
-        for panel, model in self.catalog_models.items():
-            if not getattr(model, "loaded", False):
-                continue
-            self.run_worker(
-                self._load_catalog_model(panel),
-                exclusive=False,
-                thread=False,
-            )
-        if getattr(self.inventory_model, "loaded", False):
-            self.run_worker(
-                self._load_inventory_model(),
-                exclusive=False,
-                thread=False,
-            )
-        self._write_activity(
-            "[bold #22D3EE]Textual backend[/] ready. "
-            "Go backend remains available with --backend go."
+        if self._slow_refresh_running:
+            return
+        self._slow_refresh_running = True
+        self.run_worker(
+            self._run_slow_refresh(),
+            exclusive=False,
+            thread=False,
         )
-        if self.first_run_model.active:
-            self._write_activity("[#FBBF24]First-run setup[/] config is missing; embedded init flow is active.")
+
+    async def _run_slow_refresh(self) -> None:
+        try:
+            for panel, model in self.catalog_models.items():
+                if not getattr(model, "loaded", False):
+                    continue
+                if panel == "tools":
+                    self.tools_model.refresh()
+                    continue
+                await self._load_catalog_model(panel)
+            if getattr(self.inventory_model, "loaded", False):
+                await self._load_inventory_model()
+        finally:
+            self._slow_refresh_running = False
 
     def on_key(self, event: events.Key) -> None:
         if len(self.screen_stack) > 1:
@@ -1419,24 +1469,49 @@ class DefenseClawTUI(App[None]):
         any other connector would yield an empty list and operator
         confusion.
 
-        E3: in a multi-connector install the gate follows the connector
-        filter so the tab tracks whatever catalog the operator is
-        looking at (Plugins body + ``set_class`` already follow it via
-        ``plugins_model.connector``). ``_connector_filter`` returns ""
-        for single-connector installs and the All state, so this falls back
-        to the active connector and behaviour is unchanged there.
+        E3/A4: in a multi-connector install the gate follows the connector
+        filter so the tab tracks whatever catalog the operator is looking at,
+        and under the merged "All" view it shows whenever OpenClaw is anywhere
+        in the active set — not just when it is the primary. Both the tab gate
+        (here) and the body/bar render gate route through
+        :meth:`_plugins_visible_for_connector` so they always agree.
         """
 
         if panel != "plugins":
             return False
-        gate_connector = self._connector_filter() or _active_connector(self.config)
-        return gate_connector.lower() != "openclaw"
+        return not self._plugins_visible_for_connector()
+
+    def _plugins_visible_for_connector(self) -> bool:
+        """Whether the Plugins panel is reachable for the current filter (A4).
+
+        Plugins are an OpenClaw-only concept, so the panel is shown only while
+        the operator is looking at OpenClaw's catalog:
+
+        * an explicit filter shows Plugins only when it is OpenClaw;
+        * under "All" (or a single-connector install) it shows when OpenClaw
+          is the resolved connector, or — in a multi-connector install — when
+          OpenClaw is *anywhere* in the active set.
+
+        The last clause is the A4 fix: the singular
+        ``PluginsPanelModel.is_visible_for_connector`` gate (fed the primary
+        connector under "All") hid Plugins whenever OpenClaw was
+        active-but-not-primary (e.g. roster ``[codex, openclaw]``). Resolving
+        from the active set here closes that without touching the catalog
+        state layer.
+        """
+
+        filt = self._connector_filter()
+        if filt:
+            return filt.lower() == "openclaw"
+        if "openclaw" in self._active_connector_names():
+            return True
+        return _active_connector(self.config).lower() == "openclaw"
 
     def _visible_panels(self) -> list[str]:
         """Ordered list of panel names that should currently be visible.
 
         Used by tab cycling and the compose-time tab filter so the two
-        always agree on what's reachable for the current connector.
+        always agree on what's reachable for the active connector set.
         """
 
         return [name for name, _key, _label in PANELS if not self._panel_hidden(name)]
@@ -1522,8 +1597,13 @@ class DefenseClawTUI(App[None]):
             tab.label = text
 
     def action_switch_panel(self, panel: str) -> None:
+        if panel not in PANEL_NAMES:
+            visible = self._visible_panels()
+            panel = visible[0] if visible else "overview"
         self.active_panel = panel
         self.help_open = False
+        if self.status_text.startswith("backend=textual  panel="):
+            self.status_text = ""
         self._render_chrome()
         # Persist the operator's last-active panel + clear the "unread"
         # badge for the panel they just opened. Best-effort: a failed
@@ -1680,6 +1760,13 @@ class DefenseClawTUI(App[None]):
     @on(Tabs.TabActivated, "#tabs")
     def _on_tab_activated(self, event: Tabs.TabActivated) -> None:
         if event.tab.id is None:
+            return
+        suppressed = self._suppressed_tab_activations.get(event.tab.id, 0)
+        if suppressed > 0:
+            if suppressed == 1:
+                self._suppressed_tab_activations.pop(event.tab.id, None)
+            else:
+                self._suppressed_tab_activations[event.tab.id] = suppressed - 1
             return
         panel = event.tab.id.removeprefix("tab-")
         if panel == self.active_panel:
@@ -2311,7 +2398,10 @@ class DefenseClawTUI(App[None]):
         except NoMatches:
             return
         tab_id = f"tab-{self.active_panel}"
-        if tabs.query(f"#{tab_id}"):
+        if tabs.active != tab_id and tabs.query(f"#{tab_id}"):
+            self._suppressed_tab_activations[tab_id] = (
+                self._suppressed_tab_activations.get(tab_id, 0) + 1
+            )
             tabs.active = tab_id
         # Refresh unread "(N)" badges on every tab whenever chrome
         # re-renders. Cheap (≤ 14 string updates) and keeps the tab
@@ -2443,7 +2533,7 @@ class DefenseClawTUI(App[None]):
         """
 
         global_section: list[tuple[str, str]] = [
-            ("1-9 / 0 / T V R A", "Switch panel by hotkey"),
+            ("1-9 / 0 / V R A", "Switch panel by hotkey"),
             ("Tab / Shift+Tab", "Next / previous panel"),
             (": or Ctrl+K", "Open command palette"),
             ("Ctrl+P", "Fuzzy panel jumper"),
@@ -2492,11 +2582,6 @@ class DefenseClawTUI(App[None]):
                 ("/", "Filter"),
                 ("r", "Refresh"),
                 ("s / b / a", "Scan / block / allow selected"),
-            ],
-            "tools": [
-                ("j/k or Up/Down", "Navigate items"),
-                ("/", "Filter"),
-                ("r", "Refresh"),
             ],
             "inventory": [
                 ("j/k or Up/Down", "Navigate items"),
@@ -2598,6 +2683,9 @@ class DefenseClawTUI(App[None]):
     def _body_text(self) -> str:
         self._table_columns = ()
         self._table_rows = ()
+        # E1: clear last render's chip click-map; panels that draw the chip
+        # repopulate it via :meth:`_connector_chip_text`.
+        self._chip_click_segments = []
         if self.help_open:
             self.body_text = self._render_help_body()
             return self.body_text
@@ -2659,7 +2747,7 @@ class DefenseClawTUI(App[None]):
             return self.body_text
         if self.active_panel in self.catalog_models:
             model = self.catalog_models[self.active_panel]
-            if self.active_panel == "plugins" and not self.plugins_model.is_visible_for_connector():
+            if self.active_panel == "plugins" and not self._plugins_visible_for_connector():
                 self.body_text = f"[bold #22D3EE]Plugins[/]\n\n{self.plugins_model.openclaw_only_notice()}"
                 return self.body_text
             self._sync_catalog_connector_filters()
@@ -2752,15 +2840,10 @@ class DefenseClawTUI(App[None]):
         ai.set_class(self.active_panel != "ai" or self.help_open, "hidden")
         skills.set_class(self.active_panel != "skills" or self.help_open, "hidden")
         mcps.set_class(self.active_panel != "mcps" or self.help_open, "hidden")
-        # ``plugins`` is hidden when the connector doesn't expose
-        # plugins (Codex / Claude). The body shows an explanatory
-        # "openclaw-only" notice; the bar would just dangle.
-        plugins_visible = (
-            self.active_panel == "plugins"
-            and not self.help_open
-            and self.plugins_model.is_visible_for_connector()
-        )
-        plugins.set_class(not plugins_visible, "hidden")
+        # Keep the plugins bar panel-scoped. When a connector cannot
+        # load plugins, the body renders an explanatory notice and the
+        # buttons naturally disable because no row is selected.
+        plugins.set_class(self.active_panel != "plugins" or self.help_open, "hidden")
         tools.set_class(self.active_panel != "tools" or self.help_open, "hidden")
         # Stdin pipe is panel-scoped to Activity but command-state-scoped
         # to "executor is busy" — handle it after the per-panel sync so
@@ -3095,8 +3178,27 @@ class DefenseClawTUI(App[None]):
         model = self.catalog_models.get(panel)
         if model is None:
             return
+        self._sync_catalog_cursor_from_table(panel)
         action = model.handle_key(key)
         self._apply_catalog_action(panel, action)
+
+    def _sync_catalog_cursor_from_table(self, panel: str) -> None:
+        """Use the visible table cursor as source of truth before row actions."""
+
+        if panel != self.active_panel:
+            return
+        model = self.catalog_models.get(panel)
+        if model is None or not self._table_rows:
+            return
+        try:
+            table = self.query_one("#panel-table", DataTable)
+        except NoMatches:
+            return
+        if table.has_class("hidden"):
+            return
+        cursor_row = getattr(table, "cursor_row", -1)
+        if 0 <= cursor_row < model.filtered_count():
+            model.set_cursor(cursor_row)
 
     def _sync_catalog_controls(self, panel: str) -> None:
         """Toggle catalog control-bar buttons to match panel state.
@@ -4210,6 +4312,47 @@ class DefenseClawTUI(App[None]):
         pack = (dict(cfg.connector_packs).get(connector) or "").strip()
         return " · ".join(part for part in (mode, pack) if part)
 
+    def _overview_connector_row(self, connector: str) -> ConnectorOverviewRow | None:
+        """Return the rendered Overview row for ``connector`` if it is active."""
+
+        want = (connector or "").strip().lower()
+        if not want:
+            return None
+        for row in self._overview_connector_rows():
+            if row.connector.strip().lower() == want:
+                return row
+        return None
+
+    def _connector_configuration_lines(self, connector: str) -> tuple[tuple[str, str], ...]:
+        """Connector-scoped CONFIGURATION rows for the filtered Overview."""
+
+        cfg = self.overview_model.cfg
+        row = self._overview_connector_row(connector)
+        mode = (row.mode if row else dict(cfg.connector_modes).get(connector, "")) if cfg else ""
+        rule_pack = (row.rule_pack if row else dict(cfg.connector_packs).get(connector, "")) if cfg else ""
+        status = (row.status if row else "") or "unknown"
+        last_activity = (row.last_activity if row else "") or "none"
+        disabled = bool(cfg and (cfg.connector_is_disabled(connector) or not cfg.guardrail_enabled))
+        guardrail_state = "disabled" if disabled else "enabled"
+        redaction = "ON (global redacted)" if cfg and not cfg.privacy_disable_redaction else "OFF (global RAW)"
+        if cfg and cfg.hilt_enabled:
+            approval = f"ON (global min {cfg.hilt_min_severity or 'HIGH'})"
+        else:
+            approval = "OFF (global)"
+        lines = [
+            ("Connector", f"{friendly_connector_name(connector)} ({connector})"),
+            ("Mode", mode or "?"),
+            ("Rule pack", rule_pack or "default"),
+            ("Guardrail", guardrail_state),
+            ("Status", status),
+            ("Last activity", last_activity),
+            ("Redaction", redaction),
+            ("Human approval", approval),
+        ]
+        if cfg and cfg.environment:
+            lines.append(("Environment", f"{cfg.environment} (global)"))
+        return tuple(lines)
+
     def _active_connector_names(self) -> list[str]:
         """Names of every active connector when more than one is configured.
 
@@ -4262,6 +4405,7 @@ class DefenseClawTUI(App[None]):
             self.skills_model,
             self.mcps_model,
             self.plugins_model,
+            self.tools_model,
             self.inventory_model,
         ):
             try:
@@ -4297,6 +4441,7 @@ class DefenseClawTUI(App[None]):
             self.skills_model,
             self.mcps_model,
             self.plugins_model,
+            self.tools_model,
             self.inventory_model,
         ):
             if hasattr(model, "show_connector_column"):
@@ -4311,8 +4456,16 @@ class DefenseClawTUI(App[None]):
         segment highlighted, plus a hint that ``m`` cycles the filter. Shown
         at the top of every filterable pane so the operator always knows the
         current scope and how to change it.
+
+        E1: as it builds the markup it also records each segment's visible
+        column span in ``self._chip_click_segments`` so a mouse click on the
+        chip can be resolved back to a connector (see
+        :meth:`_handle_body_chip_click`) without the crash-prone ``@click``
+        action-link markup. Labels are plain ASCII and the style tags are
+        zero-width, so the visible column == character offset.
         """
 
+        self._chip_click_segments = []
         segments = connector_filter_svc.chip_segments(
             self._connector_filter(), self._active_connector_names()
         )
@@ -4320,22 +4473,66 @@ class DefenseClawTUI(App[None]):
             return ""
         cfg = self.overview_model.cfg
         rendered: list[str] = []
-        for label, is_active in segments:
+        click_segments: list[tuple[int, int, str]] = []
+        # The chip line starts with the literal "Connector: " label.
+        col = len("Connector: ")
+        for index, (label, is_active) in enumerate(segments):
+            if index > 0:
+                col += 2  # the "  " join between rendered segments
             disabled = cfg is not None and cfg.connector_is_disabled(label)
             text = f"{label} (off)" if disabled else label
             if is_active:
                 rendered.append(
                     f"[{TOKENS.surface_base} on {TOKENS.accent_cyan}] {text} [/]"
                 )
+                visible = f" {text} "
             elif disabled:
                 rendered.append(f"[{TOKENS.text_muted}]{text}[/]")
+                visible = text
             else:
                 rendered.append(f"[{TOKENS.text_secondary}]{text}[/]")
+                visible = text
+            value = "" if label == connector_filter_svc.ALL_LABEL else label
+            click_segments.append((col, col + len(visible), value))
+            col += len(visible)
+        self._chip_click_segments = click_segments
         chip = "  ".join(rendered)
         return (
             f"[{TOKENS.text_secondary}]Connector:[/] {chip}  "
             f"[{TOKENS.text_muted}](press [bold]m[/] to filter)[/]\n\n"
         )
+
+    def _handle_body_chip_click(self, x: int, y: int) -> bool:
+        """Resolve a click on the ``#body`` Static to a connector chip action.
+
+        E1: returns True (and applies the filter) when ``(x, y)`` lands on a
+        chip segment of the connector chip. The clicked line is validated by
+        content — its plain text must begin with ``Connector:`` — so a click on
+        any other body line is ignored regardless of the chip's line offset
+        (it is line 0 on catalog/signal panes but follows a header elsewhere,
+        e.g. Inventory). A click on the chip line but outside a labelled
+        segment (the trailing hint) opens the filter picker as a fallback.
+        """
+
+        segments = self._chip_click_segments
+        if not segments:
+            return False
+        lines = self.body_text.split("\n")
+        if y < 0 or y >= len(lines):
+            return False
+        plain = re.sub(r"\[/?[^\[\]]*\]", "", lines[y])
+        if not plain.startswith("Connector:"):
+            return False
+        for start, end, value in segments:
+            if start <= x < end:
+                self._set_connector_filter(value)
+                return True
+        # On the chip line but between/after segments — offer the picker so the
+        # click is never a dead no-op.
+        if len(self._active_connector_names()) > 1:
+            self.run_worker(self._open_mode_picker(), exclusive=False, thread=False)
+            return True
+        return False
 
     def _sync_signal_connector_filters(self) -> None:
         """Push the shared connector filter + column flag to the signal panes.
@@ -5015,41 +5212,49 @@ class DefenseClawTUI(App[None]):
                 Text(detail, style=TOKENS.text_secondary),
             )
 
+        selected_connector = self._connector_filter()
+        selected_scan: dict[str, int] | None = None
+
         cfg_table = Table.grid(padding=(0, 2), expand=True)
         cfg_table.add_column(width=17, no_wrap=True)
         cfg_table.add_column(overflow="fold")
-        cfg_rows: list[tuple[str, RenderableType]] = [
-            ("Agent", Text(self.overview_model.active_connector_name())),
-            (
-                "Redaction",
-                Text.from_markup(
-                    f"[{TOKENS.accent_green}]ON (redacted)[/]"
-                    if cfg and not cfg.privacy_disable_redaction
-                    else f"[{TOKENS.accent_red}]OFF (RAW)[/]"
+        if selected_connector:
+            cfg_rows: list[tuple[str, RenderableType]] = [
+                (label, Text(value)) for label, value in self._connector_configuration_lines(selected_connector)
+            ]
+        else:
+            cfg_rows = [
+                ("Agent", Text(self.overview_model.active_connector_name())),
+                (
+                    "Redaction",
+                    Text.from_markup(
+                        f"[{TOKENS.accent_green}]ON (redacted)[/]"
+                        if cfg and not cfg.privacy_disable_redaction
+                        else f"[{TOKENS.accent_red}]OFF (RAW)[/]"
+                    ),
                 ),
-            ),
-            ("Policy posture", Text(_policy_posture(cfg))),
-            ("Enforcement", Text(_enforcement_label(cfg))),
-            (
-                "Human approval",
-                Text.from_markup(
-                    f"[{TOKENS.accent_green}]ON[/] (min {cfg.hilt_min_severity or 'HIGH'})"
-                    if cfg and cfg.hilt_enabled
-                    else f"[{TOKENS.text_muted}]OFF[/]"
+                ("Policy posture", Text(_policy_posture(cfg))),
+                ("Enforcement", Text(_enforcement_label(cfg))),
+                (
+                    "Human approval",
+                    Text.from_markup(
+                        f"[{TOKENS.accent_green}]ON[/] (min {cfg.hilt_min_severity or 'HIGH'})"
+                        if cfg and cfg.hilt_enabled
+                        else f"[{TOKENS.text_muted}]OFF[/]"
+                    ),
                 ),
-            ),
-            ("Environment", Text((cfg.environment if cfg else "") or "unknown")),
-            ("Policy dir", Text((cfg.policy_dir if cfg else "") or "—")),
-            ("Data dir", Text((cfg.data_dir if cfg else "") or "—")),
-        ]
-        # 8.13: when more than one connector is active, replace the
-        # primary-only "Agent: <connector>" line with a concise
-        # "Agents: N active" header. The full per-connector roster (mode,
-        # rule pack, status, live counts) now lives in the dedicated
-        # CONNECTORS table below, so we don't duplicate it here. No-op for
-        # the common single-connector install.
+                ("Environment", Text((cfg.environment if cfg else "") or "unknown")),
+                ("Policy dir", Text((cfg.policy_dir if cfg else "") or "—")),
+                ("Data dir", Text((cfg.data_dir if cfg else "") or "—")),
+            ]
+            # 8.13: when more than one connector is active, replace the
+            # primary-only "Agent: <connector>" line with a concise
+            # "Agents: N active" header. The full per-connector roster (mode,
+            # rule pack, status, live counts) now lives in the dedicated
+            # CONNECTORS table below, so we don't duplicate it here. No-op for
+            # the common single-connector install.
         overview_connector_rows = self._overview_connector_rows()
-        if overview_connector_rows:
+        if overview_connector_rows and not selected_connector:
             cfg_rows[0] = (
                 "Agents",
                 Text(f"{len(overview_connector_rows)} active", style=TOKENS.text_secondary),
@@ -5057,11 +5262,18 @@ class DefenseClawTUI(App[None]):
         llm_provider = (cfg.llm_provider if cfg else "") or (cfg.inspect_llm_provider if cfg else "")
         llm_model = (cfg.llm_model if cfg else "") or (cfg.inspect_llm_model if cfg else "")
         if llm_provider:
-            cfg_rows.append(("LLM provider", Text(llm_provider)))
+            label = f"{llm_provider} (global)" if selected_connector else llm_provider
+            cfg_rows.append(("LLM provider", Text(label)))
         if llm_model:
-            cfg_rows.append(("LLM model", Text(llm_model)))
+            label = f"{llm_model} (global)" if selected_connector else llm_model
+            cfg_rows.append(("LLM model", Text(label)))
         if cfg and cfg.cisco_ai_defense_endpoint:
-            cfg_rows.append(("AI Defense", Text(cfg.cisco_ai_defense_endpoint)))
+            label = (
+                f"{cfg.cisco_ai_defense_endpoint} (global)"
+                if selected_connector
+                else cfg.cisco_ai_defense_endpoint
+            )
+            cfg_rows.append(("AI Defense", Text(label)))
         for label, value in cfg_rows:
             cfg_table.add_row(Text(label, style=TOKENS.text_secondary), value)
 
@@ -5070,11 +5282,10 @@ class DefenseClawTUI(App[None]):
         enf_table.add_column(overflow="fold")
         # 8.13: when a connector is selected the ENFORCEMENT panel narrows to
         # that connector's real Alerts/Hook calls/Blocks (the connector-
-        # attributed hook stream — same source as the CONNECTORS table). The
-        # install/scan rows below stay but are tagged "(gateway-wide)" because
-        # the audit DB doesn't attribute them per connector. "All" keeps the
-        # original global numbers.
-        enf_selected = self._connector_filter()
+        # attributed hook stream — same source as the CONNECTORS table) plus
+        # per-connector inventory scan coverage. "All" keeps the original
+        # global numbers.
+        enf_selected = selected_connector
         if enf_selected:
             calls_n, alert_n, block_n = self._enforcement_connector_breakdown(enf_selected)
             alerts_color = TOKENS.accent_red if alert_n else TOKENS.accent_green
@@ -5112,8 +5323,8 @@ class DefenseClawTUI(App[None]):
             # aibom snapshot (not the gateway-wide audit totals). Loads lazily,
             # so show "scan pending" + trigger a one-shot load until it lands.
             self._request_enforcement_inventory(enf_selected)
-            scan = self._connector_scan_metrics(enf_selected)
-            if scan is None:
+            selected_scan = self._connector_scan_metrics(enf_selected)
+            if selected_scan is None:
                 enf_table.add_row(
                     Text("Skills", style=TOKENS.text_secondary),
                     Text.from_markup(f"[{TOKENS.text_muted}]scan pending — loading inventory…[/]"),
@@ -5122,19 +5333,19 @@ class DefenseClawTUI(App[None]):
                 enf_table.add_row(
                     Text("Skills", style=TOKENS.text_secondary),
                     Text.from_markup(
-                        f"[{TOKENS.text_primary}]{scan['skills']}[/]   "
-                        f"[{TOKENS.accent_red}]{scan['skills_blocked']}[/] blocked   "
-                        f"[{TOKENS.accent_green}]{scan['skills_allowed']}[/] allowed"
+                        f"[{TOKENS.text_primary}]{selected_scan['skills']}[/]   "
+                        f"[{TOKENS.accent_red}]{selected_scan['skills_blocked']}[/] blocked   "
+                        f"[{TOKENS.accent_green}]{selected_scan['skills_allowed']}[/] allowed"
                     ),
                 )
                 enf_table.add_row(
                     Text("MCPs", style=TOKENS.text_secondary),
-                    Text.from_markup(f"[{TOKENS.text_primary}]{scan['mcps']}[/] configured"),
+                    Text.from_markup(f"[{TOKENS.text_primary}]{selected_scan['mcps']}[/] configured"),
                 )
                 enf_table.add_row(
                     Text("Scanned", style=TOKENS.text_secondary),
                     Text.from_markup(
-                        f"[{TOKENS.accent_green}]{scan['scanned']}[/]/{scan['scannable']} assets"
+                        f"[{TOKENS.accent_green}]{selected_scan['scanned']}[/]/{selected_scan['scannable']} assets"
                     ),
                 )
         else:
@@ -5208,9 +5419,25 @@ class DefenseClawTUI(App[None]):
         # is the enforcement policy the scanners apply — surface that as a
         # context row when a connector is selected.
         if enf_selected:
+            context_rows: list[tuple[str, str, str, str]] = []
             policy_label = self._connector_policy_label(enf_selected)
             if policy_label:
-                scanner_rows.insert(0, ("policy", policy_label, TOKENS.accent_cyan, "●"))
+                context_rows.append(("policy", policy_label, TOKENS.accent_cyan, "●"))
+            if selected_scan is None:
+                context_rows.append(("coverage", "scan pending", TOKENS.text_muted, "○"))
+            else:
+                scannable = selected_scan["scannable"]
+                scanned = selected_scan["scanned"]
+                complete = scannable > 0 and scanned >= scannable
+                context_rows.append(
+                    (
+                        "coverage",
+                        f"{scanned}/{scannable} assets",
+                        TOKENS.accent_green if complete else TOKENS.accent_amber,
+                        "●" if complete else "○",
+                    ),
+                )
+            scanner_rows = [*context_rows, *scanner_rows]
         for label, value, color, dot in scanner_rows:
             sc_table.add_row(
                 Text(dot, style=color),
@@ -5323,7 +5550,10 @@ class DefenseClawTUI(App[None]):
         )
         cfg_panel = Panel(
             cfg_table,
-            title=Text("CONFIGURATION", style=f"bold {TOKENS.accent_blue}"),
+            title=Text(
+                f"CONFIGURATION · {selected_connector}" if selected_connector else "CONFIGURATION",
+                style=f"bold {TOKENS.accent_blue}",
+            ),
             title_align="left",
             border_style=TOKENS.accent_blue,
             padding=(0, 1),
@@ -5340,7 +5570,10 @@ class DefenseClawTUI(App[None]):
         )
         sc_panel = Panel(
             sc_table,
-            title=Text("SCANNERS", style=f"bold {TOKENS.accent_orange}"),
+            title=Text(
+                f"SCANNERS · {selected_connector}" if selected_connector else "SCANNERS",
+                style=f"bold {TOKENS.accent_orange}",
+            ),
             title_align="left",
             border_style=TOKENS.accent_orange,
             padding=(0, 1),
@@ -5541,20 +5774,24 @@ class DefenseClawTUI(App[None]):
         if not notice_lines:
             notice_lines.append(f"[{TOKENS.accent_green}][OK][/] Runtime signals are quiet.")
 
-        config_lines = [
-            ("Agent", self.overview_model.active_connector_name()),
-            (
-                "Redaction",
-                "ON - prompts and outputs are redacted" if cfg and not cfg.privacy_disable_redaction else "OFF",
-            ),
-            ("Policy posture", _policy_posture(cfg)),
-            ("Enforcement", _enforcement_label(cfg)),
-            ("Environment", (cfg.environment if cfg else "") or "unknown"),
-            ("LLM provider", (cfg.llm_provider if cfg else "") or "-"),
-            ("LLM model", (cfg.llm_model if cfg else "") or "-"),
-        ]
+        enf_selected = self._connector_filter()
+        if enf_selected:
+            config_lines = list(self._connector_configuration_lines(enf_selected))
+        else:
+            config_lines = [
+                ("Agent", self.overview_model.active_connector_name()),
+                (
+                    "Redaction",
+                    "ON - prompts and outputs are redacted" if cfg and not cfg.privacy_disable_redaction else "OFF",
+                ),
+                ("Policy posture", _policy_posture(cfg)),
+                ("Enforcement", _enforcement_label(cfg)),
+                ("Environment", (cfg.environment if cfg else "") or "unknown"),
+                ("LLM provider", (cfg.llm_provider if cfg else "") or "-"),
+                ("LLM model", (cfg.llm_model if cfg else "") or "-"),
+            ]
         overview_connector_rows = self._overview_connector_rows()
-        if overview_connector_rows:
+        if overview_connector_rows and not enf_selected:
             # Multi: replace the redundant "Agent: <primary>" line (index 0)
             # with a unified "Agents: N active" header. The per-connector
             # detail lives in the CONNECTORS section appended below.
@@ -5574,13 +5811,13 @@ class DefenseClawTUI(App[None]):
         ]
         services_text = "\n".join(_overview_state_line(name, state, detail) for name, state, detail in scanner_lines)
 
-        enf_selected = self._connector_filter()
         silent_line = (
             f"  Silent bypass   [{TOKENS.accent_red} bold]{self.overview_model.silent_bypass}[/] "
             f"[{TOKENS.text_muted}](see Alerts -> egress)[/]\n"
             if self.overview_model.silent_bypass > 0
             else ""
         )
+        selected_scan: dict[str, int] | None = None
         if enf_selected:
             # Per-connector: hook decisions from the audit stream + Skills/MCPs/
             # scan coverage from this connector's own aibom snapshot (loads
@@ -5589,16 +5826,16 @@ class DefenseClawTUI(App[None]):
             calls_n, alert_n, block_n = self._enforcement_connector_breakdown(enf_selected)
             alert_color = TOKENS.accent_red if alert_n else TOKENS.accent_green
             block_color = TOKENS.accent_red if block_n else TOKENS.text_secondary
-            scan = self._connector_scan_metrics(enf_selected)
-            if scan is None:
+            selected_scan = self._connector_scan_metrics(enf_selected)
+            if selected_scan is None:
                 scan_lines = f"  Skills           [{TOKENS.text_muted}]scan pending — loading inventory…[/]\n"
             else:
                 scan_lines = (
-                    f"  Skills           [{TOKENS.text_primary}]{scan['skills']}[/]   "
-                    f"[{TOKENS.accent_red}]{scan['skills_blocked']}[/] blocked   "
-                    f"[{TOKENS.accent_green}]{scan['skills_allowed']}[/] allowed\n"
-                    f"  MCPs             [{TOKENS.text_primary}]{scan['mcps']}[/] configured\n"
-                    f"  Scanned          [{TOKENS.accent_green}]{scan['scanned']}[/]/{scan['scannable']} assets\n"
+                    f"  Skills           [{TOKENS.text_primary}]{selected_scan['skills']}[/]   "
+                    f"[{TOKENS.accent_red}]{selected_scan['skills_blocked']}[/] blocked   "
+                    f"[{TOKENS.accent_green}]{selected_scan['skills_allowed']}[/] allowed\n"
+                    f"  MCPs             [{TOKENS.text_primary}]{selected_scan['mcps']}[/] configured\n"
+                    f"  Scanned          [{TOKENS.accent_green}]{selected_scan['scanned']}[/]/{selected_scan['scannable']} assets\n"
                 )
             enforcement_text = (
                 f"  Alerts           [{alert_color} bold]{alert_n}[/]   "
@@ -5653,6 +5890,21 @@ class DefenseClawTUI(App[None]):
             keys_line = keys.label or "all required set"
         else:
             keys_line = "not checked yet - press 0 for Setup, then r to refresh credentials"
+        scanner_override_summary = self.overview_model.scanner_overrides_summary()
+        scanner_override_line = (
+            f"  overrides      {rich_escape(scanner_override_summary)}\n" if scanner_override_summary else ""
+        )
+        scanner_context = ""
+        if enf_selected:
+            policy_label = self._connector_policy_label(enf_selected)
+            if policy_label:
+                scanner_context += f"  policy         {policy_label}\n"
+            if selected_scan is None:
+                scanner_context += "  coverage       scan pending\n"
+            else:
+                scanner_context += (
+                    f"  coverage       {selected_scan['scanned']}/{selected_scan['scannable']} assets\n"
+                )
         # Escape the lowercase hotkey labels: Rich parses ``[s]`` /
         # ``[d]`` / ``[i]`` / ``[g]`` / ``[m]`` / ``[l]`` as opening
         # style tags and silently drops the bracketed text from the
@@ -5671,15 +5923,26 @@ class DefenseClawTUI(App[None]):
             + "\n".join(notice_lines)
             + "\n\n"
             f"[bold {TOKENS.accent_blue}]SERVICES[/]\n{services_text}\n\n"
-            f"[bold {TOKENS.accent_amber}]ENFORCEMENT[/]\n{enforcement_text}\n\n"
-            f"[bold {TOKENS.accent_green}]CONFIGURATION[/]\n{config_text}\n\n"
-            + connectors_text
-            + f"[bold {TOKENS.accent_orange}]SCANNERS[/]\n"
             + (
-                f"  policy         {self._connector_policy_label(enf_selected)}\n"
-                if enf_selected and self._connector_policy_label(enf_selected)
-                else ""
+                f"[bold {TOKENS.accent_amber}]ENFORCEMENT · {enf_selected}[/]\n"
+                if enf_selected
+                else f"[bold {TOKENS.accent_amber}]ENFORCEMENT[/]\n"
             )
+            + f"{enforcement_text}\n\n"
+            + (
+                f"[bold {TOKENS.accent_green}]CONFIGURATION · {enf_selected}[/]\n"
+                if enf_selected
+                else f"[bold {TOKENS.accent_green}]CONFIGURATION[/]\n"
+            )
+            + f"{config_text}\n\n"
+            + connectors_text
+            + (
+                f"[bold {TOKENS.accent_orange}]SCANNERS · {enf_selected}[/]\n"
+                if enf_selected
+                else f"[bold {TOKENS.accent_orange}]SCANNERS[/]\n"
+            )
+            + scanner_context
+            + scanner_override_line
             + f"  skill-scanner  {'installed' if self.overview_model.skill_scanner_available else 'missing'}\n"
             f"  credentials    {keys_line}\n\n"
             f"[bold {TOKENS.accent_pink}]DOCTOR[/]  {doctor_summary}\n" + "\n".join(doctor_lines) + "\n\n"
@@ -5835,19 +6098,27 @@ class DefenseClawTUI(App[None]):
         target = path or Path("defenseclaw-audit-export.json")
         if not target.is_absolute():
             target = (self.data_dir or Path.cwd()) / target
-        rows = [
-            {
-                "id": event.id,
-                "timestamp": event.timestamp.isoformat(),
-                "action": event.action,
-                "target": event.target,
-                "actor": event.actor,
-                "details": event.details,
-                "severity": event.severity,
-                "run_id": event.run_id,
-            }
-            for event in self.audit_model.filtered
-        ]
+        rows = []
+        store = getattr(self.audit_model, "store", None)
+        for event in self.audit_model.filtered:
+            full_event = event
+            if store is not None and hasattr(store, "get_event"):
+                try:
+                    full_event = store.get_event(event.id) or event  # type: ignore[attr-defined]
+                except Exception:  # noqa: BLE001 - export the visible row if hydration fails.
+                    full_event = event
+            rows.append(
+                {
+                    "id": full_event.id,
+                    "timestamp": full_event.timestamp.isoformat(),
+                    "action": full_event.action,
+                    "target": full_event.target,
+                    "actor": full_event.actor,
+                    "details": full_event.details,
+                    "severity": full_event.severity,
+                    "run_id": full_event.run_id,
+                }
+            )
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(json.dumps(rows, indent=2), encoding="utf-8")
         # F-0781: audit exports can carry sensitive identifiers (targets,
@@ -6166,7 +6437,10 @@ class DefenseClawTUI(App[None]):
             if key == "m" and len(self._active_connector_names()) > 1:
                 self.run_worker(self._open_mode_picker(), exclusive=False, thread=False)
                 return True
-            action = self.catalog_models[self.active_panel].handle_key(_catalog_key(key))
+            catalog_key = _catalog_key(key)
+            if catalog_key not in {"j", "k", "up", "down", "esc", "r"}:
+                self._sync_catalog_cursor_from_table(self.active_panel)
+            action = self.catalog_models[self.active_panel].handle_key(catalog_key)
             return self._apply_catalog_action(self.active_panel, action)
         if self.active_panel == "logs":
             if key == "enter" and not self.logs_model.searching:
@@ -6504,7 +6778,9 @@ class DefenseClawTUI(App[None]):
         return ("Wizard", "Status", "Command", "Description"), tuple(rows)
 
     def _setup_body_text(self) -> str:
+        self._chip_click_segments = []
         if self.first_run_model.active:
+            self._chip_click_segments = []
             return (
                 "[bold #22D3EE]DefenseClaw first-run setup[/]\n"
                 f"{self.first_run_model.empty_state()}\n\n"
@@ -6585,16 +6861,15 @@ class DefenseClawTUI(App[None]):
                 "Keys: tab/shift+tab section, up/down field, enter/space cycle, type/backspace edit, "
                 "S save, R revert, w wizards."
             ).strip()
-        readiness = "\n".join(
-            f"{check.status.upper()}: {check.title} - {check.detail}" for check in self.setup_model.readiness_checks[:8]
-        )
+        readiness_rows = self.setup_model.readiness_checks
+        readiness = "\n".join(f"{check.status.upper()}: {check.title} - {check.detail}" for check in readiness_rows[:8])
         credentials = self.setup_model.credential_empty_state()
         suffix = f"\n\n{credentials}" if credentials else ""
         info = self.setup_model.active_wizard_info()
         focused = self.setup_model.focused_row_metadata()
         return (
             "[bold #22D3EE]Setup Wizards[/]\n"
-            f"Active: {info.name} - {info.description}\n"
+            f"Selected workflow: {info.name} - {info.description}\n"
             f"{info.how_to}\n"
             f"Focused action: {focused.action.hotkey if focused.action else 'Enter'} "
             f"{focused.action.description if focused.action else ''}\n"
@@ -6948,7 +7223,15 @@ class DefenseClawTUI(App[None]):
         model = self.mcps_model
         selected = model.selected()
         initial_name = selected.name if selected is not None else ""
-        result = await self.push_screen_wait(MCPSetFormScreen(initial_name=initial_name))
+        # B10: scope the add/update to the focused connector. ``action_connector``
+        # prefers the selected row's owning connector (editing an existing MCP)
+        # and falls back to the active filter (adding under a filtered view),
+        # ultimately "" under the merged "All" view, so the form writes
+        # ``--connector`` instead of silently defaulting to the primary.
+        connector = model.action_connector(selected)
+        result = await self.push_screen_wait(
+            MCPSetFormScreen(initial_name=initial_name, connector=connector)
+        )
         if result is None:
             self._set_status("MCP set cancelled.")
             return
@@ -7089,6 +7372,20 @@ class DefenseClawTUI(App[None]):
             self.setup_model.mark_wizard_complete(args, success=True)
         elif command == "doctor":
             self._load_doctor_cache()
+        elif panel := _catalog_panel_invalidated_by_command(args):
+            await self._refresh_loaded_catalog_after_mutation(panel)
+
+    async def _refresh_loaded_catalog_after_mutation(self, panel: str) -> None:
+        """Reload an already-opened catalog after a successful row mutation."""
+
+        model = self.catalog_models.get(panel)
+        if model is None or not getattr(model, "loaded", False):
+            return
+        if panel == "tools":
+            self.tools_model.refresh()
+            self._render_chrome()
+            return
+        await self._load_catalog_model(panel)
 
     def _refresh_cached_config(self) -> None:
         """Full reload-from-disk after ``setup``/``init``/``sandbox``/``registry``.
@@ -7206,11 +7503,20 @@ class DefenseClawTUI(App[None]):
             return
         if _gateway_api_port(self.config) <= 0:
             return
+        if self._credentials_refresh_running:
+            return
+        self._credentials_refresh_running = True
         self.run_worker(
-            self._load_setup_credentials(),
+            self._refresh_credentials_once(),
             exclusive=False,
             thread=False,
         )
+
+    async def _refresh_credentials_once(self) -> None:
+        try:
+            await self._load_setup_credentials()
+        finally:
+            self._credentials_refresh_running = False
 
     async def _load_setup_credentials(self) -> None:
         try:
@@ -7353,7 +7659,7 @@ class DefenseClawTUI(App[None]):
         if choice is None:
             self._set_status("Mode switch cancelled.")
             return
-        args, display = connector_setup_command_for_mode(choice)
+        args, display = connector_setup_command(choice)
         if not args:
             self._set_status(f"No setup command available for connector {choice}.")
             return
@@ -7380,6 +7686,7 @@ class DefenseClawTUI(App[None]):
         """
 
         current = self._connector_filter()
+        selected_index = connectors.index(current) + 1 if current in connectors else 0
         actions: list[MenuAction] = []
         all_marker = "  ← current" if not current else ""
         actions.append(
@@ -7412,6 +7719,7 @@ class DefenseClawTUI(App[None]):
                 "Filter by Connector",
                 tuple(actions),
                 subtitle="Applies across Overview, Alerts, Audit, Logs",
+                selected_index=selected_index,
             )
         )
         if choice is None:
@@ -7582,6 +7890,16 @@ class DefenseClawTUI(App[None]):
         self._render_chrome()
 
     async def _confirm_and_run_intent(self, intent: Any) -> None:
+        # N1: a catalog intent that flags itself ``risk="destructive"`` (today
+        # only plugin remove, which deletes files from disk) is confirmed
+        # through the C1 consequence danger-modal — red border + an explicit
+        # second confirm (re-press) — instead of the one-step command preview,
+        # so a single keypress/click can't delete. Typed/palette destructive
+        # commands keep the standard preview path (they reach
+        # ``_confirm_and_run_parsed`` directly, not through here).
+        if getattr(intent, "risk", "read-only") == "destructive":
+            await self._confirm_and_run_destructive_intent(intent)
+            return
         parsed = ParsedCommand(
             binary=intent.binary,
             args=tuple(intent.args),
@@ -7596,6 +7914,61 @@ class DefenseClawTUI(App[None]):
         # command finishes. The follow-ups themselves are queued through
         # the same confirm-and-run path so the user still sees the
         # preview screen and live output.
+        for follow_up in getattr(intent, "follow_up", ()) or ():
+            await self._confirm_and_run_intent(follow_up)
+
+    def _destructive_intent_modal(self, intent: Any) -> ConsequenceModalModel:
+        """Build the C1 consequence modal for a destructive catalog intent (N1).
+
+        A single ``danger`` action carries the command; the consequence modal
+        paints a red border and requires the danger re-press before it
+        dismisses with the action, so the dispatch only fires on an explicit
+        second confirm.
+        """
+
+        command_line = " ".join((intent.binary, *intent.args))
+        return ConsequenceModalModel(
+            title=f"Confirm: {intent.label}",
+            summary="This is a destructive action and cannot be undone.",
+            details=(f"Will run: {command_line}",),
+            consequence="This deletes files from disk.",
+            actions=(
+                ConsequenceAction(
+                    action_id="run",
+                    hotkey="d",
+                    label=intent.label,
+                    description="Runs the command and deletes the files from disk.",
+                    variant="error",
+                    danger=True,
+                ),
+            ),
+            default_action_id="run",
+            border_color=TOKENS.accent_red,
+        )
+
+    async def _confirm_and_run_destructive_intent(self, intent: Any) -> None:
+        chosen = await self.push_screen_wait(
+            ConsequenceModalScreen(self._destructive_intent_modal(intent))
+        )
+        if chosen is None:
+            self._write_activity(f"[#FBBF24]Cancelled:[/] {intent.label}")
+            self._set_status("Command cancelled.")
+            return
+        # Confirmed (and danger-re-pressed): jump to Activity where the live
+        # output is visible, record the alias in the palette MRU, then run.
+        if self.active_panel != "activity":
+            self.action_switch_panel("activity")
+        try:
+            self.state_store.record_command(intent.label)
+            self.state = self.state_store.state
+            self.state_store.save()
+        except Exception:  # noqa: BLE001 - palette MRU is cosmetic
+            pass
+        self.run_worker(
+            self._run_command(intent.binary, tuple(intent.args), display_name=intent.label),
+            exclusive=False,
+            thread=False,
+        )
         for follow_up in getattr(intent, "follow_up", ()) or ():
             await self._confirm_and_run_intent(follow_up)
 
@@ -7735,8 +8108,11 @@ class DefenseClawTUI(App[None]):
         api_port = _gateway_api_port(self.config)
         if api_port <= 0:
             return
+        if self._health_poll_running:
+            return
+        self._health_poll_running = True
         self.run_worker(
-            self._poll_health(),
+            self._poll_health_once(),
             exclusive=False,
             thread=False,
         )
@@ -7749,11 +8125,26 @@ class DefenseClawTUI(App[None]):
         api_port = _gateway_api_port(self.config)
         if api_port <= 0:
             return
+        if self._ai_usage_poll_running:
+            return
+        self._ai_usage_poll_running = True
         self.run_worker(
-            self._poll_ai_usage(force_render=False),
+            self._poll_ai_usage_once(force_render=False),
             exclusive=False,
             thread=False,
         )
+
+    async def _poll_health_once(self) -> None:
+        try:
+            await self._poll_health()
+        finally:
+            self._health_poll_running = False
+
+    async def _poll_ai_usage_once(self, *, force_render: bool) -> None:
+        try:
+            await self._poll_ai_usage(force_render=force_render)
+        finally:
+            self._ai_usage_poll_running = False
 
     async def _poll_health(self) -> None:
         # Use the configured token + host so a gateway that requires
@@ -8002,54 +8393,28 @@ class DefenseClawTUI(App[None]):
             return (), str(exc)
 
     def _load_audit_alerts(self) -> None:
-        audit_db = str(getattr(self.config, "audit_db", "") or "")
-        if not audit_db or not Path(audit_db).exists():
-            return
-        try:
-            from defenseclaw.db import Store
+        """Mirror loaded alert counts into Overview without heavy DB scans."""
 
-            store = Store(audit_db)
+        active_alerts = self.alerts_model.alert_count()
+        current = self.overview_model.enforcement
+        store = getattr(self.alerts_model, "store", None) or getattr(self.audit_model, "store", None)
+        if store is not None and hasattr(store, "get_enforcement_counts"):
             try:
-                self.alerts_model.set_events(
-                    [
-                        AlertEvent(
-                            id=event.id,
-                            severity=event.severity,
-                            action=event.action,
-                            target=event.target,
-                            details=event.details,
-                            timestamp=event.timestamp,
-                        )
-                        for event in store.list_alerts(500)
-                    ]
+                current = store.get_enforcement_counts()  # type: ignore[attr-defined]
+            except Exception as count_exc:  # noqa: BLE001 - degraded counts must not break alerts.
+                self._write_activity(
+                    f"[#FBBF24]enforcement counts unavailable:[/] {count_exc}"
                 )
-                # Mirror Go TUI: Overview ENFORCEMENT counters come from
-                # the same audit Store on every refresh. Without this
-                # call the panel stays pinned at 0/0/0/0 even after
-                # real scans land in the DB. Reusing the already-open
-                # Store keeps this on the same I/O budget as the alerts
-                # query above.
-                try:
-                    counts = store.get_counts()
-                except Exception as count_exc:  # noqa: BLE001 - degraded counts must not break alerts.
-                    self._write_activity(
-                        f"[#FBBF24]enforcement counts unavailable:[/] {count_exc}"
-                    )
-                else:
-                    self.overview_model.set_enforcement_counts(
-                        EnforcementCounts(
-                            blocked_skills=counts.blocked_skills,
-                            allowed_skills=counts.allowed_skills,
-                            blocked_mcps=counts.blocked_mcps,
-                            allowed_mcps=counts.allowed_mcps,
-                            total_scans=counts.total_scans,
-                            active_alerts=counts.alerts,
-                        )
-                    )
-            finally:
-                store.close()
-        except Exception as exc:  # noqa: BLE001 - the TUI must still open when the audit DB is unavailable.
-            self._write_activity(f"[#FBBF24]alerts unavailable:[/] {exc}")
+        self.overview_model.set_enforcement_counts(
+            EnforcementCounts(
+                blocked_skills=current.blocked_skills,
+                allowed_skills=current.allowed_skills,
+                blocked_mcps=current.blocked_mcps,
+                allowed_mcps=current.allowed_mcps,
+                total_scans=current.total_scans,
+                active_alerts=active_alerts,
+            )
+        )
 
 
 def _resolve_active_connector(snapshot: HealthSnapshot | None, mode: str) -> str:
@@ -8067,7 +8432,7 @@ def _resolve_active_connector(snapshot: HealthSnapshot | None, mode: str) -> str
             return name
     if mode and mode.strip():
         return mode.strip()
-    return "openclaw"
+    return ""
 
 
 def _registry_attribution_from_config(config: object | None, kind: str) -> dict[str, str] | None:
@@ -8236,19 +8601,19 @@ def _parse_timestamp(value: object) -> datetime | None:
 
 def _active_connector(config: object | None) -> str:
     if config is None:
-        return "openclaw"
+        return ""
     active = getattr(config, "active_connector", None)
     if callable(active):
         try:
-            return str(active())
+            return str(active() or "").strip()
         except Exception:  # noqa: BLE001 - connector name is cosmetic in the shell.
-            return "openclaw"
+            return ""
     guardrail = getattr(config, "guardrail", None)
     connector = str(getattr(guardrail, "connector", "") or "").strip()
     if connector:
         return connector
     claw = getattr(config, "claw", None)
-    return str(getattr(claw, "mode", "") or "openclaw").strip() or "openclaw"
+    return str(getattr(claw, "mode", "") or "").strip()
 
 
 def _redaction_currently_disabled(config: object | None) -> bool:
@@ -8308,6 +8673,55 @@ def _audit_store(config: object | None) -> object | None:
         return None
 
 
+def _flatten_scanner_overrides(
+    overrides: object,
+) -> tuple[tuple[str, str, str, str], ...]:
+    """Flatten a ``data.json`` ``scanner_overrides`` block (N3).
+
+    Input shape: ``{scanner_type: {severity: {install|file|runtime: action}}}``
+    (what ``policy show`` reads). Output: ``(scanner_type, severity, surface,
+    action)`` tuples for :func:`format_scanner_overrides_summary`. Malformed
+    branches are skipped so a bad payload degrades to a partial list, never a
+    raise.
+    """
+
+    flat: list[tuple[str, str, str, str]] = []
+    if not isinstance(overrides, dict):
+        return ()
+    for scanner_type, sevs in overrides.items():
+        if not isinstance(sevs, dict):
+            continue
+        for severity, surface_actions in sevs.items():
+            if not isinstance(surface_actions, dict):
+                continue
+            for surface in ("install", "file", "runtime"):
+                action = surface_actions.get(surface)
+                if action:
+                    flat.append((str(scanner_type), str(severity), surface, str(action)))
+    return tuple(flat)
+
+
+def _active_policy_scanner_overrides(
+    policy_dir: str,
+) -> tuple[tuple[str, str, str, str], ...]:
+    """Read the active policy's synced ``data.json`` scanner overrides (N3).
+
+    Uses the same reader as the enforcement lane (``rego/data.json``, with the
+    flat ``data.json`` fallback). Any read/parse failure degrades to an empty
+    tuple so the Overview simply renders nothing.
+    """
+
+    try:
+        from defenseclaw.enforce.admission import _read_policy_data
+
+        data = _read_policy_data(policy_dir or "")
+    except Exception:  # noqa: BLE001 - the override summary is purely informational.
+        return ()
+    if not isinstance(data, dict):
+        return ()
+    return _flatten_scanner_overrides(data.get("scanner_overrides", {}))
+
+
 def _overview_config(config: object | None) -> OverviewConfig | None:
     if config is None:
         return None
@@ -8325,31 +8739,48 @@ def _overview_config(config: object | None) -> OverviewConfig | None:
     connector_modes: tuple[tuple[str, str], ...] = ()
     connector_packs: tuple[tuple[str, str], ...] = ()
     connector_disabled: tuple[str, ...] = ()
+    # A2: resolve the active set in its own guarded step. `active_connectors()`
+    # normalizes every key, so a single malformed/alias key can raise — and the
+    # previous single broad `except` then collapsed the whole roster to (),
+    # silently dropping the connector chip, stopping `m` cycling, and hiding
+    # every per-connector tile. Guard the enumeration here; if it fails we
+    # degrade to a single-connector view instead of swallowing the roster
+    # together with any later error. The TUI subtree has no stderr logger, so
+    # rather than fail silently we stash the reason in `OverviewConfig.roster_error`
+    # and the Overview surfaces it as a visible error notice (build_notices).
+    roster_error = ""
     try:
         actives = config.active_connectors() if hasattr(config, "active_connectors") else []
         actives = [c for c in actives if c]
-        if len(actives) > 1:
-            pairs: list[tuple[str, str]] = []
-            packs: list[tuple[str, str]] = []
-            disabled: list[str] = []
-            for conn in actives:
+    except Exception as exc:  # noqa: BLE001 - a bad connector key must not blank the roster.
+        actives = []
+        roster_error = f"Connector roster unavailable: {exc}"
+    if len(actives) > 1:
+        pairs: list[tuple[str, str]] = []
+        packs: list[tuple[str, str]] = []
+        disabled: list[str] = []
+        # Build the roster incrementally: each connector is processed in its
+        # own guard so one bad connector is skipped, not fatal to the rest
+        # (the partial roster survives instead of zeroing).
+        for conn in actives:
+            try:
+                norm = conn.strip().lower()
                 # A connector turned off via `guardrail disable --connector X`
                 # stays in the roster (so its history is filterable) but is
                 # marked DISABLED. effective_enabled honors the per-connector
                 # kill switch; unset/True means enforcing.
+                is_disabled = False
                 if guardrail is not None and hasattr(guardrail, "effective_enabled"):
                     try:
-                        if not guardrail.effective_enabled(conn):
-                            disabled.append(conn.strip().lower())
+                        is_disabled = not guardrail.effective_enabled(conn)
                     except Exception:
-                        pass
+                        is_disabled = False
                 mode = ""
                 if guardrail is not None and hasattr(guardrail, "effective_mode"):
                     try:
                         mode = (guardrail.effective_mode(conn) or "").strip()
                     except Exception:
                         mode = ""
-                pairs.append((conn, mode))
                 # Effective rule-pack label = basename of the per-connector
                 # rule_pack_dir (falling back to the global one), so the
                 # roster shows "strict"/"permissive"/"default" per connector.
@@ -8360,19 +8791,26 @@ def _overview_config(config: object | None) -> OverviewConfig | None:
                     except Exception:
                         pack_dir = ""
                     pack = os.path.basename(pack_dir.rstrip("/")) if pack_dir else "default"
-                packs.append((conn, pack))
-            connector_modes = tuple(pairs)
-            connector_packs = tuple(packs)
-            connector_disabled = tuple(disabled)
-    except Exception:
-        connector_modes = ()
-        connector_packs = ()
-        connector_disabled = ()
+            except Exception:  # noqa: BLE001 - skip one bad connector, keep the rest.
+                continue
+            # Append together so connector_modes/packs/disabled stay aligned.
+            pairs.append((conn, mode))
+            packs.append((conn, pack))
+            if is_disabled:
+                disabled.append(norm)
+        connector_modes = tuple(pairs)
+        connector_packs = tuple(packs)
+        connector_disabled = tuple(disabled)
     return OverviewConfig(
         data_dir=str(getattr(config, "data_dir", "") or ""),
         environment=str(getattr(config, "environment", "") or ""),
         policy_dir=str(getattr(config, "policy_dir", "") or ""),
-        claw_mode=str(getattr(claw, "mode", "") or "openclaw"),
+        # A1 (display-only, Root R1): pass the real `claw.mode` through — do NOT
+        # collapse an empty mode to "openclaw". OverviewPanelModel.active_connector_name()
+        # then resolves the genuinely-zero-connector case to "" (no phantom
+        # connector) instead of fabricating "openclaw". The Go-parity
+        # config.active_connector() contract is deliberately left untouched.
+        claw_mode=str(getattr(claw, "mode", "") or ""),
         guardrail_enabled=bool(getattr(guardrail, "enabled", False)),
         guardrail_connector=str(getattr(guardrail, "connector", "") or ""),
         guardrail_mode=str(getattr(guardrail, "mode", "") or "observe"),
@@ -8393,6 +8831,13 @@ def _overview_config(config: object | None) -> OverviewConfig | None:
         connector_modes=connector_modes,
         connector_packs=connector_packs,
         connector_disabled=connector_disabled,
+        # A2: visible diagnostic when the roster enumeration failed.
+        roster_error=roster_error,
+        # N3: active-policy scanner action overrides (data.json), so the
+        # Overview/status surface a policy that downgrades a scanner surface.
+        scanner_overrides=_active_policy_scanner_overrides(
+            str(getattr(config, "policy_dir", "") or "")
+        ),
     )
 
 
@@ -8441,6 +8886,56 @@ def _panel_key(event: events.Key) -> str:
 
 def _catalog_key(key: str) -> str:
     return "esc" if key == "escape" else key
+
+
+def _catalog_panel_invalidated_by_command(args: tuple[str, ...]) -> str | None:
+    """Return the catalog panel whose loaded rows are stale after ``args``."""
+
+    if len(args) < 2:
+        return None
+    command, verb = args[0], args[1]
+    catalog_mutations = {
+        "skill": (
+            "skills",
+            {
+                "allow",
+                "block",
+                "disable",
+                "enable",
+                "install",
+                "quarantine",
+                "restore",
+                "scan",
+                "unblock",
+            },
+        ),
+        "mcp": (
+            "mcps",
+            {"allow", "block", "scan", "set", "unblock", "unset"},
+        ),
+        "plugin": (
+            "plugins",
+            {
+                "allow",
+                "block",
+                "disable",
+                "enable",
+                "quarantine",
+                "remove",
+                "restore",
+                "scan",
+            },
+        ),
+        "tool": (
+            "tools",
+            {"allow", "block", "unblock"},
+        ),
+    }
+    entry = catalog_mutations.get(command)
+    if entry is None:
+        return None
+    panel, verbs = entry
+    return panel if verb in verbs else None
 
 
 def _vim_key(key: str) -> str:
@@ -8827,8 +9322,10 @@ def _enforcement_label(cfg: OverviewConfig | None) -> str:
     if len(cfg.connector_modes) > 1:
         n = len(cfg.connector_modes)
         return f"{n} connectors (hook observability)"
-    connector = cfg.guardrail_connector or cfg.claw_mode or "openclaw"
+    connector = cfg.guardrail_connector or cfg.claw_mode
     mode = cfg.guardrail_mode or "observe"
+    if not connector:
+        return f"not configured ({mode})"
     if connector in {"openclaw", "zeptoclaw"}:
         return f"{connector} proxy guardrail ({mode})"
     return f"{connector} hook observability ({mode})"
