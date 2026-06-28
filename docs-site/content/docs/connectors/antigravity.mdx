@@ -46,7 +46,7 @@ The wrapper accepts the same hook-alias flags as the other hook connectors. The 
 | `--restart / --no-restart` | `--restart` | Bounce `defenseclaw-gateway` after applying changes so the new hooks wire in. |
 | `--with-local-stack / --no-local-stack` | `--no-local-stack` | Also bring up the bundled Prom/Loki/Tempo/Grafana stack via `setup local-observability up`. |
 
-Pinned by the alias regardless of flags: `claw.mode=antigravity`, `guardrail.connector=antigravity`, `guardrail.scanner_mode=local`, `guardrail.judge.enabled=false`, `guardrail.detection_strategy=regex_only`. `claw.workspace_dir` is always cleared — Antigravity setup is global by design. `guardrail.mode` defaults to `observe` and changes to `action` only when `--mode action` is passed. To tune the broader guardrail matrix after install, use [`defenseclaw setup guardrail --connector antigravity`](/docs/setup/guardrail).
+`setup antigravity` is shorthand for `setup guardrail --connector antigravity`: it adds or reconfigures Antigravity, defaults the connector to observe mode, and can join an existing hook-connector roster when you choose **Add**. `claw.workspace_dir` is always cleared — Antigravity setup is global by design. `guardrail.mode` changes to `action` only when `--mode action` is passed. To tune Antigravity after install, keep using [`defenseclaw setup guardrail --connector antigravity`](/docs/setup/guardrail).
 
 #### Version contract
 
@@ -119,6 +119,25 @@ For Stop events, DefenseClaw emits `{"decision":"block","reason":"..."}` per the
 <Files>
   <Folder name="~/.gemini/config" defaultOpen>
     <File name="hooks.json" />
+    <File name="mcp_config.json" />
+    <Folder name="skills">
+      <Folder name="<skill>">
+        <File name="SKILL.md" />
+      </Folder>
+    </Folder>
+  </Folder>
+  <Folder name="<workspace>/.agents">
+    <File name="mcp_config.json" />
+    <Folder name="skills">
+      <Folder name="<skill>">
+        <File name="SKILL.md" />
+      </Folder>
+    </Folder>
+    <Folder name="plugins">
+      <Folder name="<plugin>">
+        <File name="plugin.json" />
+      </Folder>
+    </Folder>
   </Folder>
   <Folder name="~/.defenseclaw" defaultOpen>
     <Folder name="hooks">
@@ -127,9 +146,9 @@ For Stop events, DefenseClaw emits `{"decision":"block","reason":"..."}` per the
   </Folder>
 </Files>
 
-Antigravity v1 publishes only the hooks surface in its documented configuration. MCP servers, skills, rules, plugins, and agent assets are not exposed as documented local-install surfaces yet, so DefenseClaw treats those as unsupported for Antigravity and hides the corresponding panels while `claw.mode=antigravity`. If Google publishes additional install contracts, DefenseClaw will surface them through a contract bump.
+Antigravity now publishes MCP, skills, rules, and plugin customization surfaces in addition to hooks. DefenseClaw writes hooks only to the global `~/.gemini/config/hooks.json` path, reads and writes MCP servers from `~/.gemini/config/mcp_config.json` and `<workspace>/.agents/mcp_config.json`, and supports the AgentSkills folder form under `skills/<skill>/SKILL.md`. CLI direct-markdown skills, rules, plugins, and plugin-contained agents are treated as discovery/scan surfaces until Google publishes enough install and lifecycle semantics for DefenseClaw to mutate them safely.
 
-`claw.workspace_dir` is intentionally not honored by Antigravity setup. Antigravity merges discovered `hooks.json` files from the global, project, and legacy locations, so layering DefenseClaw across multiple files would cause duplicate hook firings.
+`claw.workspace_dir` is intentionally not honored by Antigravity hook setup. Antigravity merges discovered `hooks.json` files from the global, project, and legacy locations, so layering DefenseClaw hooks across multiple files would cause duplicate hook firings. Workspace MCP and asset discovery still use the workspace paths above when a workspace is explicitly selected.
 
 The resolved paths are captured in `~/.defenseclaw/hook_contract_lock.json` under `locations`, so `defenseclaw doctor` can report both the hook contract and the concrete hook location it is using.
 

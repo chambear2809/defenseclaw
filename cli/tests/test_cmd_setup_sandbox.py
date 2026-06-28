@@ -15,6 +15,7 @@ from defenseclaw.commands.cmd_setup_sandbox import (
     _generate_systemd_units,
     _parse_host_resolv,
     _pre_pair_device,
+    write_device_key_provenance,
 )
 
 
@@ -71,8 +72,12 @@ class TestGenerateResolvConf(unittest.TestCase):
 
 
 class _MockOpenshell:
-    def __init__(self):
+    def __init__(self, sandbox_home: str = "/home/sandbox"):
         self.host_networking = True
+        self.sandbox_home = sandbox_home
+
+    def effective_sandbox_home(self) -> str:
+        return self.sandbox_home
 
 
 class _MockGuardrail:
@@ -87,11 +92,20 @@ class _MockGateway:
         self.port = 18789
 
 
+class _MockClaw:
+    """launcher generation now reads
+    ``cfg.claw.openclaw_home_original`` to pin the privileged
+    pre-sandbox repair to the operator-confirmed home path."""
+    def __init__(self, openclaw_home_original: str = ""):
+        self.openclaw_home_original = openclaw_home_original
+
+
 class _MockCfg:
-    def __init__(self):
+    def __init__(self, openclaw_home_original: str = ""):
         self.gateway = _MockGateway()
         self.guardrail = _MockGuardrail()
         self.openshell = _MockOpenshell()
+        self.claw = _MockClaw(openclaw_home_original)
 
 
 class TestGenerateSystemdUnits(unittest.TestCase):
@@ -321,6 +335,126 @@ class TestLauncherScriptConditionals(unittest.TestCase):
         self.assertNotIn("getaddrinfo", content)
         self.assertIn("openclaw gateway run", content)
 
+    # --- S3.HIGH_BUG: scoped sandbox cleanup regressions ---
+
+    def test_cleanup_sandbox_uses_saved_namespace_marker(self):
+        """cleanup-sandbox.sh must read the per-instance namespace marker
+        rather than regex-matching all sandbox|openshell namespaces."""
+        self._gen(True, True)
+        content = self._read_script("cleanup-sandbox.sh")
+        self.assertIn("sandbox.netns", content)
+        self.assertIn("SAVED_NS=", content)
+        # Legacy regex must only run when the operator explicitly opts in.
+        self.assertIn("DEFENSECLAW_SANDBOX_FORCE_REGEX_CLEANUP", content)
+
+    def test_cleanup_sandbox_no_unconditional_regex_namespace_delete(self):
+        """The regex-based 'sandbox|openshell' namespace delete must NOT
+        run unconditionally in cleanup-sandbox.sh."""
+        self._gen(True, True)
+        content = self._read_script("cleanup-sandbox.sh")
+        # The legacy block, if present, MUST be guarded by the opt-in env var.
+        if "grep -E 'sandbox|openshell'" in content:
+            # Must appear inside an opt-in branch.
+            self.assertIn(
+                'DEFENSECLAW_SANDBOX_FORCE_REGEX_CLEANUP:-0}" = "1"',
+                content,
+            )
+
+    def test_cleanup_sandbox_no_blanket_veth_delete(self):
+        """Blanket `veth-h-*` delete is disallowed: it would remove other
+        sandbox instances' interfaces."""
+        self._gen(True, True)
+        content = self._read_script("cleanup-sandbox.sh")
+        self.assertNotIn("grep -oP 'veth-h-", content)
+
+    def test_cleanup_iptables_restores_route_localnet(self):
+        """cleanup-sandbox.sh must restore the saved route_localnet value
+        instead of forcing it to 0."""
+        self._gen(True, True)
+        content = self._read_script("cleanup-sandbox.sh")
+        self.assertIn("saved.route_localnet", content)
+        self.assertNotIn(
+            "sysctl -w net.ipv4.conf.all.route_localnet=0", content
+        )
+
+    def test_post_sandbox_saves_route_localnet(self):
+        """post-sandbox.sh must capture the prior route_localnet value
+        before flipping it to 1."""
+        self._gen(True, True)
+        content = self._read_script("post-sandbox.sh")
+        self.assertIn("saved.route_localnet", content)
+        self.assertIn("sysctl -n net.ipv4.conf.all.route_localnet", content)
+
+    def _gen_run_sandbox(self, pinned_home: str = "", sandbox_home: str = "/home/sandbox"):
+        from defenseclaw.commands.cmd_setup_sandbox import (
+            _generate_run_sandbox_script,
+        )
+
+        cfg = _CfgFactory.make(True, True)
+        cfg.openshell = _MockOpenshell(sandbox_home=sandbox_home)
+        cfg.claw = _MockClaw(openclaw_home_original=pinned_home)
+        _generate_run_sandbox_script(self.data_dir, "10.200.0.1", cfg)
+
+    def test_run_sandbox_acl_fixer_uses_pinned_home_not_root(self):
+        """F-0427: the background ACL fixer in run-sandbox.sh must NOT
+        blanket-grant the sandbox user rwX on a hardcoded /root/.openclaw.
+        It must template the operator-confirmed pinned OpenClaw home plus
+        the sandbox-owned $SANDBOX_HOME/.openclaw."""
+        self._gen_run_sandbox(
+            pinned_home="/home/operator/.openclaw",
+            sandbox_home="/home/sandbox",
+        )
+        content = self._read_script("run-sandbox.sh")
+        # The hardcoded root path must be gone from the ACL fixer loop.
+        self.assertNotIn("/root/.openclaw", content)
+        # The pinned home and the sandbox's own .openclaw must be present.
+        self.assertIn("/home/operator/.openclaw", content)
+        self.assertIn("/home/sandbox/.openclaw", content)
+
+    def test_run_sandbox_acl_fixer_without_pin_skips_root(self):
+        """F-0427: with no pinned home, the ACL fixer must fall back to
+        ONLY the sandbox's own .openclaw — never root's."""
+        self._gen_run_sandbox(pinned_home="", sandbox_home="/home/sandbox")
+        content = self._read_script("run-sandbox.sh")
+        self.assertNotIn("/root/.openclaw", content)
+        self.assertIn("/home/sandbox/.openclaw", content)
+
+    def test_run_sandbox_records_namespace_marker(self):
+        """run-sandbox.sh must persist the discovered namespace name into
+        $DATA_DIR/sandbox.netns so cleanup is scoped to this instance."""
+        self._gen_run_sandbox()
+        content = self._read_script("run-sandbox.sh")
+        self.assertIn("sandbox.netns", content)
+        self.assertIn("SANDBOX_NS=", content)
+
+    def test_run_sandbox_strays_are_scoped_to_data_dir(self):
+        """run-sandbox.sh stop must not kill processes by name only.
+        The finding (#5) was that pgrep -f matches across the
+        host. The replacement must verify processes belong to this
+        instance via /proc/<pid>/cmdline or cwd referencing $DATA_DIR."""
+        self._gen_run_sandbox()
+        content = self._read_script("run-sandbox.sh")
+        self.assertIn("_proc_is_ours", content)
+        self.assertIn("_kill_scoped_strays", content)
+        self.assertIn("/proc/$pid/cmdline", content)
+        # The legacy unscoped helper must be gone.
+        self.assertNotIn("_kill_strays openshell-sandbox", content)
+        self.assertNotIn("_kill_strays defenseclaw-gateway", content)
+
+    def test_pre_sandbox_skips_blanket_veth_delete(self):
+        """pre-sandbox.sh must not delete every veth-h-* on the host."""
+        self._gen(True, True)
+        content = self._read_script("pre-sandbox.sh")
+        self.assertNotIn("grep -oP 'veth-h-", content)
+
+    def test_pre_sandbox_uses_saved_namespace_marker(self):
+        """pre-sandbox.sh must prefer the saved namespace marker over
+        regex-matching shared host state."""
+        self._gen(True, True)
+        content = self._read_script("pre-sandbox.sh")
+        self.assertIn("sandbox.netns", content)
+        self.assertIn("DEFENSECLAW_SANDBOX_FORCE_REGEX_CLEANUP", content)
+
 
 
 class TestPrePairDevice(unittest.TestCase):
@@ -336,6 +470,19 @@ class TestPrePairDevice(unittest.TestCase):
         shutil.rmtree(self.data_dir, ignore_errors=True)
         shutil.rmtree(self.sandbox_home, ignore_errors=True)
 
+    def _write_device_key(self, blob: bytes) -> str:
+        """Write a device.key with mode 0o600 + a VALID gateway-minted
+        provenance sentinel (HMAC over the key bytes keyed by the
+        owner-only per-install secret). F-1441: a verifiable sentinel
+        — not a forgeable literal — is what the hardened pre-pair flow
+        now requires before it will touch paired.json."""
+        path = os.path.join(self.data_dir, "device.key")
+        with open(path, "wb") as f:
+            f.write(blob)
+        os.chmod(path, 0o600)
+        write_device_key_provenance(self.data_dir, path)
+        return path
+
     def test_no_device_key(self):
         result = _pre_pair_device(self.data_dir, self.sandbox_home)
         self.assertFalse(result)
@@ -346,10 +493,7 @@ class TestPrePairDevice(unittest.TestCase):
             return json.load(f)
 
     def test_with_ed25519_key(self):
-        key_data = os.urandom(64)
-        key_path = os.path.join(self.data_dir, "device.key")
-        with open(key_path, "wb") as f:
-            f.write(key_data)
+        self._write_device_key(os.urandom(64))
 
         result = _pre_pair_device(self.data_dir, self.sandbox_home)
         self.assertTrue(result)
@@ -362,10 +506,7 @@ class TestPrePairDevice(unittest.TestCase):
         self.assertEqual(device["role"], "operator")
 
     def test_updates_existing_device(self):
-        key_data = os.urandom(64)
-        key_path = os.path.join(self.data_dir, "device.key")
-        with open(key_path, "wb") as f:
-            f.write(key_data)
+        self._write_device_key(os.urandom(64))
 
         _pre_pair_device(self.data_dir, self.sandbox_home)
         _pre_pair_device(self.data_dir, self.sandbox_home)
@@ -374,10 +515,7 @@ class TestPrePairDevice(unittest.TestCase):
         self.assertEqual(len(paired), 1, "Should update, not duplicate")
 
     def test_32_byte_pubkey(self):
-        key_data = os.urandom(32)
-        key_path = os.path.join(self.data_dir, "device.key")
-        with open(key_path, "wb") as f:
-            f.write(key_data)
+        self._write_device_key(os.urandom(32))
 
         result = _pre_pair_device(self.data_dir, self.sandbox_home)
         self.assertTrue(result)
@@ -386,6 +524,121 @@ class TestPrePairDevice(unittest.TestCase):
         self.assertEqual(len(paired), 1)
         device = list(paired.values())[0]
         self.assertEqual(device["displayName"], "defenseclaw-sidecar")
+
+    def test_f2551_overpermissive_mode_refused(self):
+        """device.key mode 0o644 (group/world read)
+        must be refused even with a VALID provenance sentinel present."""
+        path = os.path.join(self.data_dir, "device.key")
+        with open(path, "wb") as f:
+            f.write(os.urandom(32))
+        os.chmod(path, 0o600)
+        # Mint a valid sentinel, THEN loosen the mode — proving the mode
+        # gate fires independently of provenance.
+        write_device_key_provenance(self.data_dir, path)
+        os.chmod(path, 0o644)
+
+        result = _pre_pair_device(self.data_dir, self.sandbox_home)
+        self.assertFalse(result, "regression: 0o644 device.key was accepted")
+
+    def test_f2551_missing_provenance_refused(self):
+        """a 0o600 device.key without the gateway
+        provenance sentinel must be refused (a local user could have
+        planted the file before sandbox setup ran)."""
+        path = os.path.join(self.data_dir, "device.key")
+        with open(path, "wb") as f:
+            f.write(os.urandom(32))
+        os.chmod(path, 0o600)
+        # No .provenance file alongside.
+
+        result = _pre_pair_device(self.data_dir, self.sandbox_home)
+        self.assertFalse(result, "regression: device.key without sentinel accepted")
+
+    def test_f1441_forged_literal_provenance_refused(self):
+        """F-1441: a sibling .provenance file containing an arbitrary
+        literal (the legacy forgeable shape ``source=test``) must NOT be
+        accepted — only a verifiable HMAC sentinel keyed by the owner-only
+        per-install secret counts. A local attacker can plant both
+        device.key and an arbitrary provenance literal; that path must
+        fail closed."""
+        path = os.path.join(self.data_dir, "device.key")
+        with open(path, "wb") as f:
+            f.write(os.urandom(32))
+        os.chmod(path, 0o600)
+        with open(path + ".provenance", "w", encoding="utf-8") as f:
+            f.write("source=test\n")
+        os.chmod(path + ".provenance", 0o600)
+
+        result = _pre_pair_device(self.data_dir, self.sandbox_home)
+        self.assertFalse(
+            result, "regression: forgeable literal provenance was accepted"
+        )
+
+    def test_f1441_tampered_device_key_invalidates_sentinel(self):
+        """F-1441: the sentinel is bound to the device.key bytes via HMAC.
+        If an attacker mints a valid sentinel for one key then swaps in a
+        different device.key, the HMAC no longer matches and pairing is
+        refused."""
+        path = os.path.join(self.data_dir, "device.key")
+        with open(path, "wb") as f:
+            f.write(os.urandom(64))
+        os.chmod(path, 0o600)
+        write_device_key_provenance(self.data_dir, path)
+        # Swap the key bytes AFTER the sentinel was minted.
+        with open(path, "wb") as f:
+            f.write(os.urandom(64))
+        os.chmod(path, 0o600)
+
+        result = _pre_pair_device(self.data_dir, self.sandbox_home)
+        self.assertFalse(
+            result, "regression: sentinel accepted for a swapped device.key"
+        )
+
+    def test_f1441_wrong_secret_provenance_refused(self):
+        """F-1441: a provenance HMAC computed with an attacker-chosen
+        secret (i.e. without the owner-only per-install secret) must be
+        refused. Simulates an attacker who knows the sentinel format but
+        not the secret."""
+        import hashlib
+        import hmac
+
+        from defenseclaw.commands.cmd_setup_sandbox import (
+            _PROVENANCE_SENTINEL_PREFIX,
+        )
+
+        key_bytes = os.urandom(32)
+        path = os.path.join(self.data_dir, "device.key")
+        with open(path, "wb") as f:
+            f.write(key_bytes)
+        os.chmod(path, 0o600)
+        forged = hmac.new(b"attacker-secret", key_bytes, hashlib.sha256).hexdigest()
+        with open(path + ".provenance", "w", encoding="utf-8") as f:
+            f.write(_PROVENANCE_SENTINEL_PREFIX + forged + "\n")
+        os.chmod(path + ".provenance", 0o600)
+
+        result = _pre_pair_device(self.data_dir, self.sandbox_home)
+        self.assertFalse(
+            result, "regression: HMAC with wrong secret was accepted"
+        )
+
+    def test_f2551_legacy_optin_bypasses_sentinel(self):
+        """The DEFENSECLAW_PREPAIR_TRUST_DEVICE_KEY=1 escape hatch
+        keeps the legacy behavior for operators who can't yet
+        regenerate device.key via the new gateway flow."""
+        path = os.path.join(self.data_dir, "device.key")
+        with open(path, "wb") as f:
+            f.write(os.urandom(32))
+        os.chmod(path, 0o600)
+
+        prev = os.environ.get("DEFENSECLAW_PREPAIR_TRUST_DEVICE_KEY")
+        try:
+            os.environ["DEFENSECLAW_PREPAIR_TRUST_DEVICE_KEY"] = "1"
+            result = _pre_pair_device(self.data_dir, self.sandbox_home)
+        finally:
+            if prev is None:
+                os.environ.pop("DEFENSECLAW_PREPAIR_TRUST_DEVICE_KEY", None)
+            else:
+                os.environ["DEFENSECLAW_PREPAIR_TRUST_DEVICE_KEY"] = prev
+        self.assertTrue(result, "legacy opt-in env var must keep working")
 
     def test_pem_encoded_key(self):
         import base64
@@ -404,6 +657,10 @@ class TestPrePairDevice(unittest.TestCase):
         key_path = os.path.join(self.data_dir, "device.key")
         with open(key_path, "w") as f:
             f.write(pem_data)
+        # regenerate the on-disk perms + a VALID gateway-minted provenance
+        # sentinel that the hardened pre-pair flow now requires.
+        os.chmod(key_path, 0o600)
+        write_device_key_provenance(self.data_dir, key_path)
 
         result = _pre_pair_device(self.data_dir, self.sandbox_home)
         self.assertTrue(result)

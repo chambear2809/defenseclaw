@@ -1,6 +1,6 @@
 BINARY      := defenseclaw
 GATEWAY     := defenseclaw-gateway
-VERSION     := 0.7.1
+VERSION     := 0.8.0
 GOFLAGS     := -ldflags "-X main.version=$(VERSION)"
 VENV        := .venv
 GOBIN       := $(shell go env GOPATH)/bin
@@ -11,23 +11,42 @@ OC_EXT_DIR  := $(HOME)/.openclaw/extensions/defenseclaw
 RUFF        := $(shell if [ -x "$(VENV)/bin/ruff" ]; then printf '%s' "$(VENV)/bin/ruff"; elif command -v ruff >/dev/null 2>&1; then command -v ruff; else printf '%s' "$(VENV)/bin/ruff"; fi)
 
 DIST_DIR    := dist
+UPGRADE_SMOKE_FROM ?= 0.8.1 0.8.0 0.7.2 0.7.1 0.6.6 0.6.5 0.6.4 0.6.3 0.6.2 0.6.1 0.6.0 0.5.0 0.4.0
 ECR_REPOSITORY ?= 637423309390.dkr.ecr.us-east-1.amazonaws.com/defenseclaw
 OVERLAY_BASE_IMAGE ?= $(ECR_REPOSITORY):$(VERSION)
 OVERLAY_IMAGE_TAG ?= $(VERSION)-web-tui
 RUNTIME_NODE_IMAGE ?= node:20.20.2-bookworm-slim
 GATEWAY_LINUX_AMD64 := defenseclaw-gateway-galileo-linux-amd64
+SPLUNK_CISCO_SKILLS_REPO ?= https://github.com/chambear2809/splunk-cisco-skills.git
 SPLUNK_CISCO_SKILLS_SOURCE ?= ../splunk-cisco-skills
-SPLUNK_CISCO_SKILLS_SHA ?= 9bb131a104830b166dc0918b1be89332a7a8ada4
+SPLUNK_CISCO_SKILLS_SHA ?= 1c9925765fb033efda254577d04534c83226b8b2
 SPLUNK_CISCO_BUNDLE_REPOSITORY ?= 637423309390.dkr.ecr.us-east-1.amazonaws.com/splunk-cisco-skills-bundle
 SPLUNK_CISCO_BUNDLE_CONTEXT ?= build/splunk-cisco-skills-bundle
 
+# Cross-platform virtualenv / executable layout. Windows Python venvs expose
+# console entry points under Scripts/ (not bin/) and binaries carry a .exe
+# suffix, which Go also appends to its build output. Detect the host once and
+# parameterize the handful of install paths that differ so `make install` works
+# on hosted Windows runners (the connector contract matrix) as well as
+# Linux/macOS. $(OS) is set to "Windows_NT" by Windows itself and inherited by
+# the MSYS/Git-Bash shell make runs there; it is unset elsewhere.
+ifeq ($(OS),Windows_NT)
+VENV_BIN := $(VENV)/Scripts
+EXE      := .exe
+else
+VENV_BIN := $(VENV)/bin
+EXE      :=
+endif
+
 .PHONY: all path doctor uninstall quickstart llm-setup \
         build install cli-install dev-install pycli dev-pycli gateway gateway-cross gateway-run start gateway-install \
-        gateway-linux-amd64 docker-gateway-overlay docker-gateway-overlay-push docker-gateway-runtime docker-gateway-runtime-push docker-splunk-cisco-skills-bundle \
+        gateway-linux-amd64 docker-gateway-overlay docker-gateway-overlay-push docker-gateway-runtime docker-gateway-runtime-push splunk-cisco-skills-source docker-splunk-cisco-skills-bundle \
         plugin plugin-install maybe-openclaw-plugin-install extensions test cli-test cli-test-cov cli-test-snap tui-test gateway-test go-test-cov \
+        security-suite-test security-suite-eval \
         connector-matrix-test go-connector-matrix-test py-connector-matrix-test \
         test-verbose test-file lint py-lint go-lint ts-test rego-test clean \
         check check-audit-actions check-error-codes check-schemas check-v7 check-provider-coverage check-llm-catalog check-version-sync check-upgrade-manifest \
+        upgrade-smoke upgrade-smoke-matrix \
         set-version \
         _bundle-data \
         dist dist-cli dist-gateway dist-plugin dist-sandbox dist-test dist-upgrade-manifest dist-checksums dist-clean
@@ -273,21 +292,20 @@ dev-install:
 pycli: _bundle-data
 	@command -v uv >/dev/null 2>&1 || { echo "uv not found — install from https://docs.astral.sh/uv/"; exit 1; }
 	@find cli/ -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
-	uv venv $(VENV) --python 3.12 --clear
-	uv pip install -e . --python $(VENV)/bin/python
+	uv sync --frozen --no-dev --python 3.12
 
 dev-pycli: pycli
-	uv pip install --group dev --python $(VENV)/bin/python
+	uv sync --frozen --python 3.12
 	@echo ""
 	@echo "Done. Activate the environment and run:"
 	@echo "  source $(VENV)/bin/activate"
 	@echo "  defenseclaw --help"
 
 gateway: sync-openclaw-extension
-	go build $(GOFLAGS) -o $(GATEWAY) ./cmd/defenseclaw
-	@echo "Built $(GATEWAY)"
-	@echo "  Run with: ./$(GATEWAY)"
-	@echo "  Check status: ./$(GATEWAY) status"
+	go build $(GOFLAGS) -o $(GATEWAY)$(EXE) ./cmd/defenseclaw
+	@echo "Built $(GATEWAY)$(EXE)"
+	@echo "  Run with: ./$(GATEWAY)$(EXE)"
+	@echo "  Check status: ./$(GATEWAY)$(EXE) status"
 
 # sync-openclaw-extension copies the runtime files of the DefenseClaw
 # OpenClaw plugin into internal/gateway/connector/openclaw_extension so
@@ -389,13 +407,28 @@ docker-gateway-runtime: extensions gateway-linux-amd64
 docker-gateway-runtime-push: docker-gateway-runtime
 	docker push $(ECR_REPOSITORY):$(OVERLAY_IMAGE_TAG)
 
-docker-splunk-cisco-skills-bundle:
+splunk-cisco-skills-source:
+	@if [ -d "$(SPLUNK_CISCO_SKILLS_SOURCE)/.git" ]; then \
+	  git -C "$(SPLUNK_CISCO_SKILLS_SOURCE)" fetch --tags origin '+refs/heads/*:refs/remotes/origin/*'; \
+	else \
+	  mkdir -p "$$(dirname "$(SPLUNK_CISCO_SKILLS_SOURCE)")"; \
+	  git clone "$(SPLUNK_CISCO_SKILLS_REPO)" "$(SPLUNK_CISCO_SKILLS_SOURCE)"; \
+	fi
+	@if ! git -C "$(SPLUNK_CISCO_SKILLS_SOURCE)" rev-parse --verify "$(SPLUNK_CISCO_SKILLS_SHA)^{commit}" >/dev/null; then \
+	  git -C "$(SPLUNK_CISCO_SKILLS_SOURCE)" fetch origin "$(SPLUNK_CISCO_SKILLS_SHA)"; \
+	fi
+	@if [ "$$(git -C "$(SPLUNK_CISCO_SKILLS_SOURCE)" rev-parse HEAD)" != "$(SPLUNK_CISCO_SKILLS_SHA)" ]; then \
+	  git -C "$(SPLUNK_CISCO_SKILLS_SOURCE)" checkout --detach "$(SPLUNK_CISCO_SKILLS_SHA)"; \
+	fi
+	@echo "Splunk/Cisco skills source ready at $(SPLUNK_CISCO_SKILLS_SOURCE) ($(SPLUNK_CISCO_SKILLS_SHA))"
+
+docker-splunk-cisco-skills-bundle: splunk-cisco-skills-source
 	scripts/prepare-splunk-cisco-skills-bundle-context.sh \
 		$(SPLUNK_CISCO_SKILLS_SOURCE) \
 		$(SPLUNK_CISCO_BUNDLE_CONTEXT) \
 		$(SPLUNK_CISCO_SKILLS_SHA)
 	docker build --platform linux/amd64 \
-		--build-arg BUNDLE_SOURCE_REPO=https://github.com/chambear2809/splunk-cisco-skills \
+		--build-arg BUNDLE_SOURCE_REPO=$(SPLUNK_CISCO_SKILLS_REPO) \
 		--build-arg BUNDLE_SOURCE_COMMIT=$(SPLUNK_CISCO_SKILLS_SHA) \
 		--build-arg BUNDLE_BUILD_URL=local-make \
 		--build-arg BUNDLE_BUILD_TIMESTAMP=$$(date -u +%Y-%m-%dT%H:%M:%SZ) \
@@ -406,7 +439,7 @@ docker-splunk-cisco-skills-bundle:
 	@echo "Built $(SPLUNK_CISCO_BUNDLE_REPOSITORY):$(SPLUNK_CISCO_SKILLS_SHA)"
 
 gateway-run: gateway
-	./$(GATEWAY)
+	./$(GATEWAY)$(EXE)
 
 start: gateway
 	@./scripts/start.sh $(ARGS)
@@ -425,8 +458,8 @@ plugin:
 
 cli-install: pycli
 	@mkdir -p $(INSTALL_DIR)
-	@ln -sf "$(CURDIR)/$(VENV)/bin/defenseclaw" "$(INSTALL_DIR)/defenseclaw"
-	@ln -sf "$(CURDIR)/$(VENV)/bin/litellm" "$(INSTALL_DIR)/litellm" 2>/dev/null || true
+	@ln -sf "$(CURDIR)/$(VENV_BIN)/defenseclaw$(EXE)" "$(INSTALL_DIR)/defenseclaw$(EXE)"
+	@ln -sf "$(CURDIR)/$(VENV_BIN)/litellm$(EXE)" "$(INSTALL_DIR)/litellm$(EXE)" 2>/dev/null || true
 	@# Expose the scanner entry points (skill-scanner, mcp-scanner,
 	@# plus the -api / -pre-commit siblings) on PATH via the same
 	@# ~/.local/bin symlink pattern we already use for the main CLI.
@@ -438,9 +471,9 @@ cli-install: pycli
 	@# break install; the doctor check surfaces any real misses.
 	@for tool in skill-scanner skill-scanner-api skill-scanner-pre-commit \
 	             mcp-scanner mcp-scanner-api; do \
-		src="$(CURDIR)/$(VENV)/bin/$$tool"; \
+		src="$(CURDIR)/$(VENV_BIN)/$$tool$(EXE)"; \
 		if [ -x "$$src" ]; then \
-			ln -sf "$$src" "$(INSTALL_DIR)/$$tool"; \
+			ln -sf "$$src" "$(INSTALL_DIR)/$$tool$(EXE)"; \
 		fi; \
 	done
 	@echo "Installed defenseclaw CLI to $(INSTALL_DIR)"
@@ -459,16 +492,16 @@ gateway-install: cli-install gateway
 	@# entry, so the running process keeps the old inode and upgrades work
 	@# live. We copy to a sibling temp file first so a partial write can
 	@# never clobber a working binary.
-	@gwt="$(INSTALL_DIR)/$(GATEWAY)"; \
+	@gwt="$(INSTALL_DIR)/$(GATEWAY)$(EXE)"; \
 	tmp="$$gwt.new.$$$$"; \
 	trap 'rm -f "$$tmp"' EXIT INT TERM; \
-	cp $(GATEWAY) "$$tmp"; \
+	cp $(GATEWAY)$(EXE) "$$tmp"; \
 	chmod +x "$$tmp"; \
 	mv -f "$$tmp" "$$gwt"
 	@if [ "$$(uname -s)" = "Darwin" ]; then \
-		codesign -f -s - $(INSTALL_DIR)/$(GATEWAY) 2>/dev/null || true; \
+		codesign -f -s - $(INSTALL_DIR)/$(GATEWAY)$(EXE) 2>/dev/null || true; \
 	fi
-	@echo "Installed $(GATEWAY) to $(INSTALL_DIR)"
+	@echo "Installed $(GATEWAY)$(EXE) to $(INSTALL_DIR)"
 	@# If a sidecar is already running it kept the old inode; tell the
 	@# operator so they know a restart is needed to pick up the new build.
 	@# Use pgrep -x against the *basename* only — `pgrep -f "$(GATEWAY)"`
@@ -477,7 +510,7 @@ gateway-install: cli-install gateway
 	@# it would fire a false "sidecar is running" hint on every build.
 	@if pgrep -x "$(GATEWAY)" >/dev/null 2>&1; then \
 		echo "  Gateway sidecar is running an older build — restart with:"; \
-		echo "    $(INSTALL_DIR)/$(GATEWAY) restart"; \
+		echo "    $(INSTALL_DIR)/$(GATEWAY)$(EXE) restart"; \
 	fi
 	@if ! echo "$$PATH" | grep -q "$(INSTALL_DIR)"; then \
 		echo ""; \
@@ -519,10 +552,10 @@ plugin-install: cli-install plugin
 
 test: cli-test gateway-test
 
-cli-test:
+cli-test: _bundle-data
 	$(VENV)/bin/python -m pytest cli/tests -q
 
-cli-test-cov:
+cli-test-cov: _bundle-data
 	$(VENV)/bin/python -m pytest cli/tests/ -v --tb=short --cov=defenseclaw --cov-report=xml:coverage-py.xml
 
 cli-test-snap:
@@ -530,6 +563,18 @@ cli-test-snap:
 
 gateway-test: sync-openclaw-extension
 	go test -race ./internal/gateway/ ./test/... -v
+
+# security-suite-test runs the deterministic security + PII coverage suite
+# (regex layer + stubbed LLM-judge layer) plus the regex severity benchmark.
+# No LLM key or running gateway required; this is the CI-safe tier and is
+# also covered by `make gateway-test`.
+security-suite-test:
+	go test ./internal/gateway/ -run 'TestSecuritySuiteRegex|TestSecuritySuiteJudge|TestSeverityBenchmark' -count=1 -v
+
+# security-suite-eval scores the judge corpus against a live model and runs
+# the full eval corpus. Requires DEFENSECLAW_LLM_KEY. Not run in CI.
+security-suite-eval:
+	GUARDRAIL_BENCHMARK_LLM=1 go test ./internal/gateway/ -run '^(TestSecuritySuiteJudge|TestEvalInjectionJudge|TestEvalPIIJudge|TestEvalExfilJudge|TestEvalToolInjectionJudge)$$' -count=1 -timeout 120m -v
 
 go-test-cov: sync-openclaw-extension
 	go test -race -count=1 -coverprofile=coverage.out ./...
@@ -550,7 +595,6 @@ py-connector-matrix-test:
 		cli/tests/test_agent_discovery.py \
 		cli/tests/test_cmd_guardrail_matrix.py \
 		cli/tests/test_cmd_init.py \
-		cli/tests/test_cmd_setup_mode.py \
 		cli/tests/test_codeguard_opt_in.py \
 		cli/tests/test_connector_mcp_writers.py \
 		cli/tests/test_connector_paths.py \
@@ -628,6 +672,12 @@ check-llm-catalog:
 
 check-upgrade-manifest:
 	@python3 scripts/generate-upgrade-manifest.py --check
+
+upgrade-smoke:
+	@scripts/test-upgrade-release.sh $(ARGS)
+
+upgrade-smoke-matrix:
+	@scripts/test-upgrade-release.sh --from-versions "$(UPGRADE_SMOKE_FROM)" $(ARGS)
 
 # ---------------------------------------------------------------------------
 # Lint targets
@@ -730,16 +780,29 @@ _bundle-data:
 	@# at bundles/llm/; _data/llm/ is the gitignored build-staging copy.
 	cp bundles/llm/model_catalog.json cli/defenseclaw/_data/llm/
 	@# splunk_local_bridge and local_observability_stack are bind-mounted by Docker
-	@# (Grafana, Loki, Splunk, etc.) when `defenseclaw obs up` is running. We must
-	@# rsync-with-delete instead of `rm -rf && cp -r` because Docker Desktop on
-	@# macOS captures the directory inode at container start time; replacing the
-	@# inode silently empties the in-container view of the bind-mounted volume
-	@# until the container is recreated. rsync --inplace --delete keeps the inode
-	@# stable, mutates files in place, and prunes anything no longer in bundles/
-	@# so dashboard / dashcfg edits propagate without restarting the obs stack.
-	rsync -a --delete --inplace bundles/splunk_local_bridge/        cli/defenseclaw/_data/splunk_local_bridge/
-	rsync -a --delete --inplace bundles/local_observability_stack/  cli/defenseclaw/_data/local_observability_stack/
-	rsync -a --delete --inplace bundles/c3_agent_tokenomics/        cli/defenseclaw/_data/c3_agent_tokenomics/
+	@# (Grafana, Loki, Splunk, etc.) when `defenseclaw obs up` is running. Prefer
+	@# rsync-with-delete over `rm -rf && cp -r` because Docker Desktop on macOS
+	@# captures the directory inode at container start time; replacing the inode
+	@# silently empties the in-container view of the bind-mounted volume until the
+	@# container is recreated. rsync --inplace --delete keeps the inode stable,
+	@# mutates files in place, and prunes anything no longer in bundles/ so
+	@# dashboard / dashcfg edits propagate without restarting the obs stack.
+	@#
+	@# Hosted Windows runners ship no rsync (`make install` for the connector
+	@# contract matrix died here with CreateProcess failed). Fall back to a plain
+	@# mirror there. That fallback loses inode stability, but the obs Docker stack
+	@# — the only consumer of that property — never runs on those Windows build
+	@# hosts, so the tradeoff is safe. Mirrors the rsync-or-cp guard in
+	@# sync-openclaw-extension above.
+	@for d in splunk_local_bridge local_observability_stack c3_agent_tokenomics; do \
+	  if command -v rsync >/dev/null 2>&1; then \
+	    rsync -a --delete --inplace "bundles/$$d/" "cli/defenseclaw/_data/$$d/"; \
+	  else \
+	    rm -rf "cli/defenseclaw/_data/$$d"; \
+	    mkdir -p "cli/defenseclaw/_data/$$d"; \
+	    cp -R "bundles/$$d/." "cli/defenseclaw/_data/$$d/"; \
+	  fi; \
+	done
 	cp -r bundles/splunk_o11y_dashboards cli/defenseclaw/_data/
 	cp -r policies/openshell cli/defenseclaw/_data/policies/openshell
 
@@ -800,7 +863,7 @@ dist-clean:
 	rm -rf sandbox-test-*
 
 clean:
-	rm -f $(GATEWAY) $(GATEWAY_LINUX_AMD64) $(BINARY)-linux-* $(BINARY)-darwin-*
+	rm -f $(GATEWAY) $(GATEWAY)$(EXE) $(GATEWAY_LINUX_AMD64) $(BINARY)-linux-* $(BINARY)-darwin-*
 	rm -rf $(VENV) cli/*.egg-info
 	rm -rf $(PLUGIN_DIR)/dist $(PLUGIN_DIR)/node_modules
 	rm -f coverage.out coverage-py.xml

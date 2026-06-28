@@ -165,6 +165,10 @@ func TestDetectEnvironment(t *testing.T) {
 		if env != EnvMacOS {
 			t.Errorf("expected macos on darwin, got %s", env)
 		}
+	case "windows":
+		if env != EnvWindows {
+			t.Errorf("expected windows on windows, got %s", env)
+		}
 	case "linux":
 		if env != EnvLinux && env != EnvDGXSpark {
 			t.Errorf("expected linux or dgx-spark on linux, got %s", env)
@@ -1274,8 +1278,8 @@ func TestMCPScannerConfigNoLLMFields(t *testing.T) {
 	if mc.Binary != "mcp-scanner" {
 		t.Errorf("expected 'mcp-scanner', got %q", mc.Binary)
 	}
-	if mc.Analyzers != "yara" {
-		t.Errorf("expected default analyzers 'yara', got %q", mc.Analyzers)
+	if mc.Analyzers != "auto" {
+		t.Errorf("expected default analyzers 'auto', got %q", mc.Analyzers)
 	}
 	if mc.ScanPrompts {
 		t.Error("expected default scan_prompts=false")
@@ -1569,6 +1573,36 @@ func TestResolveLLM(t *testing.T) {
 		got := c.ResolveLLM("scanners.does_not_exist")
 		if got.Model != "gpt-4o" {
 			t.Errorf("unknown path should degrade to top-level, got %+v", got)
+		}
+	})
+
+	t.Run("instance_name override carries through", func(t *testing.T) {
+		// instance_name is the ONLY signal that binds a role to a
+		// custom-providers.json overlay entry. Dropping it from the
+		// merge silently rerouted role-level custom-provider bindings
+		// (e.g. guardrail.judge.llm.instance_name) to the inferred
+		// public provider endpoint.
+		c := &Config{
+			LLM: LLMConfig{Model: "ollama/llama3.1"},
+		}
+		c.Guardrail.Judge.LLM = LLMConfig{Model: "internal-gpt/mock-judge", InstanceName: "internal-gpt"}
+		got := c.ResolveLLM("guardrail.judge")
+		if got.InstanceName != "internal-gpt" {
+			t.Errorf("instance_name: got %q, want internal-gpt (override)", got.InstanceName)
+		}
+		if got.Model != "internal-gpt/mock-judge" {
+			t.Errorf("model: got %q, want internal-gpt/mock-judge (override)", got.Model)
+		}
+	})
+
+	t.Run("instance_name inherits from top-level when override empty", func(t *testing.T) {
+		c := &Config{
+			LLM: LLMConfig{Model: "internal-gpt/base", InstanceName: "internal-gpt"},
+		}
+		c.Guardrail.Judge.LLM = LLMConfig{Model: "internal-gpt/judge-model"}
+		got := c.ResolveLLM("guardrail.judge")
+		if got.InstanceName != "internal-gpt" {
+			t.Errorf("instance_name: got %q, want internal-gpt (inherited)", got.InstanceName)
 		}
 	})
 

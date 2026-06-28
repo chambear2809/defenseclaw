@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
+from defenseclaw.tui.services import connector_filter
 from defenseclaw.tui.services.ai_discovery_state import AIUsageSignal, AIUsageSnapshot
 
 NoticeLevel = Literal["info", "warn", "error"]
@@ -132,6 +133,28 @@ class OverviewConfig:
     # DISABLED rather than hiding them; a *fully removed* connector simply
     # leaves ``active_connectors()`` and never reaches the roster at all.
     connector_disabled: tuple[str, ...] = ()
+    # N3: scanner action overrides from the *active* policy's synced
+    # ``data.json`` (``scanner_overrides`` → scanner_type → severity →
+    # ``{install,file,runtime}`` → action). These live only in the active
+    # policy YAML / ``data.json``; today only ``policy show`` surfaces them, so
+    # ``defenseclaw status`` and the Overview guardrail summary are blind to a
+    # policy that, say, downgrades a scanner surface to ``warn``/``allow``.
+    # Stored flattened as ``(scanner_type, severity, surface, action)`` so the
+    # frozen dataclass stays hashable; empty for the default config → no
+    # Overview change. Populated by the adapter (which reads ``data.json``);
+    # rendered via :func:`format_scanner_overrides_summary` /
+    # :meth:`OverviewPanelModel.scanner_overrides_summary`.
+    scanner_overrides: tuple[tuple[str, str, str, str], ...] = ()
+    # A2: a non-empty diagnostic when the connector roster could not be fully
+    # built — e.g. ``Config.active_connectors()`` raised on a malformed/alias
+    # key, so the adapter degraded to a single-connector (or empty) view
+    # instead of the full roster. The module-level builder in ``app.py`` can't
+    # emit a status-line message itself (the TUI subtree has no stderr logger),
+    # so it stuffs the reason here and the Overview surfaces it as a visible
+    # error notice via :meth:`OverviewPanelModel.build_notices`, rather than the
+    # roster silently collapsing (chip vanishes, ``m`` stops cycling, tiles
+    # disappear). Empty (the common case) renders nothing.
+    roster_error: str = ""
 
     def connector_is_disabled(self, name: str) -> bool:
         """True when ``name`` is in the roster but enforcement is disabled."""
@@ -387,6 +410,15 @@ class OverviewPanelModel:
             hint = self.gateway_standalone_hint()
             if hint:
                 notices.append(OverviewNotice("info", hint))
+        if self.cfg is not None and self.cfg.roster_error.strip():
+            notices.append(
+                OverviewNotice(
+                    "error",
+                    "Connector roster degraded: "
+                    f"{self.cfg.roster_error.strip()} - showing a reduced view; "
+                    "check your connector config",
+                )
+            )
         if self.cfg is not None and guardrail_off:
             notices.append(OverviewNotice("warn", "LLM guardrail not configured - press [g] to set up"))
         if not self.skill_scanner_available:
@@ -572,7 +604,9 @@ class OverviewPanelModel:
                 summary_parts=tuple(parts),
             )
 
-        rows = self.ai_usage_sorted or sort_ai_discovery_signals_for_overview(self.ai_usage.signals)
+        rows = unique_ai_discovery_signals_for_overview(
+            self.ai_usage_sorted or sort_ai_discovery_signals_for_overview(self.ai_usage.signals)
+        )
         overflow = max(len(rows) - MAX_AI_DISCOVERY_OVERVIEW_ROWS, 0)
         rendered = tuple(
             OverviewAIDiscoveryRow(
@@ -691,13 +725,48 @@ class OverviewPanelModel:
         )
 
     def active_connector_name(self) -> str:
+        """Primary connector name, or ``""`` when none is configured.
+
+        A1 (Root R1, TUI-display-only per fix-plan §10.1): never fabricate
+        ``"openclaw"`` for an empty / hook-only state. Precedence: explicit
+        singular override (``guardrail.connector``) → the active *set*'s
+        primary (``connector_modes`` — the multi-connector roster that the
+        singular ``config.active_connector()`` ignores, which is why a
+        ``[codex, openclaw]`` map used to surface a phantom ``openclaw``) →
+        the singular ``claw.mode`` → ``""`` (none configured). The Go-parity
+        ``config.active_connector()`` contract is deliberately left untouched;
+        this distinguishes "none configured" at the display layer only.
+        Callers treat ``""`` as "no connector present" (e.g. the app's
+        ``connector_present`` gate / merged-catalog fallback).
+
+        The genuinely-zero-connector case additionally depends on the adapter
+        passing an empty ``claw_mode`` rather than the collapsed ``"openclaw"``
+        default — that adapter half lives in ``app.py`` (the ``tui/app`` lane).
+        """
         if self.cfg is None:
-            return "openclaw"
+            return ""
         if self.cfg.guardrail_connector.strip():
             return self.cfg.guardrail_connector.strip().lower()
+        primary = connector_filter.active_connector_name(self.cfg.connector_modes)
+        if primary:
+            return primary.strip().lower()
         if self.cfg.claw_mode.strip():
             return self.cfg.claw_mode.strip().lower()
-        return "openclaw"
+        return ""
+
+    def scanner_overrides_summary(self) -> str:
+        """One-line summary of the active policy's scanner action overrides,
+        or ``""`` when there are none (N3).
+
+        Surfaces overrides that today live only in ``policy show`` /
+        ``data.json``. Empty (the default config) renders nothing, so the
+        Overview is unchanged until the adapter populates
+        :attr:`OverviewConfig.scanner_overrides`. See
+        :func:`format_scanner_overrides_summary`.
+        """
+        if self.cfg is None:
+            return ""
+        return format_scanner_overrides_summary(self.cfg.scanner_overrides)
 
     def multi_connector_rows(self) -> list[tuple[str, str]]:
         """Per-connector ``(label, detail)`` rows for the Overview.
@@ -922,7 +991,7 @@ def zero_connector_requests_notice(connector_name: str, uptime: timedelta) -> st
                 f"{name} connector has seen 0 hook events after {formatted} - "
                 "normal until Claude Code emits a hook event; verify Claude Code hooks if this persists"
             )
-        case "hermes" | "cursor" | "windsurf" | "geminicli" | "copilot" | "openhands" | "antigravity":
+        case "hermes" | "cursor" | "windsurf" | "geminicli" | "copilot" | "openhands" | "antigravity" | "opencode":
             return (
                 f"{name} connector has seen 0 hook events after {formatted} - "
                 "normal until the agent emits a supported hook; verify connector hook setup if this persists"
@@ -935,7 +1004,7 @@ def zero_connector_requests_notice(connector_name: str, uptime: timedelta) -> st
 
 
 def friendly_connector_name(connector: str) -> str:
-    match (connector or "openclaw").strip().lower() or "openclaw":
+    match (connector or "").strip().lower():
         case "openclaw":
             return "OpenClaw"
         case "zeptoclaw":
@@ -958,12 +1027,14 @@ def friendly_connector_name(connector: str) -> str:
             return "OpenHands"
         case "antigravity":
             return "Antigravity"
+        case "opencode":
+            return "OpenCode"
         case value:
-            return value[:1].upper() + value[1:] if value else "OpenClaw"
+            return value[:1].upper() + value[1:] if value else "No connector"
 
 
 def connector_source_label(connector: str, category: str) -> str:
-    connector = (connector or "openclaw").strip().lower() or "openclaw"
+    connector = (connector or "").strip().lower()
     sources = {
         ("openclaw", "skills"): ("./skills", "~/.openclaw/skills"),
         ("claudecode", "skills"): ("~/.claude/skills", "./.claude/skills"),
@@ -975,7 +1046,12 @@ def connector_source_label(connector: str, category: str) -> str:
         ("geminicli", "skills"): ("./.gemini/skills", "./.agents/skills"),
         ("copilot", "skills"): ("./.github/skills", "./.agents/skills", "~/.copilot/skills"),
         ("openhands", "skills"): ("~/.openhands/skills", "~/.openhands/microagents", "~/.agents/skills"),
-        ("antigravity", "skills"): ("unsupported/hooks-only surface",),
+        ("antigravity", "skills"): (
+            "~/.gemini/config/skills/<skill>/SKILL.md",
+            "<workspace>/.agents/skills/<skill>/SKILL.md",
+            "~/.gemini/antigravity-cli/skills/*.md (discovery-only)",
+        ),
+        ("opencode", "skills"): ("unsupported/hooks-only surface",),
         ("openclaw", "mcps"): ("openclaw config get mcp.servers", "openclaw.json (mcp.servers)"),
         ("claudecode", "mcps"): ("~/.claude/settings.json (mcpServers)", "./.mcp.json"),
         ("codex", "mcps"): ("~/.codex/config.toml ([mcp_servers])", "./.mcp.json"),
@@ -986,7 +1062,12 @@ def connector_source_label(connector: str, category: str) -> str:
         ("geminicli", "mcps"): ("~/.gemini/settings.json (mcpServers)", "./.mcp.json"),
         ("copilot", "mcps"): ("~/.copilot/mcp-config.json", "./.github/mcp.json", "./.mcp.json"),
         ("openhands", "mcps"): ("~/.openhands/mcp.json",),
-        ("antigravity", "mcps"): ("unsupported/hooks-only surface",),
+        ("antigravity", "mcps"): (
+            "~/.gemini/config/mcp_config.json",
+            "<workspace>/.agents/mcp_config.json",
+            "<plugin>/mcp_config.json (discovery-only)",
+        ),
+        ("opencode", "mcps"): ("~/.config/opencode/opencode.json (mcp)", "./opencode.json (mcp)"),
         ("openclaw", "plugins"): ("~/.openclaw/extensions",),
         ("claudecode", "plugins"): ("~/.claude/plugins",),
         ("codex", "plugins"): ("~/.codex/plugins",),
@@ -997,7 +1078,12 @@ def connector_source_label(connector: str, category: str) -> str:
         ("geminicli", "plugins"): ("./.gemini/extensions",),
         ("copilot", "plugins"): ("copilot plugin list",),
         ("openhands", "plugins"): ("unsupported",),
-        ("antigravity", "plugins"): ("unsupported",),
+        ("antigravity", "plugins"): (
+            "~/.gemini/config/plugins/<plugin>/ (discovery-only)",
+            "~/.gemini/antigravity-cli/plugins/<plugin>/ (discovery-only)",
+            "<workspace>/.agents/plugins/<plugin>/ (discovery-only)",
+        ),
+        ("opencode", "plugins"): ("~/.config/opencode/plugins/defenseclaw.js (DefenseClaw bridge)",),
         ("openclaw", "config"): ("~/.openclaw/openclaw.json",),
         ("claudecode", "config"): ("~/.claude/settings.json",),
         ("codex", "config"): ("~/.codex/config.toml",),
@@ -1009,6 +1095,7 @@ def connector_source_label(connector: str, category: str) -> str:
         ("copilot", "config"): ("./.github/hooks/*.json",),
         ("openhands", "config"): ("~/.openhands/hooks.json",),
         ("antigravity", "config"): ("~/.gemini/config/hooks.json",),
+        ("opencode", "config"): ("~/.config/opencode/plugins/defenseclaw.js",),
     }
     return ", ".join(sources.get((connector, category), ()))
 
@@ -1018,7 +1105,43 @@ def active_connector_name(health: HealthSnapshot | None, mode: str) -> str:
         return health.connector.name.strip()
     if mode.strip():
         return mode.strip()
-    return "openclaw"
+    return ""
+
+
+def format_scanner_overrides_summary(
+    overrides: tuple[tuple[str, str, str, str], ...],
+) -> str:
+    """One-line summary of active-policy scanner action overrides (N3).
+
+    ``overrides`` is the flattened ``(scanner_type, severity, surface, action)``
+    view of the active policy's ``scanner_overrides`` (synced into
+    ``data.json``; only ``policy show`` surfaces these today). Returns ``""``
+    when empty, so the Overview / ``defenseclaw status`` render nothing for the
+    common default config. Groups by scanner then severity, e.g.::
+
+        secrets: HIGH file=block, install=warn | pii: MEDIUM runtime=allow
+
+    Malformed entries (not 4 fields, or missing scanner/surface) are skipped so
+    a bad adapter payload degrades to a partial line rather than raising.
+    """
+    grouped: dict[str, dict[str, list[str]]] = {}
+    for entry in overrides:
+        if len(entry) != 4:
+            continue
+        scanner, severity, surface, action = (str(part).strip() for part in entry)
+        if not scanner or not surface:
+            continue
+        grouped.setdefault(scanner, {}).setdefault(severity.upper(), []).append(
+            f"{surface}={action}"
+        )
+    parts: list[str] = []
+    for scanner, sevs in grouped.items():
+        sev_parts = [
+            f"{severity + ' ' if severity else ''}{', '.join(surfaces)}"
+            for severity, surfaces in sevs.items()
+        ]
+        parts.append(f"{scanner}: {'; '.join(sev_parts)}")
+    return " | ".join(parts)
 
 
 def sort_ai_discovery_signals_for_overview(signals: tuple[AIUsageSignal, ...]) -> tuple[AIUsageSignal, ...]:
@@ -1034,6 +1157,34 @@ def sort_ai_discovery_signals_for_overview(signals: tuple[AIUsageSignal, ...]) -
         return (state_rank, -signal.confidence, -last_seen, display_ai_discovery_name(signal).lower())
 
     return tuple(sorted(signals, key=rank))
+
+
+def unique_ai_discovery_signals_for_overview(signals: tuple[AIUsageSignal, ...]) -> tuple[AIUsageSignal, ...]:
+    """Collapse multiple evidence signals into one Overview row per agent."""
+
+    seen: set[tuple[str, str]] = set()
+    rows: list[AIUsageSignal] = []
+    for signal in signals:
+        key = _ai_discovery_overview_key(signal)
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append(signal)
+    return tuple(rows)
+
+
+def _ai_discovery_overview_key(signal: AIUsageSignal) -> tuple[str, str]:
+    connector = signal.supported_connector.strip().lower()
+    if connector:
+        return ("connector", connector)
+    if signal.component is not None:
+        ecosystem = signal.component.ecosystem.strip().lower()
+        name = signal.component.name.strip().lower()
+        if ecosystem or name:
+            return ("component", f"{ecosystem}:{name}")
+    name = display_ai_discovery_name(signal).strip().lower()
+    vendor = display_ai_discovery_vendor(signal).strip().lower()
+    return ("display", f"{vendor}:{name}")
 
 
 def ai_discovery_state_badge(state: str) -> str:
@@ -1150,6 +1301,7 @@ __all__ = [
     "format_age",
     "format_duration",
     "format_scan_age",
+    "format_scanner_overrides_summary",
     "friendly_connector_name",
     "gateway_health_is_broken",
     "keys_overflow_suffix",

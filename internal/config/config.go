@@ -210,8 +210,17 @@ type Config struct {
 	// It supports an arbitrary number of named sinks of any registered
 	// kind (splunk_hec, otlp_logs, http_jsonl). Legacy `splunk:` keys are
 	// detected at Load() and emit a hard migration error.
-	AuditSinks    []AuditSink         `mapstructure:"audit_sinks"      yaml:"audit_sinks,omitempty"`
-	Webhooks      []WebhookConfig     `mapstructure:"webhooks"         yaml:"webhooks"`
+	AuditSinks []AuditSink     `mapstructure:"audit_sinks"      yaml:"audit_sinks,omitempty"`
+	Webhooks   []WebhookConfig `mapstructure:"webhooks"         yaml:"webhooks"`
+	// Observability carries the per-connector audit-sink / webhook routing
+	// overrides (D5b). An empty/absent block preserves the legacy
+	// global-only behavior. A connector's events route to its
+	// observability.connectors[<name>].{audit_sinks,webhooks} when set,
+	// falling back to the global AuditSinks / Webhooks otherwise; resolution
+	// goes through the ObservabilityConfig.Effective* resolvers. Mirrors the
+	// Python `observability:` block written by `defenseclaw setup
+	// observability/webhook --connector`.
+	Observability ObservabilityConfig `mapstructure:"observability"    yaml:"observability,omitempty"`
 	Privacy       PrivacyConfig       `mapstructure:"privacy"          yaml:"privacy,omitempty"`
 	AIDiscovery   AIDiscoveryConfig   `mapstructure:"ai_discovery"     yaml:"ai_discovery,omitempty"`
 	Notifications NotificationsConfig `mapstructure:"notifications"    yaml:"notifications,omitempty"`
@@ -652,6 +661,16 @@ func (c *Config) ResolveLLM(path string) LLMConfig {
 	}
 	if override.BaseURL != "" {
 		out.BaseURL = override.BaseURL
+	}
+	// InstanceName is the ONLY signal that binds a role to a
+	// custom-providers.json overlay entry (NewProviderForLLMConfig
+	// matches the overlay by instance name, never by model prefix).
+	// Dropping it here meant a role-level binding like
+	// guardrail.judge.llm.instance_name silently fell back to the
+	// inferred provider family — live judge content went to the
+	// public provider endpoint instead of the operator's custom one.
+	if override.InstanceName != "" {
+		out.InstanceName = override.InstanceName
 	}
 	if override.Timeout > 0 {
 		out.Timeout = override.Timeout
@@ -1285,7 +1304,7 @@ type GuardrailConfig struct {
 	Judge             JudgeConfig `mapstructure:"judge"                yaml:"judge"`
 	HILT              HILTConfig  `mapstructure:"hilt"                 yaml:"hilt"`
 
-	// Detection strategy: "regex_only" (default), "regex_judge", "judge_first".
+	// Detection strategy: "regex_only", "regex_judge" (default), "judge_first".
 	// Per-direction overrides take precedence over the global setting.
 	DetectionStrategy           string `mapstructure:"detection_strategy"            yaml:"detection_strategy,omitempty"`
 	DetectionStrategyPrompt     string `mapstructure:"detection_strategy_prompt"     yaml:"detection_strategy_prompt,omitempty"`
@@ -1675,17 +1694,28 @@ func validateGuardrailMinSeverity(sev string) error {
 }
 
 // EffectiveHookFailMode returns the operator-chosen hook fail mode,
-// defaulting to "open" when unset or set to anything other than the
-// canonical "closed" sentinel. Centralized here so the sidecar and
-// any future config-edit surfaces never disagree on the default.
+// defaulting to "closed" when unset (CodeGuard rule
+// codeguard-0-authorization-access-control: deny by default). The
+// canonical "open" sentinel is the only way to get the legacy
+// fail-open behavior; any other value (typo, blank, malformed
+// migration row) collapses to "closed" so the agent never silently
+// fails open at the response-layer boundary. Centralized here so the
+// sidecar and any future config-edit surfaces never disagree on the
+// default.
+//
+// Backwards compatibility: existing operators on v3 are protected by
+// the _migrate_0_4_0_seed_hook_fail_mode migration in
+// cli/defenseclaw/migrations.py, which writes “hook_fail_mode: open“
+// into config.yaml on first upgrade. New installs and explicit-empty
+// values get the safer default.
 func (g *GuardrailConfig) EffectiveHookFailMode() string {
 	if g == nil {
-		return "open"
-	}
-	if g.HookFailMode == "closed" {
 		return "closed"
 	}
-	return "open"
+	if g.HookFailMode == "open" {
+		return "open"
+	}
+	return "closed"
 }
 
 // EffectiveHookFailModeFor returns the hook fail mode for the named
@@ -1698,21 +1728,26 @@ func (g *GuardrailConfig) EffectiveHookFailMode() string {
 // global value. Pure lookup — never errors, never mutates.
 func (g *GuardrailConfig) EffectiveHookFailModeFor(connector string) string {
 	if g == nil {
-		return "open"
+		return "closed"
 	}
 	if pc, ok := g.connectorOverride(connector); ok {
 		if strings.TrimSpace(pc.HookFailMode) != "" {
-			if strings.EqualFold(strings.TrimSpace(pc.HookFailMode), "closed") {
-				return "closed"
+			// Mirror the global EffectiveHookFailMode() normalization
+			// (avarice F-0681): the canonical "open" sentinel is the only
+			// way to opt into legacy fail-open; any other per-connector
+			// value (typo, blank, malformed row) collapses to "closed" so
+			// the multi-connector boot path never silently fails open.
+			if strings.EqualFold(strings.TrimSpace(pc.HookFailMode), "open") {
+				return "open"
 			}
-			return "open"
+			return "closed"
 		}
 	}
 	return g.EffectiveHookFailMode()
 }
 
 // EffectiveStrategy returns the detection strategy for the given direction,
-// falling back to the global DetectionStrategy (default: "regex_only").
+// falling back to the global DetectionStrategy (default: "regex_judge").
 func (g *GuardrailConfig) EffectiveStrategy(direction string) string {
 	var override string
 	switch direction {
@@ -1751,6 +1786,22 @@ type JudgeConfig struct {
 	Exfil   bool    `mapstructure:"exfil"           yaml:"exfil"`
 	Timeout float64 `mapstructure:"timeout"         yaml:"timeout"`
 
+	// HookConnectors gates the hook-lane judge per connector. Hook-based
+	// connectors (hermes / opencode / claudecode / …) deliver content to
+	// inspectMessageContent, which historically ran regex + Cisco AID
+	// only; connectors listed here additionally forward that content to
+	// the LLM judge — and therefore to a custom provider when
+	// guardrail.judge.llm points at one. Empty list keeps the hook-lane
+	// judge off (the proxy lane is unaffected); the "*" entry enables
+	// every connector.
+	HookConnectors []string `mapstructure:"hook_connectors" yaml:"hook_connectors,omitempty"`
+
+	// HookTimeout caps the hook-lane judge round-trip in seconds.
+	// Distinct from Timeout (proxy lane, default 30s) because hook
+	// scripts abandon the gateway call at curl --max-time 10; the
+	// gateway applies a 5s default when unset.
+	HookTimeout float64 `mapstructure:"hook_timeout" yaml:"hook_timeout,omitempty"`
+
 	// LLM overrides the top-level llm: block for the LLM judge. Prefer
 	// Config.ResolveLLM("guardrail.judge") over reading LLM / legacy
 	// Model directly.
@@ -1765,6 +1816,28 @@ type JudgeConfig struct {
 
 	Fallbacks           []string `mapstructure:"fallbacks"            yaml:"fallbacks,omitempty"`
 	AdjudicationTimeout float64  `mapstructure:"adjudication_timeout" yaml:"adjudication_timeout,omitempty"`
+}
+
+// HookConnectorEnabled reports whether the hook-lane judge is enabled
+// for the named connector. Requires the judge itself to be enabled;
+// matching against HookConnectors is case-insensitive and the "*"
+// entry matches every connector. Empty list (the default) keeps the
+// hook lane off so existing deployments see no behavior change.
+func (c *JudgeConfig) HookConnectorEnabled(name string) bool {
+	if c == nil || !c.Enabled {
+		return false
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false
+	}
+	for _, entry := range c.HookConnectors {
+		entry = strings.TrimSpace(entry)
+		if entry == "*" || strings.EqualFold(entry, name) {
+			return true
+		}
+	}
+	return false
 }
 
 // ResolvedJudgeAPIKey returns the judge API key from the env var.
@@ -2107,6 +2180,35 @@ func Load() (*Config, error) {
 				ReportConfigLoadError(context.Background(), "audit_sink_invalid")
 			}
 			return nil, fmt.Errorf("config: audit_sinks[%d]: %w", i, err)
+		}
+	}
+
+	// Per-connector observability (D5b): reject empty / alias-duplicate
+	// connector names, then validate each connector's override audit sinks
+	// exactly like the global list above so a hand-edited
+	// observability.connectors[...] block fails loud at startup rather than
+	// silently mis-routing a connector's events. Webhooks are validated at
+	// dispatcher build time (URL/SSRF checks), matching the top-level
+	// webhooks: handling.
+	if err := cfg.Observability.Validate(); err != nil {
+		if ReportConfigLoadError != nil {
+			ReportConfigLoadError(context.Background(), "observability_invalid")
+		}
+		return nil, fmt.Errorf("config: observability: %w", err)
+	}
+	for _, name := range cfg.Observability.ConnectorNames() {
+		pc := cfg.Observability.Connectors[name]
+		if pc.AuditSinks == nil {
+			continue
+		}
+		for i := range *pc.AuditSinks {
+			if err := (*pc.AuditSinks)[i].Validate(); err != nil {
+				if ReportConfigLoadError != nil {
+					ReportConfigLoadError(context.Background(), "audit_sink_invalid")
+				}
+				return nil, fmt.Errorf(
+					"config: observability.connectors[%q].audit_sinks[%d]: %w", name, i, err)
+			}
 		}
 	}
 
@@ -2707,7 +2809,7 @@ func setDefaults(dataDir string) {
 	viper.SetDefault("scanners.skill_scanner.virustotal_api_key", "")
 	viper.SetDefault("scanners.skill_scanner.virustotal_api_key_env", "VIRUSTOTAL_API_KEY")
 	viper.SetDefault("scanners.mcp_scanner.binary", "mcp-scanner")
-	viper.SetDefault("scanners.mcp_scanner.analyzers", "yara")
+	viper.SetDefault("scanners.mcp_scanner.analyzers", "auto")
 	viper.SetDefault("scanners.mcp_scanner.scan_prompts", false)
 	viper.SetDefault("scanners.mcp_scanner.scan_resources", false)
 	viper.SetDefault("scanners.mcp_scanner.scan_instructions", false)
@@ -2808,12 +2910,15 @@ func setDefaults(dataDir string) {
 
 	viper.SetDefault("guardrail.enabled", false)
 	viper.SetDefault("guardrail.mode", "observe")
-	// "open" is the user-friendly default — see
-	// GuardrailConfig.HookFailMode for the rationale. Operators who
-	// want strict response-layer enforcement run `defenseclaw setup
-	// guardrail` (which prompts) or `defenseclaw guardrail fail-mode
-	// closed`.
-	viper.SetDefault("guardrail.hook_fail_mode", "open")
+	// "closed" is the safer default — response-layer failures (4xx,
+	// malformed JSON, missing action) BLOCK the tool/prompt rather
+	// than silently allowing it. Pre-existing operators are protected
+	// by _migrate_0_4_0_seed_hook_fail_mode (migrations.py) which
+	// writes ``hook_fail_mode: open`` to existing config.yaml so prior
+	// behavior is preserved on upgrade. Operators who explicitly want
+	// fail-open run `defenseclaw guardrail fail-mode open` (or set
+	// guardrail.hook_fail_mode: open in YAML).
+	viper.SetDefault("guardrail.hook_fail_mode", "closed")
 	// Self-heal connector hook configs by default: if a user deletes
 	// the DefenseClaw hook block while the gateway is running, the
 	// hook config guard re-installs it. Operators can opt out with

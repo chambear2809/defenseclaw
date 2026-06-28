@@ -34,6 +34,7 @@ from defenseclaw.tui.panels.overview import (
     sort_ai_discovery_signals_for_overview,
     string_detail,
 )
+from defenseclaw.tui.services.overview_state import format_scanner_overrides_summary
 
 
 def _model() -> OverviewPanelModel:
@@ -371,6 +372,52 @@ def test_overview_ai_discovery_box_states_sort_and_cap() -> None:
     assert box.overflow == 3
 
 
+def test_overview_ai_discovery_box_dedupes_agent_signals_before_cap() -> None:
+    now = datetime(2026, 5, 20, 12, tzinfo=timezone.utc)
+    model = _model()
+    signals = (
+        AIUsageSignal(
+            name="Claude Code",
+            vendor="Anthropic",
+            supported_connector="claudecode",
+            category="ai_cli",
+            state="seen",
+            confidence=0.98,
+            last_seen=now,
+        ),
+        AIUsageSignal(
+            name="Claude Code",
+            vendor="Anthropic",
+            supported_connector="claudecode",
+            category="shell_history_match",
+            state="seen",
+            confidence=0.98,
+            last_seen=now,
+        ),
+        AIUsageSignal(
+            name="Codex",
+            vendor="OpenAI",
+            supported_connector="codex",
+            category="ai_cli",
+            state="seen",
+            confidence=0.98,
+            last_seen=now,
+        ),
+    )
+    model.set_ai_usage(
+        AIUsageSnapshot(
+            enabled=True,
+            summary=AIUsageSummary(scanned_at=now, active_signals=len(signals)),
+            signals=signals,
+        )
+    )
+
+    box = model.ai_discovery_box(now=now)
+
+    assert [row.name for row in box.rows] == ["Claude Code", "Codex"]
+    assert box.overflow == 0
+
+
 def test_sort_ai_discovery_signals_for_overview_tiebreakers() -> None:
     now = datetime(2026, 5, 20, 12, tzinfo=timezone.utc)
     signals = (
@@ -401,10 +448,24 @@ def test_connector_labels_cover_hook_surface_connectors() -> None:
     assert ".codeium/windsurf/hooks.json" in connector_source_label("windsurf", "config")
     assert ".gemini/extensions" in connector_source_label("geminicli", "plugins")
     assert ".github/mcp.json" in connector_source_label("copilot", "mcps")
+    # opencode MCP is now managed by DefenseClaw (read+write via the bridge
+    # path layer), so the source label points at its real config and no longer
+    # advertises "unmanaged in v1".
+    opencode_mcps = connector_source_label("opencode", "mcps")
+    assert ".config/opencode/opencode.json" in opencode_mcps
+    assert "unmanaged" not in opencode_mcps
+    antigravity_mcps = connector_source_label("antigravity", "mcps")
+    assert ".gemini/config/mcp_config.json" in antigravity_mcps
+    assert ".agents/mcp_config.json" in antigravity_mcps
+    assert "hooks-only" not in antigravity_mcps
+    assert "unsupported" not in antigravity_mcps
+    assert ".gemini/config/skills" in connector_source_label("antigravity", "skills")
+    assert "discovery-only" in connector_source_label("antigravity", "plugins")
 
     health = HealthSnapshot(connector=ConnectorHealth(name="codex"))
     assert active_connector_name(health, "openclaw") == "codex"
     assert active_connector_name(None, "claudecode") == "claudecode"
+    assert active_connector_name(None, "") == ""
 
 
 def test_multi_connector_rows_lists_each_connector_with_mode() -> None:
@@ -480,3 +541,33 @@ def test_multi_connector_rows_noop_for_single_connector() -> None:
     )
     assert one.multi_connector_rows() == []
     assert OverviewPanelModel(None, version="test").multi_connector_rows() == []
+
+
+def test_scanner_overrides_summary_formats_and_stays_empty_by_default() -> None:
+    # N3 state-layer surface: scanner overrides live only in the active policy
+    # YAML / data.json today. The default config has none, so the summary is ""
+    # and the Overview renders nothing until the adapter populates the field.
+    assert format_scanner_overrides_summary(()) == ""
+    assert OverviewPanelModel(None, version="test").scanner_overrides_summary() == ""
+    assert (
+        OverviewPanelModel(OverviewConfig(claw_mode="codex"), version="test").scanner_overrides_summary()
+        == ""
+    )
+
+    overrides = (
+        ("secrets", "high", "file", "block"),
+        ("secrets", "high", "install", "warn"),
+        ("pii", "medium", "runtime", "allow"),
+    )
+    summary = format_scanner_overrides_summary(overrides)
+    assert summary == "secrets: HIGH file=block, install=warn | pii: MEDIUM runtime=allow"
+
+    # Surfaced through the panel model once the adapter feeds the field.
+    model = OverviewPanelModel(
+        OverviewConfig(claw_mode="codex", scanner_overrides=overrides), version="test"
+    )
+    assert model.scanner_overrides_summary() == summary
+
+    # Malformed entries degrade gracefully instead of raising.
+    assert format_scanner_overrides_summary((("", "high", "file", "block"),)) == ""
+    assert format_scanner_overrides_summary((("secrets", "low", "file"),)) == ""  # wrong arity

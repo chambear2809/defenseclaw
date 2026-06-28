@@ -122,12 +122,12 @@ func (a *APIServer) evaluateClaudeCodeHook(ctx context.Context, req claudeCodeHo
 			}
 		}
 	case "UserPromptSubmit", "UserPromptExpansion":
-		verdict = a.inspectMessageContent(&ToolInspectRequest{Tool: "message", Content: claudeCodePromptContent(req), Direction: "prompt", Connector: "claudecode"})
+		verdict = a.inspectMessageContent(ctx, &ToolInspectRequest{Tool: "message", Content: claudeCodePromptContent(req), Direction: "prompt", Connector: "claudecode"})
 		if req.HookEventName == "UserPromptExpansion" {
 			assetDecisions = append(assetDecisions, a.claudeCodePromptExpansionAssetDecisions(ctx, req)...)
 		}
 	case "PreToolUse", "PermissionRequest", "PermissionDenied":
-		verdict = a.inspectToolPolicy(&ToolInspectRequest{Tool: claudeCodeToolName(req), Args: claudeCodeToolArgs(req), Direction: "tool_call", Connector: "claudecode"})
+		verdict = a.inspectToolPolicy(&ToolInspectRequest{Tool: claudeCodeToolName(req), Args: claudeCodeToolArgs(req), Direction: "tool_call", Connector: "claudecode", MCPServerName: req.MCPServerName})
 		if decision, matched := a.claudeCodeMCPAssetDecision(ctx, req); matched {
 			assetDecisions = append(assetDecisions, runtimeAssetDecision{targetType: "mcp", decision: decision})
 		}
@@ -135,7 +135,7 @@ func (a *APIServer) evaluateClaudeCodeHook(ctx context.Context, req claudeCodeHo
 			assetDecisions = append(assetDecisions, runtimeAssetDecision{targetType: "skill", decision: decision})
 		}
 	case "PostToolUse", "PostToolUseFailure", "PostToolBatch":
-		verdict = a.inspectMessageContent(&ToolInspectRequest{Tool: "message", Content: claudeCodeToolOutput(req), Direction: "tool_result", Connector: "claudecode"})
+		verdict = a.inspectMessageContent(ctx, &ToolInspectRequest{Tool: "message", Content: claudeCodeToolOutput(req), Direction: "tool_result", Connector: "claudecode"})
 		if decision, matched := a.claudeCodeMCPAssetDecision(ctx, req); matched {
 			assetDecisions = append(assetDecisions, runtimeAssetDecision{targetType: "mcp", decision: decision})
 		}
@@ -149,11 +149,11 @@ func (a *APIServer) evaluateClaudeCodeHook(ctx context.Context, req claudeCodeHo
 	case "InstructionsLoaded", "ConfigChange", "FileChanged":
 		verdict = a.scanClaudeCodeEventFile(ctx, req)
 		if verdict == nil {
-			verdict = a.inspectMessageContent(&ToolInspectRequest{Tool: "message", Content: claudeCodeEventContent(req), Direction: "prompt", Connector: "claudecode"})
+			verdict = a.inspectMessageContent(ctx, &ToolInspectRequest{Tool: "message", Content: claudeCodeEventContent(req), Direction: "prompt", Connector: "claudecode"})
 		}
 	case "TaskCreated", "TaskCompleted", "TeammateIdle",
 		"PreCompact", "PostCompact", "Elicitation", "ElicitationResult", "Notification":
-		verdict = a.inspectMessageContent(&ToolInspectRequest{Tool: "message", Content: claudeCodeEventContent(req), Direction: "prompt", Connector: "claudecode"})
+		verdict = a.inspectMessageContent(ctx, &ToolInspectRequest{Tool: "message", Content: claudeCodeEventContent(req), Direction: "prompt", Connector: "claudecode"})
 	}
 
 	rawAction := normalizeCodexAction(verdict.Action)

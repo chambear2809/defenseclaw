@@ -17,6 +17,7 @@
 package gateway
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -986,15 +987,29 @@ func (p *GuardrailProxy) handlePassthrough(w http.ResponseWriter, r *http.Reques
 		passthroughReqForTelemetry.Model = label
 	}
 	inspectionText := promptInspectionText(userText)
+	// F-3396: heartbeat / session-startup gates run on the RAW user text, not
+	// the post-strip variant. Otherwise an attacker could wrap a heartbeat-
+	// or session-startup-shaped suffix inside the user-controlled OpenClaw
+	// metadata fence and have stripOpenClawUntrustedEnvelope hide the real
+	// payload from these allowlists while the original prompt still flows
+	// upstream.
 	if userText != "" &&
-		!isHeartbeatMessage(inspectionText, partial.Messages) &&
-		!isSessionStartupMessage(inspectionText) {
+		!isHeartbeatMessage(userText, partial.Messages) &&
+		!isSessionStartupMessage(userText) {
 		meta := proxyLLMEventMeta(p, r, &passthroughReqForTelemetry, provider)
 		meta.PromptID = stableLLMEventID("prompt", meta.Source, meta.SessionID, meta.RequestID, label)
 		passthroughPromptID = emitLLMPromptEvent(r.Context(), meta, userText, body)
 
 		t0 := time.Now()
 		verdict := p.inspector.Inspect(r.Context(), "prompt", inspectionText, partial.Messages, label, mode)
+		// F-1265: stripOpenClawUntrustedEnvelope is keyed on a literal prefix
+		// any client can forge, so we additionally inspect the RAW user text
+		// when the strip actually changed the content. Either path can
+		// trigger a block; we keep the stricter verdict.
+		if inspectionText != userText {
+			rawVerdict := p.inspector.Inspect(r.Context(), "prompt", userText, partial.Messages, label, mode)
+			verdict = mergePromptVerdicts(verdict, rawVerdict)
+		}
 		p.resolveConfirm(r.Context(), r, verdict, "prompt", label, mode)
 		elapsed := time.Since(t0)
 		p.logPreCall(label, partial.Messages, verdict, elapsed)
@@ -1095,6 +1110,24 @@ func (p *GuardrailProxy) handlePassthrough(w http.ResponseWriter, r *http.Reques
 			upstreamAuth = "Bearer " + xKey
 		} else if auth := r.Header.Get("Authorization"); auth != "" && !strings.HasPrefix(auth, "Bearer sk-dc-") {
 			upstreamAuth = auth
+		}
+	}
+	// Fallback: when the caller supplied X-DC-Target-URL but no credential
+	// headers (the "third_party_injected" mode used by ZeptoClaw/PulseClaw),
+	// consult the enterprise token resolver (secrets-sidecar hydrated key)
+	// so the proxy injects the upstream LLM credential on behalf of the
+	// caller. This mirrors the resolveConfiguredProvider path that
+	// handleChatCompletion already uses for direct-provider hydration.
+	if upstreamAuth == "" && tokenResolver != nil {
+		providerPrefix := provider
+		if providerPrefix == "" {
+			providerPrefix = inferProvider(partial.Model, "")
+		}
+		resolvedKey, err := tokenResolver(r.Context(), providerPrefix)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[guardrail] passthrough: token resolver error: %v\n", err)
+		} else if resolvedKey != "" {
+			upstreamAuth = "Bearer " + resolvedKey
 		}
 	}
 
@@ -1221,6 +1254,23 @@ func (p *GuardrailProxy) handlePassthrough(w http.ResponseWriter, r *http.Reques
 			if verdict.Action == "block" && mode == "action" {
 				msg := blockMessage(customBlockMsg, "completion", verdict.Reason)
 				p.enqueueBlockNotification(verdict, "completion", partial.Model)
+				p.writeBlockedPassthrough(w, r.URL.Path, provider, partial.Model, false, msg)
+				return
+			}
+		}
+
+		// Avarice F-1188: scan provider-native tool calls (Anthropic
+		// tool_use, Gemini functionCall, Bedrock toolUse, OpenAI
+		// Responses function_call, OpenAI Chat Completions tool_calls).
+		// Pre-fix only the OpenAI chat-completion JSON path scanned tool
+		// calls; Anthropic / Gemini / Bedrock tool-call payloads were
+		// forwarded unchecked and the agent could execute them without
+		// the configured tool-call rules ever running.
+		if toolCallsRaw := extractPassthroughToolCalls(respBody, provider); toolCallsRaw != nil {
+			if verdict := p.inspectToolCalls(r.Context(), toolCallsRaw); verdict != nil &&
+				verdict.Action == "block" && mode == "action" {
+				msg := blockMessage(customBlockMsg, "tool_call", verdict.Reason)
+				p.enqueueBlockNotification(verdict, "tool_call", partial.Model)
 				p.writeBlockedPassthrough(w, r.URL.Path, provider, partial.Model, false, msg)
 				return
 			}
@@ -1387,8 +1437,16 @@ func (p *GuardrailProxy) handlePassthrough(w http.ResponseWriter, r *http.Reques
 }
 
 // extractPassthroughResponseContent extracts assistant text from a non-streaming
-// provider-native response body. Supports Anthropic Messages API, Gemini, and
-// OpenAI Responses API formats.
+// provider-native response body. Supports Anthropic Messages API, Gemini,
+// OpenAI Responses API, OpenAI Chat Completions, Ollama native chat/generate,
+// and Bedrock Converse.
+//
+// Avarice F-1186: pre-fix Ollama and Bedrock envelopes were ignored, so
+// completion inspection silently skipped any prompt-injection that triggered
+// `block` because `content` came back empty and the proxy short-circuited
+// the inspector call. The new branches keep parity with the providers that
+// `inferProviderFromURL` recognises so action-mode passthrough enforcement
+// is uniform across the supported provider surface.
 func extractPassthroughResponseContent(body []byte, provider string) string {
 	switch provider {
 	case "anthropic":
@@ -1430,6 +1488,48 @@ func extractPassthroughResponseContent(body []byte, provider string) string {
 			return sb.String()
 		}
 
+	case "ollama":
+		// F-1186: Ollama native chat: {"message": {"content": "..."}}
+		// Ollama native generate: {"response": "..."}
+		var chatResp struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+			Response string `json:"response"`
+		}
+		if json.Unmarshal(body, &chatResp) == nil {
+			if chatResp.Message.Content != "" {
+				return chatResp.Message.Content
+			}
+			if chatResp.Response != "" {
+				return chatResp.Response
+			}
+		}
+
+	case "bedrock":
+		// F-1186: Bedrock Converse: {"output": {"message": {"content": [{"text": "..."}]}}}
+		// Bedrock InvokeModel responses are model-shaped and re-routed through
+		// the matching provider extractor (anthropic / cohere / etc.) by the
+		// caller, so this branch only handles the Converse envelope.
+		var bedrockResp struct {
+			Output struct {
+				Message struct {
+					Content []struct {
+						Text string `json:"text"`
+					} `json:"content"`
+				} `json:"message"`
+			} `json:"output"`
+		}
+		if json.Unmarshal(body, &bedrockResp) == nil {
+			var sb strings.Builder
+			for _, c := range bedrockResp.Output.Message.Content {
+				sb.WriteString(c.Text)
+			}
+			if sb.Len() > 0 {
+				return sb.String()
+			}
+		}
+
 	default:
 		// OpenAI Responses API: {"output": [{"content": [{"text": "..."}]}]}
 		var respAPI struct {
@@ -1466,8 +1566,192 @@ func extractPassthroughResponseContent(body []byte, provider string) string {
 	return ""
 }
 
+// extractPassthroughToolCalls returns provider-native tool-call payloads
+// found in a non-streaming response body, normalised into the OpenAI Chat
+// Completions tool_calls shape — a JSON array of
+// {"type":"function","function":{"name","arguments"}} objects. That nested
+// shape is the exact contract inspectToolCalls parses: emitting the flat
+// {"name","arguments"} shape here would make the inspector decode every
+// Function.Name / Function.Arguments as the empty string, so Anthropic
+// `tool_use`, Gemini `functionCall`, Bedrock `toolUse`, and OpenAI Responses
+// `function_call` outputs would forward uninspected. Returns nil when the
+// body contains no recognised tool-call shape so the caller can short-circuit
+// inspection.
+func extractPassthroughToolCalls(body []byte, provider string) json.RawMessage {
+	type out struct {
+		Name      string
+		Arguments string
+	}
+	var calls []out
+	addCall := func(name string, args interface{}) {
+		if name == "" {
+			return
+		}
+		argStr := ""
+		switch a := args.(type) {
+		case string:
+			argStr = a
+		case json.RawMessage:
+			if len(a) > 0 {
+				// OpenAI Responses encodes `arguments` as a JSON string
+				// (a quoted string whose contents are themselves JSON).
+				// Unwrap that single layer so the inspector sees the same
+				// Go-string shape Chat Completions produces natively
+				// (`{"cmd":"..."}` rather than `"{\"cmd\":\"...\"}"`).
+				// Object-shaped arguments (Anthropic / Gemini / Bedrock
+				// tool inputs) pass through verbatim.
+				if a[0] == '"' {
+					var s string
+					if json.Unmarshal(a, &s) == nil {
+						argStr = s
+						break
+					}
+				}
+				argStr = string(a)
+			}
+		case nil:
+			argStr = ""
+		default:
+			b, err := json.Marshal(a)
+			if err == nil {
+				argStr = string(b)
+			}
+		}
+		calls = append(calls, out{Name: name, Arguments: argStr})
+	}
+
+	switch provider {
+	case "anthropic":
+		var resp struct {
+			Content []struct {
+				Type  string          `json:"type"`
+				Name  string          `json:"name"`
+				Input json.RawMessage `json:"input"`
+			} `json:"content"`
+		}
+		if json.Unmarshal(body, &resp) == nil {
+			for _, c := range resp.Content {
+				if c.Type == "tool_use" {
+					addCall(c.Name, c.Input)
+				}
+			}
+		}
+	case "gemini":
+		var resp struct {
+			Candidates []struct {
+				Content struct {
+					Parts []struct {
+						FunctionCall struct {
+							Name string          `json:"name"`
+							Args json.RawMessage `json:"args"`
+						} `json:"functionCall"`
+					} `json:"parts"`
+				} `json:"content"`
+			} `json:"candidates"`
+		}
+		if json.Unmarshal(body, &resp) == nil {
+			for _, c := range resp.Candidates {
+				for _, p := range c.Content.Parts {
+					addCall(p.FunctionCall.Name, p.FunctionCall.Args)
+				}
+			}
+		}
+	case "bedrock":
+		var resp struct {
+			Output struct {
+				Message struct {
+					Content []struct {
+						ToolUse struct {
+							Name  string          `json:"name"`
+							Input json.RawMessage `json:"input"`
+						} `json:"toolUse"`
+					} `json:"content"`
+				} `json:"message"`
+			} `json:"output"`
+		}
+		if json.Unmarshal(body, &resp) == nil {
+			for _, c := range resp.Output.Message.Content {
+				addCall(c.ToolUse.Name, c.ToolUse.Input)
+			}
+		}
+	default:
+		// OpenAI Responses API: {"output": [{"type":"function_call","name":"...","arguments":"..."}]}
+		var respAPI struct {
+			Output []struct {
+				Type      string          `json:"type"`
+				Name      string          `json:"name"`
+				Arguments json.RawMessage `json:"arguments"`
+			} `json:"output"`
+		}
+		if json.Unmarshal(body, &respAPI) == nil {
+			for _, o := range respAPI.Output {
+				if o.Type == "function_call" {
+					addCall(o.Name, o.Arguments)
+				}
+			}
+		}
+		// OpenAI Chat Completions tool calls: {"choices":[{"message":{"tool_calls":[{"function":{"name":"...","arguments":"..."}}]}}]}
+		var respCC struct {
+			Choices []struct {
+				Message struct {
+					ToolCalls []struct {
+						Function struct {
+							Name      string `json:"name"`
+							Arguments string `json:"arguments"`
+						} `json:"function"`
+					} `json:"tool_calls"`
+				} `json:"message"`
+			} `json:"choices"`
+		}
+		if json.Unmarshal(body, &respCC) == nil {
+			for _, c := range respCC.Choices {
+				for _, tc := range c.Message.ToolCalls {
+					addCall(tc.Function.Name, tc.Function.Arguments)
+				}
+			}
+		}
+	}
+	if len(calls) == 0 {
+		return nil
+	}
+	// Emit the nested OpenAI Chat Completions tool_calls shape so the payload
+	// round-trips through inspectToolCalls' parse contract (function.name /
+	// function.arguments). See the function doc for why the flat shape breaks
+	// inspection.
+	type fnPart struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	}
+	type nestedCall struct {
+		Type     string `json:"type"`
+		Function fnPart `json:"function"`
+	}
+	out2 := make([]nestedCall, len(calls))
+	for i, c := range calls {
+		out2[i] = nestedCall{
+			Type:     "function",
+			Function: fnPart{Name: c.Name, Arguments: c.Arguments},
+		}
+	}
+	encoded, err := json.Marshal(out2)
+	if err != nil {
+		return nil
+	}
+	return encoded
+}
+
 // extractSSEChunkText extracts the assistant text delta from a single SSE
 // data JSON object in a streaming provider-native response.
+//
+// Avarice F-1187: pre-fix the default branch only parsed OpenAI Chat
+// Completions `choices[].delta.content`, so OpenAI Responses streams
+// (`response.output_text.delta`), Bedrock Converse streams
+// (`contentBlockDelta`), and Ollama native streams (`message.content`)
+// returned an empty string for every chunk. Empty deltas skipped both
+// the initial-buffer flush and the final completion scan, and the
+// stream was delivered to the client unchanged. The new branches
+// keep the streaming inspector in lockstep with the non-streaming
+// extractor.
 func extractSSEChunkText(data string, provider string) string {
 	switch provider {
 	case "anthropic":
@@ -1501,7 +1785,52 @@ func extractSSEChunkText(data string, provider string) string {
 			return sb.String()
 		}
 
+	case "bedrock":
+		// F-1187: Bedrock Converse streaming uses contentBlockDelta frames
+		// shaped {"contentBlockDelta":{"delta":{"text":"..."}}}.
+		var chunk struct {
+			ContentBlockDelta struct {
+				Delta struct {
+					Text string `json:"text"`
+				} `json:"delta"`
+			} `json:"contentBlockDelta"`
+		}
+		if json.Unmarshal([]byte(data), &chunk) == nil {
+			return chunk.ContentBlockDelta.Delta.Text
+		}
+
+	case "ollama":
+		// F-1187: Ollama native streaming chat: {"message":{"content":"..."}}
+		// generate: {"response":"..."}
+		var chunk struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+			Response string `json:"response"`
+		}
+		if json.Unmarshal([]byte(data), &chunk) == nil {
+			if chunk.Message.Content != "" {
+				return chunk.Message.Content
+			}
+			return chunk.Response
+		}
+
 	default:
+		// F-1187: OpenAI Responses API streaming uses event-shaped frames
+		// keyed by `type`, e.g.:
+		//   {"type":"response.output_text.delta","delta":"..."}
+		// Pre-fix the default branch only parsed Chat Completions, so
+		// every Responses chunk yielded an empty string. Detect the
+		// Responses shape first, then fall back to Chat Completions.
+		var rspChunk struct {
+			Type  string `json:"type"`
+			Delta string `json:"delta"`
+		}
+		if json.Unmarshal([]byte(data), &rspChunk) == nil &&
+			strings.HasPrefix(rspChunk.Type, "response.") &&
+			strings.Contains(rspChunk.Type, ".delta") {
+			return rspChunk.Delta
+		}
 		// OpenAI Chat Completions streaming: {"choices":[{"delta":{"content":"..."}}]}
 		var chunk struct {
 			Choices []struct {
@@ -1914,6 +2243,75 @@ func (p *GuardrailProxy) resolveProviderFromHeaders(req *ChatRequest) LLMProvide
 	return provider
 }
 
+// guardUpstreamTargetURL applies the userinfo / scheme / private-host SSRF
+// guards to the resolved upstream target URL before the request is forwarded
+// to the provider (Bifrost performs the actual dial). The URL may come from
+// the X-DC-Target-URL header (fetch-interceptor connectors) or be hydrated
+// from the active connector's captured config snapshot (native-binary
+// connectors such as Codex / ZeptoClaw, which have no fetch interceptor).
+//
+// It must run AFTER connector hydration so a connector-resolved
+// private / IMDS / CGNAT / IPv6-ULA / userinfo / non-http upstream is rejected
+// with the same structured 400/403 + labeled egress block event as the header
+// path, instead of slipping past the guard and only failing opaquely at dial
+// time in ssrfSafeDialContext.
+//
+// Returns true when the request was rejected and the caller must stop
+// processing. An empty targetURL is a no-op (no upstream override in play).
+func guardUpstreamTargetURL(w http.ResponseWriter, r *http.Request, targetURL string) bool {
+	if targetURL == "" {
+		return false
+	}
+	u, perr := url.Parse(targetURL)
+	if perr != nil {
+		return false
+	}
+	if u.User != nil {
+		emitEgress(r.Context(), gatewaylog.EgressPayload{
+			TargetHost:   u.Hostname(),
+			TargetPath:   r.URL.Path,
+			LooksLikeLLM: true,
+			Branch:       "chat",
+			Decision:     "block",
+			Reason:       "userinfo-in-target-url",
+			Source:       "go",
+		})
+		fmt.Fprintf(os.Stderr, "[guardrail] BLOCKED chat: userinfo in upstream target URL\n")
+		writeOpenAIError(w, http.StatusBadRequest, "upstream target URL must not contain userinfo")
+		return true
+	}
+	if u.Scheme != "https" && u.Scheme != "http" {
+		emitEgress(r.Context(), gatewaylog.EgressPayload{
+			TargetHost:   u.Hostname(),
+			TargetPath:   r.URL.Path,
+			LooksLikeLLM: true,
+			Branch:       "chat",
+			Decision:     "block",
+			Reason:       "non-http-scheme",
+			Source:       "go",
+		})
+		writeOpenAIError(w, http.StatusBadRequest, "upstream target URL must use http or https")
+		return true
+	}
+	if host := u.Hostname(); host != "" && isPrivateHost(host) &&
+		!isOllamaLoopback(targetURL+r.URL.Path, 0) &&
+		!passthroughAllowPrivateForTest {
+		emitEgress(r.Context(), gatewaylog.EgressPayload{
+			TargetHost:   host,
+			TargetPath:   r.URL.Path,
+			LooksLikeLLM: true,
+			Branch:       "chat",
+			Decision:     "block",
+			Reason:       "private-ip",
+			Source:       "go",
+		})
+		fmt.Fprintf(os.Stderr, "[guardrail] BLOCKED chat: private-host target %s\n", host)
+		writeOpenAIError(w, http.StatusForbidden, "target host resolves to a private address")
+		return true
+	}
+	return false
+}
+
 func (p *GuardrailProxy) handleChatCompletion(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -1993,6 +2391,17 @@ func (p *GuardrailProxy) handleChatCompletion(w http.ResponseWriter, r *http.Req
 				chatConnExtraHeaders = cs.ExtraHeaders
 			}
 		}
+	}
+
+	// SSRF / userinfo / scheme guards run here — AFTER connector hydration —
+	// so they see the *final* upstream, whether it came from the
+	// X-DC-Target-URL header (fetch-interceptor connectors) or was resolved by
+	// a native-binary connector's config snapshot (Codex / ZeptoClaw). Running
+	// before hydration would leave the connector-resolved upstream unguarded
+	// (it would only fail opaquely at dial time in ssrfSafeDialContext, with no
+	// structured 400/403 + labeled egress block event).
+	if guardUpstreamTargetURL(w, r, req.TargetURL) {
+		return
 	}
 
 	// Forward inbound HTTP headers to the upstream provider via
@@ -2129,9 +2538,15 @@ func (p *GuardrailProxy) handleChatCompletion(w http.ResponseWriter, r *http.Req
 	_, promptProviderName := p.llmSystemAndProvider(req.Model)
 	promptID := ""
 	inspectionText := promptInspectionText(userText)
+	// F-3396: heartbeat / session-startup gates run on the RAW user text, not
+	// the post-strip variant. Otherwise an attacker could wrap a heartbeat-
+	// or session-startup-shaped suffix inside the user-controlled OpenClaw
+	// metadata fence and have stripOpenClawUntrustedEnvelope hide the real
+	// payload from these allowlists while the original prompt still flows
+	// upstream.
 	if userText != "" &&
-		!isHeartbeatMessage(inspectionText, req.Messages) &&
-		!isSessionStartupMessage(inspectionText) {
+		!isHeartbeatMessage(userText, req.Messages) &&
+		!isSessionStartupMessage(userText) {
 		meta := proxyLLMEventMeta(p, r, &req, promptProviderName)
 		meta.PromptID = stableLLMEventID("prompt", meta.Source, meta.SessionID, meta.RequestID, req.Model)
 		promptID = emitLLMPromptEvent(r.Context(), meta, userText, req.RawBody)
@@ -2148,6 +2563,14 @@ func (p *GuardrailProxy) handleChatCompletion(w http.ResponseWriter, r *http.Req
 		}
 
 		verdict := p.inspector.Inspect(r.Context(), "prompt", inspectionText, req.Messages, req.Model, mode)
+		// F-1265: stripOpenClawUntrustedEnvelope is keyed on a literal prefix
+		// any client can forge, so we additionally inspect the RAW user text
+		// when the strip actually changed the content. Either path can
+		// trigger a block; we keep the stricter verdict.
+		if inspectionText != userText {
+			rawVerdict := p.inspector.Inspect(r.Context(), "prompt", userText, req.Messages, req.Model, mode)
+			verdict = mergePromptVerdicts(verdict, rawVerdict)
+		}
 		p.resolveConfirm(r.Context(), r, verdict, "prompt", req.Model, mode)
 		elapsed := time.Since(t0)
 
@@ -2179,6 +2602,16 @@ func (p *GuardrailProxy) handleChatCompletion(w http.ResponseWriter, r *http.Req
 			}
 			return
 		}
+	}
+
+	// For fetch-intercepted OpenAI-compatible requests, preserve the
+	// original request body when forwarding to the real upstream. This is
+	// required because provider-specific extension fields such as
+	// chat_template_kwargs, extra_body, and parallel_tool_calls must not be
+	// dropped by the structured provider translation path.
+	if req.TargetURL != "" {
+		p.rawForwardChatCompletion(w, r, body, &req, mode, customBlockMsg)
+		return
 	}
 
 	// --- Forward to upstream provider ---
@@ -3762,13 +4195,32 @@ func isKnownProviderDomain(targetURL string) bool {
 }
 
 // matchProviderDomain performs safe domain matching:
-//   - Domains ending in "." are hostname prefixes (e.g. "bedrock-runtime.")
-//   - Domains containing "/" match hostname+path prefix
-//   - All others require exact hostname or subdomain match
+//   - Domains containing "*" wildcard a single DNS label
+//     (e.g. "bedrock-runtime.*.amazonaws.com" matches
+//     "bedrock-runtime.us-east-1.amazonaws.com" but rejects
+//     "bedrock-runtime.attacker.example").
+//   - Domains containing "/" match hostname+path prefix.
+//   - All others require exact hostname or subdomain match.
+//
+// Avarice F-1185: pre-fix the "ends-with-dot" form was treated as a
+// raw hostname prefix, so "bedrock-runtime." matched any host that
+// began with that string — e.g. "bedrock-runtime.attacker.example".
+// An attacker-chosen X-DC-Target-URL could be admitted as a known
+// provider, bypass the unknown-domain / private-host checks, and
+// receive the upstream Authorization header. The new wildcard form
+// pins the trailing TLD, which is what the original Bedrock entry
+// always meant.
 func matchProviderDomain(host, urlPath, domain string) bool {
 	d := strings.ToLower(domain)
-	if strings.HasSuffix(d, ".") {
-		return strings.HasPrefix(host, d)
+	// Reject the legacy bare-prefix form ("bedrock-runtime.") so an
+	// older operator-supplied providers.json that still uses it
+	// can never be silently honoured: callers must migrate to the
+	// wildcard form ("bedrock-runtime.*.amazonaws.com").
+	if strings.HasSuffix(d, ".") && !strings.Contains(d, "*") {
+		return false
+	}
+	if strings.Contains(d, "*") {
+		return matchWildcardDomain(host, d)
 	}
 	if strings.Contains(d, "/") {
 		parts := strings.SplitN(d, "/", 2)
@@ -3779,6 +4231,31 @@ func matchProviderDomain(host, urlPath, domain string) bool {
 		return strings.HasPrefix(urlPath, pathPart)
 	}
 	return host == d || strings.HasSuffix(host, "."+d)
+}
+
+// matchWildcardDomain compares a hostname against a domain containing
+// one or more "*" wildcards. Each "*" matches exactly one DNS label
+// (no embedded dot, non-empty). Pattern and host are dot-split and
+// compared label-for-label so a wildcard cannot smuggle a malicious
+// suffix into the trailing components.
+func matchWildcardDomain(host, pattern string) bool {
+	hostLabels := strings.Split(host, ".")
+	patternLabels := strings.Split(pattern, ".")
+	if len(hostLabels) != len(patternLabels) {
+		return false
+	}
+	for i := range patternLabels {
+		if patternLabels[i] == "*" {
+			if hostLabels[i] == "" {
+				return false
+			}
+			continue
+		}
+		if hostLabels[i] != patternLabels[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // patchRawResponseModel overwrites only the "model" field in raw JSON bytes,
@@ -4348,6 +4825,19 @@ func (p *GuardrailProxy) inspectToolCalls(ctx context.Context, toolCallsJSON jso
 		args := tc.Function.Arguments
 
 		findings := ScanAllRules(args, toolName)
+		// Stamp the tool's capability class (read_fs / exec_shell /
+		// network_fetch / …) onto each finding from this call so the
+		// sliding-window correlator can reason about capability
+		// sequences (DESTRUCTIVE-FLOW). Content-only
+		// matches with an unknown tool fall back to the rule-id based
+		// capability in the emission pipeline.
+		if cap := guardrail.ClassifyToolName(toolName); cap != guardrail.CapUnknown {
+			for i := range findings {
+				if findings[i].ToolCapabilityClass == "" {
+					findings[i].ToolCapabilityClass = string(cap)
+				}
+			}
+		}
 		allFindings = append(allFindings, findings...)
 	}
 
@@ -4617,4 +5107,606 @@ func (s *sseByteMeter) Flush() {
 	if f, ok := s.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
 	}
+}
+
+// rawForwardChatCompletion preserves the original OpenAI-compatible JSON body
+// for fetch-intercepted requests while keeping DefenseClaw PRE-CALL and
+// POST-CALL guardrail checks active.
+func (p *GuardrailProxy) rawForwardChatCompletion(w http.ResponseWriter, r *http.Request, body []byte, req *ChatRequest, mode, customBlockMsg string) {
+	targetOrigin := strings.TrimRight(req.TargetURL, "/")
+	if targetOrigin == "" {
+		writeOpenAIError(w, http.StatusBadRequest, "missing X-DC-Target-URL header")
+		return
+	}
+
+	upstreamURL := rawForwardUpstreamURL(targetOrigin, r.URL.RequestURI())
+
+	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
+	defer cancel()
+
+	forwardBody := body
+	if len(req.RawBody) > 0 {
+		forwardBody = req.RawBody
+	}
+	forwardBody = applyProviderRequestOverrides(forwardBody, upstreamURL)
+
+	upReq, err := http.NewRequestWithContext(ctx, http.MethodPost, upstreamURL, bytes.NewReader(forwardBody))
+	if err != nil {
+		writeOpenAIError(w, http.StatusBadGateway, "failed to create upstream request")
+		return
+	}
+
+	providerName := inferProviderFromURL(upstreamURL)
+	applyRawForwardRequestHeaders(upReq, r, providerName, req.TargetAPIKey)
+
+	resp, err := providerHTTPClient.Do(upReq)
+	if err != nil {
+		writeOpenAIError(w, http.StatusBadGateway, "upstream provider error: "+err.Error())
+		return
+	}
+	defer resp.Body.Close()
+
+	if req.Stream {
+		p.rawForwardChatCompletionStream(w, r, resp, req, mode, customBlockMsg)
+		return
+	}
+
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 20*1024*1024))
+	if err != nil {
+		writeOpenAIError(w, http.StatusBadGateway, "failed to read upstream response")
+		return
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		copyRawForwardResponseHeaders(w.Header(), resp.Header)
+		w.WriteHeader(resp.StatusCode)
+		_, _ = w.Write(respBody)
+		return
+	}
+
+	completion, usage := extractRawForwardCompletion(respBody, req.Stream)
+
+	if completion != "" {
+		postCtx, postCancel := p.postCallContext(r.Context())
+		defer postCancel()
+
+		postStart := time.Now()
+		respMessages := []ChatMessage{{Role: "assistant", Content: completion}}
+		verdict := p.inspector.Inspect(postCtx, "completion", completion, respMessages, req.Model, mode)
+		p.logPostCall(req.Model, completion, verdict, time.Since(postStart), usage)
+		p.recordTelemetry(r.Context(), "completion", req.Model, verdict, time.Since(postStart), nil, nil)
+
+		if verdict != nil && verdict.Action == "block" && mode == "action" {
+			msg := blockMessage(customBlockMsg, "completion", verdict.Reason)
+			p.enqueueBlockNotification(verdict, "completion", req.Model)
+			if req.Stream {
+				p.writeBlockedStream(w, req.Model, msg)
+			} else {
+				p.writeBlockedResponse(w, req.Model, msg)
+			}
+			return
+		}
+	}
+
+	if toolCalls := extractRawForwardToolCalls(respBody, false); len(toolCalls) > 0 {
+		if verdict := p.inspectToolCalls(r.Context(), toolCalls); verdict != nil {
+			p.recordTelemetry(r.Context(), "tool-call", req.Model, verdict, 0, nil, nil,
+				rawTelemetryField{key: "raw_tool_calls", raw: toolCalls})
+			if verdict.Action == "block" && mode == "action" {
+				msg := blockMessage(customBlockMsg, "completion",
+					fmt.Sprintf("tool call blocked — %s", verdict.Reason))
+				p.enqueueBlockNotification(verdict, "completion", req.Model)
+				p.writeBlockedResponse(w, req.Model, msg)
+				return
+			}
+		}
+	}
+
+	copyRawForwardResponseHeaders(w.Header(), resp.Header)
+	if w.Header().Get("Content-Type") == "" {
+		if req.Stream {
+			w.Header().Set("Content-Type", "text/event-stream")
+		} else {
+			w.Header().Set("Content-Type", "application/json")
+		}
+	}
+
+	w.WriteHeader(resp.StatusCode)
+	_, _ = w.Write(respBody)
+}
+
+func (p *GuardrailProxy) rawForwardChatCompletionStream(w http.ResponseWriter, r *http.Request, resp *http.Response, req *ChatRequest, mode, customBlockMsg string) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeOpenAIError(w, http.StatusInternalServerError, "streaming not supported")
+		return
+	}
+
+	copyRawForwardResponseHeaders(w.Header(), resp.Header)
+	if w.Header().Get("Content-Type") == "" {
+		w.Header().Set("Content-Type", "text/event-stream")
+	}
+	w.WriteHeader(resp.StatusCode)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		_, _ = io.Copy(w, resp.Body)
+		flusher.Flush()
+		return
+	}
+
+	const maxBufferedTCBytes = 10 << 20
+	var accumulated strings.Builder
+	var tcAcc toolCallAccumulator
+	var bufferedTCFrames [][]byte
+	bufferedTCSize := 0
+	streamBlocked := false
+
+	blockStream := func(reason string) {
+		streamBlocked = true
+		msg := blockMessage(customBlockMsg, "completion", reason)
+		writeRawForwardBlockedStreamChunk(w, flusher, req.Model, msg)
+	}
+	inspectFinalText := func() bool {
+		if mode != "action" || accumulated.Len() == 0 {
+			return true
+		}
+		content := accumulated.String()
+		postCtx, postCancel := p.postCallContext(r.Context())
+		verdict := p.inspector.Inspect(postCtx, "completion", content,
+			[]ChatMessage{{Role: "assistant", Content: content}}, req.Model, mode)
+		postCancel()
+		p.resolveConfirm(r.Context(), r, verdict, "completion", req.Model, mode)
+		p.recordTelemetry(r.Context(), "completion", req.Model, verdict, 0, nil, nil,
+			rawTelemetryString("raw_response_content", content))
+		if verdict != nil && verdict.Action == "block" {
+			p.enqueueBlockNotification(verdict, "completion", req.Model)
+			blockStream(verdict.Reason)
+			return false
+		}
+		return true
+	}
+	inspectBufferedToolCalls := func() bool {
+		assembled := tcAcc.JSON()
+		if len(assembled) == 0 {
+			return true
+		}
+		if verdict := p.inspectToolCalls(r.Context(), assembled); verdict != nil {
+			p.recordTelemetry(r.Context(), "tool-call", req.Model, verdict, 0, nil, nil,
+				rawTelemetryField{key: "raw_tool_calls", raw: assembled})
+			if verdict.Action == "block" && mode == "action" {
+				p.enqueueBlockNotification(verdict, "completion", req.Model)
+				blockStream(fmt.Sprintf("tool call blocked — %s", verdict.Reason))
+				return false
+			}
+		}
+		emitOpenAIToolCallEvents(r.Context(), proxyLLMEventMeta(p, r, req, inferProviderFromURL(req.TargetURL+req.TargetPath)), assembled)
+		return true
+	}
+	flushBufferedToolCalls := func() {
+		for _, frame := range bufferedTCFrames {
+			_, _ = w.Write(frame)
+		}
+		if len(bufferedTCFrames) > 0 {
+			flusher.Flush()
+		}
+		bufferedTCFrames = nil
+		bufferedTCSize = 0
+	}
+	processFrame := func(frame []byte) bool {
+		if len(frame) == 0 {
+			return true
+		}
+
+		payloads := rawForwardSSEDataPayloads(frame)
+		frameDone := false
+		frameHasToolCalls := false
+		frameToolCallFinish := false
+		frameText := ""
+		for _, payload := range payloads {
+			if payload == "[DONE]" {
+				frameDone = true
+				continue
+			}
+			text, toolCalls, finishReason := parseRawForwardSSEPayload(payload)
+			if text != "" {
+				frameText += text
+				accumulated.WriteString(text)
+			}
+			if len(toolCalls) > 0 {
+				tcAcc.Merge(toolCalls)
+				frameHasToolCalls = true
+			}
+			if finishReason == "tool_calls" {
+				frameToolCallFinish = true
+			}
+		}
+
+		if mode == "action" && frameText != "" {
+			content := accumulated.String()
+			verdict := p.inspector.InspectMidStream(r.Context(), "completion", content,
+				[]ChatMessage{{Role: "assistant", Content: content}}, req.Model, mode)
+			p.resolveConfirm(r.Context(), r, verdict, "completion", req.Model, mode)
+			if verdict != nil && verdict.Action == "block" {
+				p.recordTelemetry(r.Context(), "completion", req.Model, verdict, 0, nil, nil,
+					rawTelemetryString("raw_response_content", content))
+				p.enqueueBlockNotification(verdict, "completion", req.Model)
+				blockStream(verdict.Reason)
+				return false
+			}
+		}
+
+		if frameDone {
+			if !inspectFinalText() || !inspectBufferedToolCalls() {
+				return false
+			}
+			flushBufferedToolCalls()
+			_, _ = w.Write(frame)
+			flusher.Flush()
+			return true
+		}
+
+		if mode == "action" && (frameHasToolCalls || frameToolCallFinish || len(bufferedTCFrames) > 0) {
+			bufferedTCSize += len(frame)
+			if bufferedTCSize > maxBufferedTCBytes {
+				blockStream(fmt.Sprintf("tool call blocked — buffered tool-call data exceeds %d bytes", maxBufferedTCBytes))
+				return false
+			}
+			bufferedTCFrames = append(bufferedTCFrames, append([]byte(nil), frame...))
+			if frameToolCallFinish {
+				if !inspectBufferedToolCalls() {
+					return false
+				}
+				flushBufferedToolCalls()
+			}
+			return true
+		}
+
+		_, _ = w.Write(frame)
+		flusher.Flush()
+		return true
+	}
+
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 10<<20)
+	var frame bytes.Buffer
+	for scanner.Scan() {
+		line := scanner.Text()
+		frame.WriteString(line)
+		frame.WriteByte('\n')
+		if line == "" {
+			if !processFrame(frame.Bytes()) {
+				return
+			}
+			frame.Reset()
+		}
+	}
+	if frame.Len() > 0 && !processFrame(frame.Bytes()) {
+		return
+	}
+	if streamBlocked {
+		return
+	}
+	if !inspectFinalText() || !inspectBufferedToolCalls() {
+		return
+	}
+	flushBufferedToolCalls()
+	if err := scanner.Err(); err != nil {
+		fmt.Fprintf(os.Stderr, "[guardrail] raw stream read error: %v\n", err)
+	}
+}
+
+func writeRawForwardBlockedStreamChunk(w http.ResponseWriter, flusher http.Flusher, model, msg string) {
+	blockChunk := StreamChunk{
+		ID: "chatcmpl-blocked", Object: "chat.completion.chunk",
+		Created: time.Now().Unix(), Model: model,
+		Choices: []ChatChoice{{Index: 0, Delta: &ChatMessage{Content: "\n\n" + msg}}},
+	}
+	data, _ := json.Marshal(blockChunk)
+	fmt.Fprintf(w, "data: %s\n\n", data)
+	fmt.Fprintf(w, "data: [DONE]\n\n")
+	flusher.Flush()
+}
+
+func rawForwardUpstreamURL(targetURL, requestURI string) string {
+	base := strings.TrimRight(targetURL, "/")
+	if base == "" {
+		return requestURI
+	}
+	u, err := url.Parse(base)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return base + requestURI
+	}
+	reqURL, err := url.ParseRequestURI(requestURI)
+	if err != nil {
+		return base + requestURI
+	}
+
+	basePath := strings.TrimRight(u.EscapedPath(), "/")
+	requestPath := reqURL.EscapedPath()
+	if basePath != "" && basePath != "/" {
+		requestPath = stripDuplicateRawForwardPathPrefix(basePath, requestPath)
+	}
+	u.Path = strings.TrimRight(u.Path, "/") + "/" + strings.TrimLeft(requestPath, "/")
+	u.RawQuery = reqURL.RawQuery
+	return u.String()
+}
+
+func stripDuplicateRawForwardPathPrefix(basePath, requestPath string) string {
+	baseParts := splitURLPathSegments(basePath)
+	reqParts := splitURLPathSegments(requestPath)
+	max := len(baseParts)
+	if len(reqParts) < max {
+		max = len(reqParts)
+	}
+	for n := max; n > 0; n-- {
+		match := true
+		for i := 0; i < n; i++ {
+			if baseParts[len(baseParts)-n+i] != reqParts[i] {
+				match = false
+				break
+			}
+		}
+		if match {
+			reqParts = reqParts[n:]
+			break
+		}
+	}
+	if len(reqParts) == 0 {
+		return "/"
+	}
+	return "/" + strings.Join(reqParts, "/")
+}
+
+func splitURLPathSegments(path string) []string {
+	trimmed := strings.Trim(path, "/")
+	if trimmed == "" {
+		return nil
+	}
+	return strings.Split(trimmed, "/")
+}
+
+func applyRawForwardRequestHeaders(upReq *http.Request, r *http.Request, providerName, targetAPIKey string) {
+	if fwd, ok := r.Context().Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string); ok {
+		for name, values := range fwd {
+			upReq.Header.Del(name)
+			for _, value := range values {
+				upReq.Header.Add(name, value)
+			}
+		}
+	}
+	upReq.Header.Set("Content-Type", "application/json")
+	if upReq.Header.Get("Accept") == "" {
+		if v := r.Header.Get("Accept"); v != "" {
+			upReq.Header.Set("Accept", v)
+		}
+	}
+	if targetAPIKey != "" {
+		key := strings.TrimPrefix(targetAPIKey, "Bearer ")
+		if strings.EqualFold(providerName, "azure") {
+			upReq.Header.Set("api-key", key)
+		} else {
+			upReq.Header.Set("Authorization", "Bearer "+key)
+		}
+	}
+}
+
+func copyRawForwardResponseHeaders(dst, src http.Header) {
+	for k, vals := range src {
+		if strings.EqualFold(k, "Content-Length") {
+			continue
+		}
+		for _, v := range vals {
+			dst.Add(k, v)
+		}
+	}
+}
+
+// extractRawForwardCompletion extracts assistant-visible text only.
+//
+// For non-streaming responses, it reads choices[].message.content.
+// For streaming responses, it reads choices[].delta.content.
+// It deliberately does not scan the original request body, tool schemas,
+// system prompts, or raw SSE JSON.
+func extractRawForwardCompletion(respBody []byte, stream bool) (string, *ChatUsage) {
+	if !stream {
+		var parsed ChatResponse
+		if err := json.Unmarshal(respBody, &parsed); err != nil {
+			return "", nil
+		}
+
+		out := strings.Builder{}
+		for _, ch := range parsed.Choices {
+			if ch.Message != nil && ch.Message.Content != "" {
+				out.WriteString(ch.Message.Content)
+			}
+		}
+		return out.String(), parsed.Usage
+	}
+
+	out := strings.Builder{}
+
+	lines := strings.Split(string(respBody), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+
+		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if payload == "" || payload == "[DONE]" {
+			continue
+		}
+
+		var chunk struct {
+			Choices []struct {
+				Delta struct {
+					Content string `json:"content"`
+				} `json:"delta"`
+				Message *ChatMessage `json:"message,omitempty"`
+			} `json:"choices"`
+		}
+
+		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+			continue
+		}
+
+		for _, ch := range chunk.Choices {
+			if ch.Delta.Content != "" {
+				out.WriteString(ch.Delta.Content)
+			}
+			if ch.Message != nil && ch.Message.Content != "" {
+				out.WriteString(ch.Message.Content)
+			}
+		}
+	}
+
+	return out.String(), nil
+}
+
+func extractRawForwardToolCalls(respBody []byte, stream bool) json.RawMessage {
+	if !stream {
+		var parsed ChatResponse
+		if err := json.Unmarshal(respBody, &parsed); err != nil {
+			return nil
+		}
+		var out json.RawMessage
+		for _, ch := range parsed.Choices {
+			if ch.Message != nil && len(ch.Message.ToolCalls) > 0 {
+				out = mergeToolCallChunks(out, ch.Message.ToolCalls)
+			}
+		}
+		return out
+	}
+
+	var acc toolCallAccumulator
+	for _, line := range strings.Split(string(respBody), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if payload == "" || payload == "[DONE]" {
+			continue
+		}
+		_, toolCalls, _ := parseRawForwardSSEPayload(payload)
+		if len(toolCalls) > 0 {
+			acc.Merge(toolCalls)
+		}
+	}
+	return acc.JSON()
+}
+
+func rawForwardSSEDataPayloads(frame []byte) []string {
+	var payloads []string
+	for _, line := range strings.Split(string(frame), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if payload != "" {
+			payloads = append(payloads, payload)
+		}
+	}
+	return payloads
+}
+
+func parseRawForwardSSEPayload(payload string) (string, json.RawMessage, string) {
+	var chunk struct {
+		Choices []struct {
+			Delta        *ChatMessage `json:"delta,omitempty"`
+			Message      *ChatMessage `json:"message,omitempty"`
+			FinishReason *string      `json:"finish_reason,omitempty"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+		return "", nil, ""
+	}
+
+	var out strings.Builder
+	var toolCalls json.RawMessage
+	finishReason := ""
+	for _, ch := range chunk.Choices {
+		if ch.Delta != nil {
+			out.WriteString(ch.Delta.Content)
+			if len(ch.Delta.ToolCalls) > 0 {
+				toolCalls = mergeToolCallChunks(toolCalls, ch.Delta.ToolCalls)
+			}
+		}
+		if ch.Message != nil {
+			out.WriteString(ch.Message.Content)
+			if len(ch.Message.ToolCalls) > 0 {
+				toolCalls = mergeToolCallChunks(toolCalls, ch.Message.ToolCalls)
+			}
+		}
+		if ch.FinishReason != nil && *ch.FinishReason != "" {
+			finishReason = *ch.FinishReason
+		}
+	}
+	return out.String(), toolCalls, finishReason
+}
+
+func applyProviderRequestOverrides(body []byte, targetURL string) []byte {
+	overrides := providerRequestOverridesForTarget(targetURL)
+	if len(overrides) == 0 {
+		return body
+	}
+
+	var root map[string]interface{}
+	if err := json.Unmarshal(body, &root); err != nil {
+		return body
+	}
+
+	patched := mergeRequestJSON(root, overrides)
+	out, err := json.Marshal(patched)
+	if err != nil {
+		return body
+	}
+
+	return out
+}
+
+func providerRequestOverridesForTarget(targetURL string) map[string]interface{} {
+	providerName := inferProviderFromURL(targetURL)
+	if providerName == "" {
+		return nil
+	}
+
+	cfg, err := configs.LoadProviders()
+	if err != nil || cfg == nil {
+		return nil
+	}
+
+	for _, provider := range cfg.Providers {
+		if strings.EqualFold(provider.Name, providerName) {
+			return provider.RequestOverrides
+		}
+	}
+
+	return nil
+}
+
+func mergeRequestJSON(base, overlay map[string]interface{}) map[string]interface{} {
+	if len(base) == 0 && len(overlay) == 0 {
+		return nil
+	}
+
+	out := make(map[string]interface{}, len(base)+len(overlay))
+	for k, v := range base {
+		out[k] = v
+	}
+
+	for k, v := range overlay {
+		if ov, ok := v.(map[string]interface{}); ok {
+			if bv, ok := out[k].(map[string]interface{}); ok {
+				out[k] = mergeRequestJSON(bv, ov)
+				continue
+			}
+		}
+		out[k] = v
+	}
+
+	return out
 }

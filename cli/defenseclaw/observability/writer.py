@@ -46,6 +46,7 @@ import yaml
 
 from defenseclaw.config import locked_config_yaml, write_config_yaml_secure
 from defenseclaw.observability.presets import Preset, Signal, resolve_preset
+from defenseclaw.safety import sanitize_dotenv_value
 
 # ---------------------------------------------------------------------------
 # Constants mirrored with internal/config/sinks.go and internal/telemetry
@@ -555,15 +556,34 @@ def _build_sink_entry(
             raise ValueError(
                 f"splunk HEC endpoint must start with http:// or https:// (got {endpoint!r})",
             )
-        verify_tls_default = "true" if preset.id == "splunk-enterprise" else "false"
-        base["splunk_hec"] = {
+        # / TLS verification is now ON by default on the
+        # Go sink. Presets that historically pointed at a self-signed
+        # local HEC (the docker-compose ``splunk-hec`` flavour) opt
+        # OUT explicitly via ``insecure_skip_verify=true``. Production
+        # presets (``splunk-enterprise``) omit the flag entirely so the
+        # secure default wins.
+        insecure_default = preset.id != "splunk-enterprise"
+        if "verify_tls" in inputs:
+            # Legacy callers that still pass verify_tls=true|false
+            # are mapped onto the new insecure_skip_verify field.
+            insecure = not _parse_bool(inputs.get("verify_tls", "true"))
+        else:
+            insecure = _parse_bool(inputs.get(
+                "insecure_skip_verify",
+                "true" if insecure_default else "false",
+            ))
+        block: dict[str, Any] = {
             "endpoint": endpoint,
             "token_env": preset.token_env,
             "index": inputs.get("index", "defenseclaw"),
             "source": inputs.get("source", "defenseclaw"),
             "sourcetype": inputs.get("sourcetype", "_json"),
-            "verify_tls": _parse_bool(inputs.get("verify_tls", verify_tls_default)),
         }
+        # Only emit the field when it diverges from the secure default
+        # so production sinks don't carry a redundant negative knob.
+        if insecure:
+            block["insecure_skip_verify"] = True
+        base["splunk_hec"] = block
     elif kind == _SINK_KIND_OTLP_LOGS:
         endpoint = inputs.get("endpoint", "").strip()
         protocol = (inputs.get("protocol") or preset.otel_protocol or "grpc").strip()
@@ -889,8 +909,27 @@ def _load_dotenv(path: str) -> dict[str, str]:
 
 
 def _write_dotenv(path: str, entries: dict[str, str]) -> None:
-    lines = [f"{k}={v}\n" for k, v in sorted(entries.items())]
+    lines = [
+        f"{k}={sanitize_dotenv_value(v, key=k)}\n"
+        for k, v in sorted(entries.items())
+    ]
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    # O_NOFOLLOW (where available) refuses to open through a symlink so a
+    # pre-planted symlink cannot redirect the secret write elsewhere.
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags, 0o600)
     with os.fdopen(fd, "w") as f:
+        # The 0o600 mode argument to os.open only applies when the file is
+        # newly CREATED — POSIX preserves the existing mode on O_TRUNC. A
+        # pre-existing group/world-readable dotenv would otherwise keep
+        # its loose perms and expose the freshly written observability
+        # token (F-0442), so explicitly tighten the descriptor to 0o600.
+        try:
+            os.fchmod(f.fileno(), 0o600)
+        except (AttributeError, OSError):
+            # os.fchmod is POSIX-only; fall back to a path-based chmod.
+            try:
+                os.chmod(path, 0o600)
+            except OSError:
+                pass
         f.writelines(lines)

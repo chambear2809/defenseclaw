@@ -34,6 +34,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"go.opentelemetry.io/otel/trace"
@@ -113,15 +114,17 @@ type APIServer struct {
 	// to atomically refresh the shared OPA engine used by the watcher.
 	policyReloader func() error
 
-	claudeCodeMu                 sync.Mutex
-	claudeCodeLastComponentScan  time.Time
-	codexMu                      sync.Mutex
-	codexLastComponentScan       time.Time
-	rawTelemetryMu               sync.RWMutex
-	rawTelemetryDedupe           *rawTelemetryDeduper
-	llmPromptMu                  sync.Mutex
-	llmPromptBySourceSession     map[string]string
-	llmPromptBySourceSessionTurn map[string]string
+	claudeCodeMu                      sync.Mutex
+	claudeCodeLastComponentScan       time.Time
+	codexMu                           sync.Mutex
+	codexLastComponentScan            time.Time
+	rawTelemetryMu                    sync.RWMutex
+	rawTelemetryDedupe                *rawTelemetryDeduper
+	llmPromptMu                       sync.Mutex
+	llmPromptBySourceSession          map[string]string
+	llmPromptBySourceSessionOrder     []string
+	llmPromptBySourceSessionTurn      map[string]string
+	llmPromptBySourceSessionTurnOrder []string
 
 	// stepIdxMu guards stepIdxBySession, the per-session 1-indexed
 	// turn counter used to populate audit.Event.StepIdx. A "turn" is
@@ -147,6 +150,21 @@ type APIServer struct {
 	// Hermes / Gemini / Copilot) so MCP tool calls and tool results
 	// reach AID without per-script changes.
 	ciscoInspector *CiscoInspectClient
+
+	// hookJudge forwards hook-lane message content (prompts + tool
+	// results delivered by hook connectors) to the LLM judge — the
+	// same judge instance the proxy lane uses, so a custom provider
+	// configured via guardrail.judge.llm sees live hook content too.
+	// nil unless guardrail.judge.enabled; wired by the sidecar at
+	// boot via SetHookJudge. Per-connector gating happens in
+	// hookJudgeInspect via guardrail.judge.hook_connectors.
+	hookJudge *LLMJudge
+	// hookJudgeSem bounds concurrent hook-lane judge executions,
+	// mirroring EventRouter.judgeSem on the proxy lane. At capacity
+	// the judge is skipped (fail-open to the regex/AID verdict)
+	// rather than queued — a queued hook would stall the agent past
+	// the hook scripts' curl --max-time budget.
+	hookJudgeSem chan struct{}
 }
 
 // SetCiscoInspector wires the Cisco AI Defense client onto the API
@@ -154,6 +172,18 @@ type APIServer struct {
 // operator did not configure cisco_ai_defense.api_key_env).
 func (a *APIServer) SetCiscoInspector(c *CiscoInspectClient) {
 	a.ciscoInspector = c
+}
+
+// SetHookJudge wires the LLM judge onto the API server so the hook
+// content lane (inspectMessageContent) can adjudicate prompts and
+// tool results for connectors listed in
+// guardrail.judge.hook_connectors. Pass nil to disable (the default
+// when guardrail.judge is off).
+func (a *APIServer) SetHookJudge(j *LLMJudge) {
+	a.hookJudge = j
+	if j != nil && a.hookJudgeSem == nil {
+		a.hookJudgeSem = make(chan struct{}, maxConcurrentHookJudges)
+	}
 }
 
 // SetOTelProvider attaches the OTel provider so guardrail events
@@ -495,7 +525,7 @@ func (a *APIServer) registerConnectorHookRoutes(mux *http.ServeMux, wrap ...func
 		if f, ok := connectorHookHandlerByName["codex"]; ok {
 			register("/api/v1/codex/hook", http.HandlerFunc(f(a)))
 		}
-		for _, name := range []string{"hermes", "cursor", "windsurf", "geminicli", "copilot", "openhands", "antigravity"} {
+		for _, name := range []string{"hermes", "cursor", "windsurf", "geminicli", "copilot", "openhands", "antigravity", "opencode"} {
 			if f, ok := connectorHookHandlerByName[name]; ok {
 				register("/api/v1/"+name+"/hook", http.HandlerFunc(f(a)))
 			}
@@ -542,6 +572,46 @@ func NewAPIServer(addr string, health *SidecarHealth, client *Client, store *aud
 }
 
 // Run starts the HTTP server and blocks until ctx is cancelled.
+// listenWithRetry binds a TCP listener on addr, retrying briefly while the
+// address is still in use. It exists for the `setup --restart` window: the old
+// gateway is terminated and a fresh one is spawned immediately, and the OS can
+// hold the previous listening socket for a short interval after the process
+// exits (most visibly on Windows, where the bind fails with "Only one usage of
+// each socket address ... permitted"). Retrying within a bounded budget lets the
+// kernel reclaim the port so the restarted gateway can bind it. Non-address-in-use
+// errors and context cancellation return immediately.
+func listenWithRetry(ctx context.Context, addr string, budget time.Duration) (net.Listener, error) {
+	var lc net.ListenConfig
+	deadline := time.Now().Add(budget)
+	for attempt := 1; ; attempt++ {
+		ln, err := lc.Listen(ctx, "tcp", addr)
+		if err == nil {
+			return ln, nil
+		}
+		if !isAddrInUse(err) || time.Now().After(deadline) || ctx.Err() != nil {
+			return nil, err
+		}
+		fmt.Fprintf(os.Stderr, "[sidecar-api] %s still in use after restart, retrying bind (attempt %d)\n", addr, attempt)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(150 * time.Millisecond):
+		}
+	}
+}
+
+// isAddrInUse reports whether err is an "address already in use" bind failure on
+// any platform. Modern Go maps Windows WSAEADDRINUSE (10048) to syscall.EADDRINUSE,
+// but the human-readable text is matched too as a cross-version guard.
+func isAddrInUse(err error) bool {
+	if errors.Is(err, syscall.EADDRINUSE) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "address already in use") ||
+		strings.Contains(msg, "only one usage of each socket address")
+}
+
 func (a *APIServer) Run(ctx context.Context) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", a.handleHealth)
@@ -656,10 +726,25 @@ func (a *APIServer) Run(ctx context.Context) error {
 		},
 	}
 
+	// Bind with a short retry instead of a bare ListenAndServe. During
+	// `defenseclaw setup --restart` the previous gateway is terminated and a
+	// fresh, guardrail-enabled gateway is spawned immediately. On Windows the
+	// kernel can keep the old listening socket reserved for a brief interval
+	// after the process exits ("Only one usage of each socket address ...
+	// permitted"), so a naive bind in the new process loses the race, the hook
+	// API never comes up, and every connector hook posting to this port fails.
+	// Retrying for a few seconds lets the OS reclaim the port so the restarted
+	// gateway binds the same address the agent's hooks call.
+	ln, lnErr := listenWithRetry(ctx, a.addr, 6*time.Second)
+	if lnErr != nil {
+		a.health.SetAPI(StateError, lnErr.Error(), nil)
+		return fmt.Errorf("api: listen %s: %w", a.addr, lnErr)
+	}
+
 	errCh := make(chan error, 1)
 	go func() {
 		fmt.Fprintf(os.Stderr, "[sidecar-api] listening on %s\n", a.addr)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
 			errCh <- err
 		}
 		close(errCh)
@@ -712,14 +797,21 @@ func (a *APIServer) handleConnectors(w http.ResponseWriter, r *http.Request) {
 		reg = getFallbackConnectorRegistry()
 	}
 	type connectorEntry struct {
-		Name               string                           `json:"name"`
-		Description        string                           `json:"description"`
-		Source             string                           `json:"source"`
-		ToolInspectionMode string                           `json:"tool_inspection_mode"`
-		SubprocessPolicy   string                           `json:"subprocess_policy"`
-		HookCapabilities   *connector.HookCapability        `json:"hook_capabilities,omitempty"`
-		Capabilities       *connector.ConnectorCapabilities `json:"capabilities,omitempty"`
-		Locations          *connector.ConnectorLocations    `json:"locations,omitempty"`
+		Name               string `json:"name"`
+		Description        string `json:"description"`
+		Source             string `json:"source"`
+		ToolInspectionMode string `json:"tool_inspection_mode"`
+		SubprocessPolicy   string `json:"subprocess_policy"`
+		// LLMTrafficMode ("proxy" | "hooks-only") tells the CLI whether a
+		// custom provider bound to this connector is enforced on the
+		// agent's own model traffic or only configures DefenseClaw's
+		// judge/aux model. Set for every connector (proxy connectors do
+		// not emit the ConnectorCapabilities struct, so it cannot live
+		// solely there).
+		LLMTrafficMode   string                           `json:"llm_traffic_mode"`
+		HookCapabilities *connector.HookCapability        `json:"hook_capabilities,omitempty"`
+		Capabilities     *connector.ConnectorCapabilities `json:"capabilities,omitempty"`
+		Locations        *connector.ConnectorLocations    `json:"locations,omitempty"`
 	}
 	avail := reg.Available()
 	entries := make([]connectorEntry, len(avail))
@@ -730,6 +822,7 @@ func (a *APIServer) handleConnectors(w http.ResponseWriter, r *http.Request) {
 			Source:             info.Source,
 			ToolInspectionMode: string(info.ToolInspectionMode),
 			SubprocessPolicy:   string(info.SubprocessPolicy),
+			LLMTrafficMode:     connector.LLMTrafficModeForConnector(info.Name),
 		}
 		if conn, ok := reg.Get(info.Name); ok {
 			opts := connector.SetupOpts{
@@ -817,6 +910,14 @@ func (a *APIServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 // connectorModesSummary fans the same shape out across every active
 // connector for the multi-connector status surface.
 func (a *APIServer) connectorModeSummary() map[string]interface{} {
+	if a.scannerCfg != nil && !a.scannerCfg.HasConnectorConfigured() {
+		return map[string]interface{}{
+			"connector":       "",
+			"mode":            "unconfigured",
+			"telemetry":       []string{},
+			"proxy_intercept": false,
+		}
+	}
 	return connectorModeFor(a.connectorName())
 }
 
@@ -831,6 +932,9 @@ func (a *APIServer) connectorModesSummary() []map[string]interface{} {
 	var names []string
 	if a.scannerCfg != nil {
 		names = a.scannerCfg.ActiveConnectors()
+		if !a.scannerCfg.HasConnectorConfigured() {
+			return []map[string]interface{}{}
+		}
 	}
 	if len(names) == 0 {
 		names = []string{a.connectorName()}
@@ -864,7 +968,7 @@ func connectorModeFor(name string) map[string]interface{} {
 		// Claude Code uses hooks + the OTel env-block; no notify
 		// equivalent (Anthropic doesn't ship a turn-complete shim).
 		telemetry = []string{"hooks", "otel"}
-	case "hermes", "cursor", "windsurf", "geminicli", "copilot", "openhands", "antigravity":
+	case "hermes", "cursor", "windsurf", "geminicli", "copilot", "openhands", "antigravity", "opencode":
 		mode = "observability"
 		intercept = false
 		telemetry = []string{"hooks"}
@@ -1118,6 +1222,12 @@ type policyEvaluateInput struct {
 type policyEvaluateScanResult struct {
 	MaxSeverity   string `json:"max_severity"`
 	TotalFindings int    `json:"total_findings"`
+	// DeepSec hardening (S2.scanners): expose the scanner failure
+	// signal so callers driving this debug endpoint can reproduce
+	// the post-scan admission decision a non-zero scanner exit
+	// would yield. Mirrors policy.ScanResultInput.
+	ExitCode  int    `json:"exit_code,omitempty"`
+	ScanError string `json:"scan_error,omitempty"`
 }
 
 func (a *APIServer) handleConfigPatch(w http.ResponseWriter, r *http.Request) {
@@ -1491,6 +1601,8 @@ func (a *APIServer) handlePolicyEvaluate(w http.ResponseWriter, r *http.Request)
 		input.ScanResult = &policy.ScanResultInput{
 			MaxSeverity:   req.Input.ScanResult.MaxSeverity,
 			TotalFindings: req.Input.ScanResult.TotalFindings,
+			ExitCode:      req.Input.ScanResult.ExitCode,
+			ScanError:     req.Input.ScanResult.ScanError,
 		}
 	}
 
@@ -1797,6 +1909,68 @@ func (a *APIServer) handleSkillFetch(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Target == "" {
 		a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "target is required"})
+		return
+	}
+
+	// Avarice F-3287: the legacy handler accepted any directory the
+	// gateway process could read and streamed every regular file
+	// inside it. A caller with the sidecar bearer token could ask
+	// for ~/.defenseclaw, ~/.ssh, /etc, /private/etc/ssh, etc., and
+	// receive a tarball of readable host files. Constrain req.Target
+	// to a directory under one of the configured skill or plugin
+	// roots, after fully resolving symlinks on both sides.
+	resolvedTarget, err := filepath.EvalSymlinks(req.Target)
+	if err != nil {
+		a.writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": fmt.Sprintf("target directory not found: %s", req.Target),
+		})
+		return
+	}
+	resolvedAbs, err := filepath.Abs(resolvedTarget)
+	if err != nil {
+		a.writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": fmt.Sprintf("target directory not resolvable: %s", req.Target),
+		})
+		return
+	}
+	a.cfgMu.RLock()
+	cfgSnap := a.scannerCfg
+	a.cfgMu.RUnlock()
+	var allowedRoots []string
+	if cfgSnap != nil {
+		allowedRoots = append(allowedRoots, cfgSnap.SkillDirs()...)
+		allowedRoots = append(allowedRoots, cfgSnap.PluginDirs()...)
+	}
+	rootOK := false
+	for _, root := range allowedRoots {
+		if root == "" {
+			continue
+		}
+		rr, rerr := filepath.EvalSymlinks(root)
+		if rerr != nil {
+			continue
+		}
+		rrAbs, aerr := filepath.Abs(rr)
+		if aerr != nil {
+			continue
+		}
+		if resolvedAbs == rrAbs {
+			rootOK = true
+			break
+		}
+		if strings.HasPrefix(resolvedAbs, rrAbs+string(os.PathSeparator)) {
+			rootOK = true
+			break
+		}
+	}
+	if !rootOK {
+		if a.logger != nil {
+			_ = a.logger.LogActionCtx(r.Context(), "api-skill-fetch-rejected", req.Target,
+				"reason=outside-skill-roots (F-3287)")
+		}
+		a.writeJSON(w, http.StatusForbidden, map[string]string{
+			"error": "target is not under a configured skill or plugin root (F-3287)",
+		})
 		return
 	}
 
@@ -2272,16 +2446,35 @@ func (a *APIServer) writeGuardrailRuntime() error {
 }
 
 func (a *APIServer) evaluateGuardrailPolicy(ctx context.Context, input policy.GuardrailInput) (*policy.GuardrailOutput, error) {
+	// Avarice F-3288: when a policy bundle is configured but
+	// either the engine constructor or evaluation fails, the
+	// previous code silently fell back to a built-in
+	// severity-derived decision that allows clean/missing scanner
+	// results and downgrades MEDIUM/HIGH to alert. That converted
+	// every policy outage into a quiet enforcement bypass for
+	// action-mode prompts. We now fail closed: any configured
+	// policy directory whose engine/eval fails returns block in
+	// action mode (and an explicit alert in observe mode for
+	// audit visibility).
 	if a.scannerCfg != nil && a.scannerCfg.PolicyDir != "" {
 		engine, err := policy.New(a.scannerCfg.PolicyDir)
-		if err == nil {
-			out, evalErr := engine.EvaluateGuardrail(ctx, input)
-			if evalErr == nil {
-				return out, nil
-			}
+		if err != nil {
+			return policyOutageVerdict(input,
+				fmt.Sprintf("policy engine load failed: %v", err)), nil
 		}
+		out, evalErr := engine.EvaluateGuardrail(ctx, input)
+		if evalErr != nil {
+			return policyOutageVerdict(input,
+				fmt.Sprintf("policy evaluation failed: %v", evalErr)), nil
+		}
+		return out, nil
 	}
 
+	// No policy directory configured at all — keep the legacy
+	// severity-derived fallback. Operators that want strict
+	// fail-closed behavior on missing policy must configure a
+	// PolicyDir; the absence of one is treated as "no policy"
+	// rather than "policy outage".
 	sev := "NONE"
 	var sources []string
 	for _, res := range []*policy.GuardrailScanResult{input.LocalResult, input.CiscoResult} {
@@ -2305,9 +2498,26 @@ func (a *APIServer) evaluateGuardrailPolicy(ctx context.Context, input policy.Gu
 	return &policy.GuardrailOutput{
 		Action:         action,
 		Severity:       sev,
-		Reason:         "built-in fallback (OPA unavailable)",
+		Reason:         "built-in fallback (no policy configured)",
 		ScannerSources: sources,
 	}, nil
+}
+
+// policyOutageVerdict builds a fail-closed verdict for guardrail
+// evaluations when a configured policy bundle cannot be loaded or
+// evaluated. Action mode blocks; observe mode keeps the request
+// flowing but loud-flags it via alert + would_block-style telemetry.
+func policyOutageVerdict(input policy.GuardrailInput, reason string) *policy.GuardrailOutput {
+	action := "block"
+	if input.Mode == "observe" {
+		action = "alert"
+	}
+	return &policy.GuardrailOutput{
+		Action:         action,
+		Severity:       "HIGH",
+		Reason:         "guardrail failing closed: " + reason,
+		ScannerSources: []string{"policy-outage"},
+	}
 }
 
 // metricsMiddleware records HTTP request count and duration via OTel.
@@ -2428,6 +2638,12 @@ func (a *APIServer) tokenAuth(next http.Handler) http.Handler {
 			return
 		}
 
+		// DeepSec S2.MEDIUM ("CorrelationMiddleware mints
+		// unauthenticated agent sessions"): now that auth has
+		// succeeded, upgrade the previously peeked agent identity
+		// to a fully minted entry so authenticated traffic still
+		// gets a stable agent_instance_id on its emissions.
+		r = r.WithContext(PromoteSessionIfAuthenticated(r.Context()))
 		next.ServeHTTP(w, r)
 	})
 }
@@ -2993,8 +3209,9 @@ type codeScanRequest struct {
 	Path string `json:"path"`
 }
 
-// handleCodeScan runs CodeGuard on the given filesystem path and returns
-// the ScanResult with OTel signals emitted via the shared audit logger.
+// handleCodeScan runs the built-in source-code scanner suite on the given
+// filesystem path and returns the ScanResult with OTel signals emitted via
+// the shared audit logger.
 func (a *APIServer) handleCodeScan(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -3015,9 +3232,8 @@ func (a *APIServer) handleCodeScan(w http.ResponseWriter, r *http.Request) {
 	if a.scannerCfg != nil {
 		rulesDir = a.scannerCfg.Scanners.CodeGuard
 	}
-	cg := scanner.NewCodeGuardScanner(rulesDir)
 
-	result, err := cg.Scan(r.Context(), req.Path)
+	result, err := scanner.ScanCode(r.Context(), req.Path, rulesDir)
 	if err != nil {
 		if a.otel != nil {
 			a.otel.RecordScanError(r.Context(), "codeguard", "code", classifyScanError(err))
@@ -3028,6 +3244,30 @@ func (a *APIServer) handleCodeScan(w http.ResponseWriter, r *http.Request) {
 
 	if a.logger != nil {
 		_ = a.logger.LogScanWithCorrelation(r.Context(), result, "", ScanCorrelationFromContext(r.Context()))
+	}
+
+	// DeepSec H.MEDIUM ("Raw scan JSON stores unredacted secret-bearing
+	// findings"): the persistent path (LogScanWithCorrelation →
+	// audit.scan_persist.go) already runs Description / Location /
+	// Remediation through redaction.ForSinkString before INSERT, and
+	// `defenseclaw scan code --json` (internal/cli/scan_v7.go::findingToV7)
+	// applies the same redaction before serialization. The REST API used
+	// to bypass both — serializing the raw scanner.ScanResult straight to
+	// the response body and leaking matched source lines, raw absolute
+	// paths, and operator-supplied remediation text to any caller. Apply
+	// the same field-level redaction here so all three surfaces (DB row,
+	// CLI JSON, REST response) treat scanner output identically. We
+	// redact AFTER LogScanWithCorrelation has been called: scan_persist.go
+	// re-applies its own redaction before INSERT, so the in-place mutation
+	// here only affects the response body — keeping the existing audit
+	// DB contract untouched. Title is intentionally NOT redacted to stay
+	// symmetric with the persistence path (Title is the rule-name /
+	// operator-searchable summary, not the matched bytes).
+	for i := range result.Findings {
+		f := &result.Findings[i]
+		f.Description = redaction.ForSinkString(f.Description)
+		f.Location = redaction.ForSinkString(f.Location)
+		f.Remediation = redaction.ForSinkString(f.Remediation)
 	}
 
 	a.writeJSON(w, http.StatusOK, result)

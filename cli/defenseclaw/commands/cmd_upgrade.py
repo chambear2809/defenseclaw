@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import datetime
 import hashlib
+import ipaddress
 import json
 import os
 import platform
@@ -36,6 +37,7 @@ import subprocess
 import tarfile
 import tempfile
 import time
+import zipfile
 
 import click
 import requests
@@ -56,12 +58,24 @@ _UPGRADE_MANIFEST_FILENAME = "upgrade-manifest.json"
 @click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompts")
 @click.option("--version", "target_version", default=None, help="Upgrade to a specific release version (e.g. 0.3.1)")
 @click.option("--health-timeout", default=60, type=int, help="Seconds to wait for gateway health after restart")
+@click.option(
+    "--allow-unverified",
+    is_flag=True,
+    default=False,
+    help=(
+        "Proceed even when release artifacts cannot be cryptographically "
+        "verified (missing/unsigned checksums.txt, invalid signature, or "
+        "missing upgrade-manifest.json). UNSAFE: only use when you knowingly "
+        "accept the supply-chain risk."
+    ),
+)
 @pass_ctx
 def upgrade(
     app: AppContext,
     yes: bool,
     target_version: str | None,
     health_timeout: int,
+    allow_unverified: bool,
 ) -> None:
     """Upgrade DefenseClaw to the latest version.
 
@@ -122,32 +136,75 @@ def upgrade(
         # with a clear warning rather than hard-failing operators on a
         # version they could otherwise install.
         artifact_names = [
-            f"defenseclaw_{target_version}_{os_name}_{arch}.tar.gz",
+            _gateway_archive_name(target_version, os_name, arch),
             f"defenseclaw-{target_version}-py3-none-any.whl",
             _UPGRADE_MANIFEST_FILENAME,
         ]
-        checksums = _download_checksums(target_version, staging_dir)
+        checksums = _download_checksums(
+            target_version, staging_dir, allow_unverified=allow_unverified,
+        )
         if checksums is None:
-            checksums = _fetch_release_asset_digests(target_version)
-            if checksums is None:
-                ux.warn(
-                    "checksums.txt unavailable — release artifacts will be "
-                    "downloaded WITHOUT integrity verification.",
+            # F-0581 (BREAKING CHANGE): the only signed integrity manifest is
+            # checksums.txt when it is either Sigstore-verified or accepted
+            # with an explicit missing-cosign warning. GitHub's per-asset `digest`
+            # values come from the same (untrusted, remote) release service and
+            # are UNSIGNED metadata — a compromised/spoofed release endpoint can
+            # serve matching bytes + digest, so they are NOT a substitute for a
+            # signed manifest. We therefore fail closed whenever checksums is
+            # None, regardless of whether unsigned asset digests are available.
+            #
+            # This is a user-visible behavior change: upgrades that previously
+            # succeeded on unsigned GitHub asset digests now require an explicit
+            # --allow-unverified opt-in. Operators who knowingly accept the
+            # supply-chain risk can still proceed, but only WITHOUT integrity
+            # verification (we do not pretend unsigned digests are trusted).
+            if not allow_unverified:
+                ux.err(
+                    "No trusted checksums.txt is available for this "
+                    "release — refusing to install release artifacts that "
+                    "cannot be cryptographically integrity-verified. GitHub "
+                    "per-asset digests are unsigned metadata and are NOT "
+                    "accepted as a substitute for the signed manifest.",
                     indent="  ",
                 )
-            else:
-                ux.ok("Release artifact digests resolved (GitHub asset metadata)")
+                ux.subhead(
+                    "Re-run with --allow-unverified to override (UNSAFE).",
+                    indent="    ",
+                )
+                raise SystemExit(1)
+            # Operator opted in: proceed WITHOUT integrity verification. We do
+            # not seed `checksums` from unsigned GitHub digests — passing None
+            # downstream makes it explicit that nothing was verified.
+            ux.warn(
+                "No verified checksums.txt — release artifacts will be "
+                "downloaded WITHOUT integrity verification (--allow-unverified). "
+                "Unsigned GitHub asset digests are intentionally not used.",
+                indent="  ",
+            )
         else:
-            ux.ok("Checksum manifest verified (checksums.txt)")
-            _fill_missing_checksums_from_release_assets(target_version, checksums, artifact_names)
+            ux.ok("Checksum manifest accepted (checksums.txt)")
+            # F-0582 (BREAKING CHANGE): do NOT silently fill missing artifact
+            # entries from unsigned GitHub asset digests. Doing so would
+            # downgrade those artifacts from signed to unsigned authentication
+            # behind the operator's back. Missing entries are only filled when
+            # --allow-unverified is set (with a per-artifact warning); otherwise
+            # the gap is left in place and _verify_sha256 fails closed on the
+            # unrecognized artifact.
+            _fill_missing_checksums_from_release_assets(
+                target_version, checksums, artifact_names,
+                allow_unverified=allow_unverified,
+            )
 
-        upgrade_manifest = _download_upgrade_manifest(target_version, staging_dir, checksums)
+        upgrade_manifest = _download_upgrade_manifest(
+            target_version, staging_dir, checksums, allow_unverified=allow_unverified,
+        )
         gw_binary_path, _gw_tarball_name = _download_gateway(
             target_version, os_name, arch, staging_dir, checksums,
         )
         whl_path, _whl_name = _download_wheel(
             target_version, staging_dir, checksums,
         )
+        _preflight_wheel_install(whl_path, os_name)
     except SystemExit:
         shutil.rmtree(staging_dir, ignore_errors=True)
         raise
@@ -193,7 +250,7 @@ def upgrade(
         # incident.
         installed_gateway_path = _install_gateway(gw_binary_path, os_name, backup_dir=backup_dir)
         _verify_installed_gateway_version(installed_gateway_path, target_version)
-        _install_wheel(whl_path)
+        _install_wheel(whl_path, os_name)
 
         ux.banner("Running Migrations")
 
@@ -211,10 +268,22 @@ def upgrade(
             else os.path.expanduser("~/.defenseclaw")
         )
 
-        from defenseclaw.migrations import run_migrations
-        count = run_migrations(current_version, target_version, openclaw_home, data_dir)
+        migration_failed = False
+        try:
+            count = _run_installed_migrations(
+                current_version,
+                target_version,
+                openclaw_home,
+                data_dir,
+                os_name=os_name,
+            )
+        except subprocess.CalledProcessError:
+            migration_failed = True
+            count = 0
         click.echo()
-        if count == 0:
+        if migration_failed:
+            ux.warn("Migration runner failed; upgrade will continue. Run: defenseclaw doctor --fix")
+        elif count == 0:
             ux.ok("No migrations needed")
         else:
             ux.ok(f"Applied {count} migration(s)")
@@ -328,19 +397,45 @@ def _detect_platform() -> tuple[str, str]:
         ux.err(f"Unsupported architecture: {machine}", indent="  ")
         raise SystemExit(1)
 
-    if system not in ("darwin", "linux"):
+    if system not in ("darwin", "linux", "windows"):
         ux.err(f"Unsupported OS: {system}", indent="  ")
         raise SystemExit(1)
 
     return system, arch
 
 
+def _gateway_archive_name(version: str, os_name: str, arch: str) -> str:
+    """Release archive filename for the gateway, matching .goreleaser.yaml.
+
+    Windows ships a .zip (format_overrides); linux/darwin ship .tar.gz.
+    """
+    ext = "zip" if os_name == "windows" else "tar.gz"
+    return f"defenseclaw_{version}_{os_name}_{arch}.{ext}"
+
+
+def _gateway_binary_filename(os_name: str) -> str:
+    """Name of the gateway binary inside the release archive.
+
+    GoReleaser appends .exe on Windows; everywhere else it is bare.
+    """
+    return "defenseclaw.exe" if os_name == "windows" else "defenseclaw"
+
+
+def _installed_gateway_filename(os_name: str) -> str:
+    """Name the gateway is installed as on PATH.
+
+    shutil.which("defenseclaw-gateway") resolves the .exe via PATHEXT on
+    Windows, so the CLI finds it regardless of the suffix.
+    """
+    return "defenseclaw-gateway.exe" if os_name == "windows" else "defenseclaw-gateway"
+
+
 def _preflight_check(version: str, os_name: str, arch: str) -> None:
     """Verify release artifacts exist on GitHub before touching anything."""
-    tarball = f"defenseclaw_{version}_{os_name}_{arch}.tar.gz"
+    archive = _gateway_archive_name(version, os_name, arch)
     whl_name = f"defenseclaw-{version}-py3-none-any.whl"
     urls = [
-        f"{GITHUB_DL}/{version}/{tarball}",
+        f"{GITHUB_DL}/{version}/{archive}",
         f"{GITHUB_DL}/{version}/{whl_name}",
     ]
     for url in urls:
@@ -368,29 +463,36 @@ def _download_gateway(
 ) -> tuple[str, str]:
     """Download the gateway tarball, verify its checksum, and extract.
 
-    Returns ``(binary_path, tarball_name)``. The tarball name is returned
+    Returns ``(binary_path, archive_name)``. The archive name is returned
     so the caller can correlate this artifact with the published
     ``checksums.txt`` entry; we keep the binary path stable so existing
     callers don't break when checksum verification is opted into.
+
+    The archive is a .zip on Windows (containing defenseclaw.exe) and a
+    .tar.gz elsewhere (containing defenseclaw), matching .goreleaser.yaml.
     """
-    tarball = f"defenseclaw_{version}_{os_name}_{arch}.tar.gz"
-    url = f"{GITHUB_DL}/{version}/{tarball}"
+    archive = _gateway_archive_name(version, os_name, arch)
+    url = f"{GITHUB_DL}/{version}/{archive}"
 
     click.echo(f"  {ux.dim('→')} Downloading gateway binary ({os_name}/{arch}) ...")
-    dest = os.path.join(staging_dir, tarball)
+    dest = os.path.join(staging_dir, archive)
     _download_file(url, dest)
     if checksums is not None:
-        _verify_sha256(dest, tarball, checksums)
-    _extract_gateway_tarball(dest, staging_dir)
-    binary = os.path.join(staging_dir, "defenseclaw")
+        _verify_sha256(dest, archive, checksums)
+    if os_name == "windows":
+        _extract_gateway_zip(dest, staging_dir)
+    else:
+        _extract_gateway_tarball(dest, staging_dir)
+    binary_name = _gateway_binary_filename(os_name)
+    binary = os.path.join(staging_dir, binary_name)
     if not os.path.isfile(binary):
         ux.err(
-            "Gateway tarball did not contain the expected defenseclaw binary.",
+            f"Gateway archive did not contain the expected {binary_name} binary.",
             indent="  ",
         )
         raise SystemExit(1)
     ux.ok("Gateway binary downloaded")
-    return binary, tarball
+    return binary, archive
 
 
 def _download_wheel(
@@ -419,6 +521,7 @@ _CHECKSUMS_FILENAME = "checksums.txt"
 def _download_checksums(
     version: str,
     staging_dir: str,
+    allow_unverified: bool = False,
 ) -> dict[str, str] | None:
     """Download ``checksums.txt`` for the target release and parse it.
 
@@ -428,12 +531,22 @@ def _download_checksums(
     — the caller decides whether to warn or hard-fail. We deliberately
     parse, not just download, because a 200 with garbage body would
     otherwise look "verified" to the caller.
+
+    F-0202: a downloaded ``checksums.txt`` is trusted when either its
+    Sigstore signature verifies or the release shipped signature assets but
+    the local host cannot run cosign. The latter is a deliberate operator-UX
+    compromise: checksum validation still protects against a corrupt or
+    swapped payload, and the command prints a warning naming the missing
+    verifier. Other unsigned/unverifiable states still fail closed unless the
+    operator passed ``allow_unverified``.
     """
     dest = _download_optional_release_asset(version, _CHECKSUMS_FILENAME, staging_dir)
     if not dest:
         return None
 
-    _verify_checksums_sigstore(version, staging_dir, dest)
+    _verify_checksums_sigstore(
+        version, staging_dir, dest, allow_unverified=allow_unverified,
+    )
 
     out: dict[str, str] = {}
     try:
@@ -465,18 +578,57 @@ def _download_checksums(
     raise SystemExit(1)
 
 
-def _verify_checksums_sigstore(version: str, staging_dir: str, checksums_path: str) -> None:
-    """Verify checksums.txt with its Sigstore cert/signature when available."""
+def _fail_unsigned_checksums(message: str, allow_unverified: bool) -> None:
+    """Fail closed on an unsigned/unverifiable checksum manifest.
+
+    When ``allow_unverified`` is set the operator has knowingly opted into
+    the supply-chain risk, so we warn and let the caller proceed; otherwise
+    we abort the upgrade.
+    """
+    if allow_unverified:
+        ux.warn(f"{message} Continuing because --allow-unverified is set.", indent="  ")
+        return
+    ux.err(message, indent="  ")
+    ux.subhead("Re-run with --allow-unverified to override (UNSAFE).", indent="    ")
+    raise SystemExit(1)
+
+
+def _verify_checksums_sigstore(
+    version: str,
+    staging_dir: str,
+    checksums_path: str,
+    allow_unverified: bool = False,
+) -> None:
+    """Verify checksums.txt with its Sigstore cert/signature.
+
+    Fails closed (``SystemExit``) when the manifest cannot be trusted, unless
+    ``allow_unverified`` is set:
+
+    * F-0202: an unsigned manifest (no ``.sig``/``.pem`` assets, or only
+      one of them) is untrusted — a checksum match against an unsigned
+      manifest proves nothing about provenance.
+    * Bad Sigstore signatures are untrusted.
+    * Missing local ``cosign`` is a warning, not a hard stop, when both
+      Sigstore assets are present. The operator still gets SHA-256 checksum
+      validation and an explicit reminder to install cosign for provenance
+      verification.
+    """
     sig_path = _download_optional_release_asset(version, f"{_CHECKSUMS_FILENAME}.sig", staging_dir)
     cert_path = _download_optional_release_asset(version, f"{_CHECKSUMS_FILENAME}.pem", staging_dir)
 
     if not sig_path and not cert_path:
+        _fail_unsigned_checksums(
+            "checksums.txt is not signed (no Sigstore signature/certificate "
+            "assets were published) — refusing to trust an unsigned checksum "
+            "manifest.",
+            allow_unverified,
+        )
         return
     if not sig_path or not cert_path:
-        ux.warn(
-            "checksums.txt Sigstore signature assets are incomplete; "
-            "continuing without signature verification.",
-            indent="  ",
+        _fail_unsigned_checksums(
+            "checksums.txt Sigstore signature assets are incomplete — "
+            "refusing to trust a checksum manifest that cannot be verified.",
+            allow_unverified,
         )
         return
 
@@ -484,7 +636,8 @@ def _verify_checksums_sigstore(version: str, staging_dir: str, checksums_path: s
     if not cosign:
         ux.warn(
             "checksums.txt Sigstore signature is present, but cosign was "
-            "not found on PATH; continuing without signature verification.",
+            "not found on PATH; continuing with checksum verification only. "
+            "Install cosign to verify release provenance.",
             indent="  ",
         )
         return
@@ -558,33 +711,68 @@ def _download_optional_release_asset(
     return dest
 
 
+def _fail_missing_upgrade_manifest(message: str, allow_unverified: bool) -> None:
+    """Fail closed when the release upgrade manifest cannot be fetched.
+
+    Honors ``allow_unverified`` so an operator can deliberately upgrade a
+    release that ships no ``upgrade-manifest.json`` (e.g. a legacy build).
+    """
+    if allow_unverified:
+        ux.warn(
+            f"{message}; continuing without release-specific upgrade policy "
+            "(--allow-unverified).",
+            indent="  ",
+        )
+        return
+    ux.err(
+        f"{message} — refusing to upgrade without the release's mandatory "
+        "upgrade policy.",
+        indent="  ",
+    )
+    ux.subhead("Re-run with --allow-unverified to override (UNSAFE).", indent="    ")
+    raise SystemExit(1)
+
+
 def _download_upgrade_manifest(
     version: str,
     staging_dir: str,
     checksums: dict[str, str] | None = None,
+    allow_unverified: bool = False,
 ) -> dict[str, object] | None:
-    """Download and validate the release's upgrade contract, when present.
+    """Download and validate the release's upgrade contract.
 
     ``defenseclaw upgrade`` itself is installed on the operator's machine,
     so future releases cannot assume the local upgrader learned new rules.
     The release-owned manifest is the forward-compatibility handoff: it can
     require a newer upgrade protocol, name migrations that must be recorded
     in the cursor, and make breaking releases fail before old code guesses.
+
+    F-0203: the manifest carries mandatory upgrade policy. Silently
+    skipping it when it cannot be fetched (404, request error, non-200)
+    lets a hostile or partially-unavailable release endpoint suppress that
+    policy. We fail closed by default; operators can opt out of the policy
+    requirement with ``allow_unverified``.
     """
     url = f"{GITHUB_DL}/{version}/{_UPGRADE_MANIFEST_FILENAME}"
     dest = os.path.join(staging_dir, _UPGRADE_MANIFEST_FILENAME)
     try:
         resp = requests.get(url, timeout=15, allow_redirects=True)
     except requests.RequestException as exc:
-        ux.warn(f"Could not reach {_UPGRADE_MANIFEST_FILENAME}: {exc}", indent="  ")
+        _fail_missing_upgrade_manifest(
+            f"Could not reach {_UPGRADE_MANIFEST_FILENAME}: {exc}",
+            allow_unverified,
+        )
         return None
     if resp.status_code == 404:
+        _fail_missing_upgrade_manifest(
+            f"{_UPGRADE_MANIFEST_FILENAME} not found for release {version}",
+            allow_unverified,
+        )
         return None
     if resp.status_code != 200:
-        ux.warn(
-            f"Could not fetch {_UPGRADE_MANIFEST_FILENAME} ({resp.status_code}); "
-            "continuing without release-specific upgrade policy.",
-            indent="  ",
+        _fail_missing_upgrade_manifest(
+            f"Could not fetch {_UPGRADE_MANIFEST_FILENAME} ({resp.status_code})",
+            allow_unverified,
         )
         return None
 
@@ -794,10 +982,39 @@ def _fill_missing_checksums_from_release_assets(
     version: str,
     checksums: dict[str, str],
     artifact_names: list[str],
+    allow_unverified: bool = False,
 ) -> None:
-    """Fill required checksum gaps from GitHub release asset metadata."""
+    """Fill required checksum gaps from GitHub release asset metadata.
+
+    F-0582 (BREAKING CHANGE): GitHub per-asset ``digest`` values are UNSIGNED
+    metadata from the (untrusted) release service. Filling a gap in the
+    Sigstore-verified ``checksums.txt`` from them silently downgrades that
+    artifact from signed to unsigned authentication. We therefore refuse to do
+    this unless the operator explicitly accepted the risk with
+    ``--allow-unverified`` — and even then we warn, naming each downgraded
+    artifact. Without the flag the gap is left untouched so ``_verify_sha256``
+    fails closed on the missing (unsigned) artifact rather than trusting it.
+    """
     missing = [name for name in artifact_names if name not in checksums]
     if not missing:
+        return
+
+    if not allow_unverified:
+        # Leave the gap: the signed manifest does not cover these artifacts.
+        # _verify_sha256 will refuse to install them ("No checksum entry"),
+        # which is the intended fail-closed behavior. Surface why up front so
+        # the operator gets an actionable message before the hard failure.
+        ux.warn(
+            "Signed checksums.txt is missing entries for: "
+            + ", ".join(missing)
+            + ". Refusing to fill them from unsigned GitHub asset digests.",
+            indent="  ",
+        )
+        ux.subhead(
+            "Re-run with --allow-unverified to install these artifacts using "
+            "unsigned GitHub asset digests (UNSAFE).",
+            indent="    ",
+        )
         return
 
     asset_digests = _fetch_release_asset_digests(version)
@@ -813,7 +1030,9 @@ def _fill_missing_checksums_from_release_assets(
 
     for name in filled:
         ux.warn(
-            f"checksums.txt missing {name}; using GitHub release asset digest.",
+            f"checksums.txt missing {name}; using UNSIGNED GitHub release "
+            "asset digest (--allow-unverified). This artifact is NOT covered "
+            "by the signed manifest.",
             indent="  ",
         )
 
@@ -859,6 +1078,38 @@ def _extract_gateway_tarball(tarball_path: str, staging_dir: str) -> None:
         raise SystemExit(1) from exc
     except OSError as exc:
         ux.err(f"Could not write gateway files from tarball: {exc}", indent="  ")
+        raise SystemExit(1) from exc
+
+
+def _extract_gateway_zip(zip_path: str, staging_dir: str) -> None:
+    """Safely extract the Windows gateway .zip into ``staging_dir``.
+
+    Mirrors the defense-in-depth of ``_extract_gateway_tarball``: even a
+    checksum-verified archive is validated entry-by-entry so a malicious or
+    corrupted zip can never write outside the staging directory via absolute
+    paths or ``..`` traversal. ZIP has no symlink member type the stdlib will
+    materialize here, so the path checks are the relevant guard.
+    """
+    root = os.path.realpath(staging_dir)
+    try:
+        with zipfile.ZipFile(zip_path) as zf:
+            for name in zf.namelist():
+                # Normalize Windows separators so a "..\\" entry is caught the
+                # same as "../" on a POSIX extractor.
+                normalized = name.replace("\\", "/")
+                if not normalized or normalized.startswith("/") or os.path.isabs(normalized):
+                    ux.err(f"Unsafe zip entry: {name!r}", indent="  ")
+                    raise SystemExit(1)
+                target = os.path.realpath(os.path.join(staging_dir, normalized))
+                if target != root and not target.startswith(root + os.sep):
+                    ux.err(f"Unsafe zip entry escapes staging dir: {name}", indent="  ")
+                    raise SystemExit(1)
+            zf.extractall(staging_dir)
+    except zipfile.BadZipFile as exc:
+        ux.err(f"Could not extract gateway zip: {exc}", indent="  ")
+        raise SystemExit(1) from exc
+    except OSError as exc:
+        ux.err(f"Could not write gateway files from zip: {exc}", indent="  ")
         raise SystemExit(1) from exc
 
 
@@ -925,13 +1176,16 @@ def _install_gateway(
     """
     install_dir = os.path.expanduser("~/.local/bin")
     os.makedirs(install_dir, exist_ok=True)
-    target = os.path.join(install_dir, "defenseclaw-gateway")
+    target = os.path.join(install_dir, _installed_gateway_filename(os_name))
 
     if backup_dir and os.path.isfile(target):
-        snapshot = os.path.join(backup_dir, "defenseclaw-gateway.previous")
+        snapshot = os.path.join(
+            backup_dir, _installed_gateway_filename(os_name) + ".previous"
+        )
         try:
             shutil.copy2(target, snapshot)
-            os.chmod(snapshot, 0o755)
+            if os_name != "windows":
+                os.chmod(snapshot, 0o755)
             ux.ok(f"Snapshotted previous gateway → {snapshot}")
         except OSError as exc:
             ux.warn(
@@ -940,9 +1194,13 @@ def _install_gateway(
             )
 
     shutil.copy2(binary_path, target)
-    os.chmod(target, 0o755)
-    if os_name == "darwin":
-        subprocess.run(["codesign", "-f", "-s", "-", target], capture_output=True, check=False)
+    # chmod's executable bits are meaningless on Windows (and os.chmod there only
+    # toggles the read-only flag); the gateway was already stopped above, so the
+    # copy can overwrite the prior .exe.
+    if os_name != "windows":
+        os.chmod(target, 0o755)
+        if os_name == "darwin":
+            subprocess.run(["codesign", "-f", "-s", "-", target], capture_output=True, check=False)
     ux.ok("Gateway binary installed")
     return target
 
@@ -1067,31 +1325,183 @@ def _check_post_upgrade_drift(target_version: str) -> None:
     )
 
 
-def _install_wheel(whl_path: str) -> None:
-    """Install a pre-downloaded Python CLI wheel."""
+def _install_wheel(whl_path: str, os_name: str | None = None) -> None:
+    """Install a pre-downloaded Python CLI wheel.
+
+    ``os_name`` defaults to the running platform; the upgrade flow passes the
+    detected OS explicitly. Windows venvs put executables under ``Scripts`` (not
+    ``bin``), and we expose the CLI via a ``defenseclaw.cmd`` shim because
+    ``os.symlink`` needs elevated/Developer-Mode privileges there.
+    """
+    if os_name is None:
+        os_name = platform.system().lower()
+
     uv = shutil.which("uv")
     if not uv:
         ux.err("uv not found on PATH — cannot update Python CLI", indent="  ")
         raise SystemExit(1)
 
     venv = os.path.expanduser("~/.defenseclaw/.venv")
-    venv_python = os.path.join(venv, "bin", "python")
+    scripts_subdir = "Scripts" if os_name == "windows" else "bin"
+    python_exe = "python.exe" if os_name == "windows" else "python"
+    venv_python = os.path.join(venv, scripts_subdir, python_exe)
 
     if not os.path.isfile(venv_python):
         click.echo(f"  {ux.dim('→')} Creating venv ...")
-        subprocess.run([uv, "venv", venv, "--python", "3.12"], check=True)
+        subprocess.run([uv, "--no-config", "venv", venv, "--python", "3.12"], check=True)
 
-    subprocess.run([uv, "pip", "install", "--python", venv_python, "--quiet", whl_path], check=True)
+    subprocess.run([uv, "--no-config", "pip", "install", "--python", venv_python, "--quiet", whl_path], check=True)
 
     install_dir = os.path.expanduser("~/.local/bin")
     os.makedirs(install_dir, exist_ok=True)
-    symlink = os.path.join(install_dir, "defenseclaw")
-    venv_bin = os.path.join(venv, "bin", "defenseclaw")
-    if os.path.isfile(venv_bin):
-        if os.path.islink(symlink) or os.path.exists(symlink):
-            os.remove(symlink)
-        os.symlink(venv_bin, symlink)
+
+    if os_name == "windows":
+        cli_exe = os.path.join(venv, "Scripts", "defenseclaw.exe")
+        shim = os.path.join(install_dir, "defenseclaw.cmd")
+        if os.path.isfile(cli_exe):
+            # PATHEXT includes .CMD, so `defenseclaw` and
+            # shutil.which("defenseclaw") both resolve to this shim.
+            with open(shim, "w", encoding="ascii", newline="\r\n") as f:
+                f.write(f'@echo off\r\n"{cli_exe}" %*\r\n')
+    else:
+        symlink = os.path.join(install_dir, "defenseclaw")
+        venv_bin = os.path.join(venv, "bin", "defenseclaw")
+        if os.path.isfile(venv_bin):
+            if os.path.islink(symlink) or os.path.exists(symlink):
+                os.remove(symlink)
+            os.symlink(venv_bin, symlink)
     ux.ok("Python CLI installed")
+
+
+def _run_installed_migrations(
+    from_version: str,
+    to_version: str,
+    openclaw_home: str,
+    data_dir: str,
+    *,
+    os_name: str | None = None,
+) -> int:
+    """Run migrations in the freshly installed managed venv.
+
+    ``defenseclaw upgrade`` replaces the wheel while this command is already
+    running. Importing ``defenseclaw.migrations`` in-process can therefore mix
+    old modules cached in ``sys.modules`` with new files on disk. A child
+    interpreter starts with a clean import graph from the just-installed wheel.
+    """
+    if os_name is None:
+        os_name = platform.system().lower()
+
+    venv = os.path.expanduser("~/.defenseclaw/.venv")
+    venv_python = _venv_python_path(venv, os_name)
+    if not os.path.isfile(venv_python):
+        raise subprocess.CalledProcessError(1, [venv_python, "-c", "<missing managed venv>"])
+
+    fd, result_path = tempfile.mkstemp(prefix="defenseclaw-migrations-", suffix=".json")
+    os.close(fd)
+    script = """
+import json
+import sys
+
+from defenseclaw.migrations import run_migrations
+
+count = run_migrations(sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4])
+with open(sys.argv[5], "w", encoding="utf-8") as fh:
+    json.dump({"count": count}, fh)
+"""
+    try:
+        subprocess.run(
+            [
+                venv_python,
+                "-c",
+                script,
+                from_version,
+                to_version,
+                openclaw_home,
+                data_dir,
+                result_path,
+            ],
+            check=True,
+        )
+        with open(result_path, encoding="utf-8") as f:
+            payload = json.load(f)
+        count = payload.get("count")
+        if not isinstance(count, int):
+            raise subprocess.CalledProcessError(1, [venv_python, "-c", "<invalid migration count>"])
+        return count
+    finally:
+        try:
+            os.remove(result_path)
+        except OSError:
+            pass
+
+
+def _venv_python_path(venv: str, os_name: str) -> str:
+    scripts_subdir = "Scripts" if os_name == "windows" else "bin"
+    python_exe = "python.exe" if os_name == "windows" else "python"
+    return os.path.join(venv, scripts_subdir, python_exe)
+
+
+def _fail_wheel_preflight(message: str, exc: subprocess.CalledProcessError | None = None) -> None:
+    ux.err(message, indent="  ")
+    if exc is not None:
+        output = "\n".join(part for part in (exc.stderr, exc.stdout) if part).strip()
+        if output:
+            tail = "\n".join(output.splitlines()[-20:])
+            ux.subhead(tail, indent="    ")
+    ux.subhead("No services were stopped and no installed artifacts were changed.", indent="    ")
+    raise SystemExit(1)
+
+
+def _preflight_wheel_install(whl_path: str, os_name: str | None = None) -> None:
+    """Resolve the downloaded wheel before the upgrade mutates services.
+
+    A release wheel can be checksum-valid but dependency-unsatisfiable. Running
+    uv's dry-run resolver before backup/stop/install keeps that failure mode
+    from leaving the operator with a fresh gateway and the old Python CLI.
+    """
+    if os_name is None:
+        os_name = platform.system().lower()
+
+    uv = shutil.which("uv")
+    if not uv:
+        ux.err("uv not found on PATH — cannot update Python CLI", indent="  ")
+        raise SystemExit(1)
+
+    click.echo(f"  {ux.dim('→')} Resolving Python CLI dependencies ...")
+
+    managed_venv = os.path.expanduser("~/.defenseclaw/.venv")
+    venv_python = _venv_python_path(managed_venv, os_name)
+    cleanup_dir: str | None = None
+
+    if not os.path.isfile(venv_python):
+        cleanup_dir = tempfile.mkdtemp(prefix="defenseclaw-wheel-preflight-")
+        preflight_venv = os.path.join(cleanup_dir, "venv")
+        try:
+            subprocess.run(
+                [uv, "--no-config", "venv", preflight_venv, "--python", "3.12", "--quiet"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except subprocess.CalledProcessError as exc:
+            shutil.rmtree(cleanup_dir, ignore_errors=True)
+            _fail_wheel_preflight("Could not create Python CLI preflight environment.", exc)
+        venv_python = _venv_python_path(preflight_venv, os_name)
+
+    try:
+        subprocess.run(
+            [uv, "--no-config", "pip", "install", "--python", venv_python, "--dry-run", "--quiet", whl_path],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        _fail_wheel_preflight("Python CLI wheel dependencies are unsatisfiable.", exc)
+    finally:
+        if cleanup_dir is not None:
+            shutil.rmtree(cleanup_dir, ignore_errors=True)
+
+    ux.ok("Python CLI dependency preflight passed")
 
 
 def _poll_health(cfg, timeout_seconds: int = 60) -> None:
@@ -1104,6 +1514,19 @@ def _poll_health(cfg, timeout_seconds: int = 60) -> None:
     if cfg:
         api_port = cfg.gateway.api_port
         token = cfg.gateway.resolved_token()
+
+    # F-0701: the gateway bearer token authenticates to the local sidecar.
+    # ``api_bind`` is operator config and may have been tampered to point at
+    # an attacker-controlled host; never send the sidecar token anywhere but
+    # loopback. For a non-loopback bind we probe health without the token
+    # rather than leak the credential to that host.
+    if token and not _is_loopback_host(bind):
+        ux.warn(
+            f"Gateway health probe host {bind!r} is not loopback; omitting the "
+            "gateway bearer token from the health request.",
+            indent="  ",
+        )
+        token = ""
 
     client = OrchestratorClient(host=bind, port=api_port, token=token)
 
@@ -1167,6 +1590,30 @@ def _poll_health(cfg, timeout_seconds: int = 60) -> None:
         "~/.defenseclaw/gateway.jsonl (structured)"
     )
     ux.subhead("Run:  defenseclaw-gateway status")
+
+
+def _is_loopback_host(host: str) -> bool:
+    """Return True when ``host`` resolves to the local loopback interface.
+
+    Used to decide whether it is safe to attach the gateway bearer token to
+    an outbound health probe. We treat ``localhost`` and any loopback IP
+    literal (IPv4 ``127.0.0.0/8`` or IPv6 ``::1``) as loopback. Anything
+    else — including unspecified addresses like ``0.0.0.0`` and DNS names —
+    is treated as non-loopback so the token is not leaked.
+    """
+    candidate = (host or "").strip().lower()
+    if not candidate:
+        # An empty bind resolves to 127.0.0.1 in _api_bind_host.
+        return True
+    if candidate == "localhost":
+        return True
+    candidate = candidate.strip("[]")
+    if candidate == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(candidate).is_loopback
+    except ValueError:
+        return False
 
 
 def _api_bind_host(cfg) -> str:

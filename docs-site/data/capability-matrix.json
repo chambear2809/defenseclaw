@@ -94,7 +94,24 @@
         "scope": "user"
       },
       "hilt": "Can block supported hook events but has no native human-approval surface; confirm verdicts fall back explicitly.",
-      "notes": "Hooks live in ~/.hermes/config.yaml. Discovery surfaces for MCP, skills, plugins."
+      "notes": "Hooks live in ~/.hermes/config.yaml (hermes-hooks-v1; generic decoder lifts content from the per-event extra envelope). Full shell-hook lifecycle: pre_tool_call blocks, pre_llm_call injects context, post_tool_call/post_llm_call/on_session_start/on_session_end/subagent_stop observe. Setup sets hooks_auto_accept so events register on non-TTY/gateway runs. Discovery surfaces for MCP, skills, plugins."
+    },
+    {
+      "id": "opencode",
+      "label": "OpenCode",
+      "family": "hooks",
+      "toolInspection": "pre-execution",
+      "subprocessPolicy": "none",
+      "hooks": {
+        "canBlock": true,
+        "canAskNative": false,
+        "askEvents": [],
+        "blockEvents": ["tool.execute.before"],
+        "supportsFailClosed": true,
+        "scope": "user"
+      },
+      "hilt": "No native human-approval surface; blocks by throwing in the bridge plugin's tool.execute.before. confirm verdicts fall back to allow.",
+      "notes": "Governed by a DefenseClaw JS bridge plugin auto-loaded from ~/.config/opencode/plugins/defenseclaw.js (no opencode.json edit). tool.execute.before POSTs to /api/v1/opencode/hook and throws new Error(reason) to abort the tool on a block decision; tool.execute.after is observe-only. Fail-closed is genuine — the bridge throws when the gateway is unreachable and FAIL_MODE=closed."
     },
     {
       "id": "geminicli",
@@ -173,7 +190,7 @@
         "scope": "user"
       },
       "hilt": "Antigravity is the only DefenseClaw connector with an unbypassable native ask: returning decision=ask from a PreInvocation or PreToolUse hook overrides agy's --dangerously-skip-permissions flag. The literal force_ask string is not recognized by agy v1.0.0 and is preserved internally as raw_action only.",
-      "notes": "Hooks v2 covers the full Antigravity 2.0 lifecycle (PreInvocation, PreToolUse, PostToolUse, PostInvocation, Stop) registered as separate DefenseClaw-owned keys in ~/.gemini/config/hooks.json (the path agy v1.0.x actually evaluates; the marketing-facing ~/.gemini/antigravity-cli/hooks.json is silently ignored at runtime). PreToolUse is empirically verified on agy v1.0.1; the other four events are spec-conformant and gated on upstream agy parity. agy merges all discovered hooks files; multi-file writes cause duplicate firings. MCP / skills / rules / plugins are unsupported until agy publishes contracts."
+      "notes": "Hooks v2 covers the full Antigravity 2.0 lifecycle (PreInvocation, PreToolUse, PostToolUse, PostInvocation, Stop) registered as separate DefenseClaw-owned keys in ~/.gemini/config/hooks.json (the path agy v1.0.x actually evaluates; the marketing-facing ~/.gemini/antigravity-cli/hooks.json is silently ignored at runtime). PreToolUse is empirically verified on agy v1.0.1; the other four events are spec-conformant and gated on upstream agy parity. MCP read/write uses ~/.gemini/config/mcp_config.json and <workspace>/.agents/mcp_config.json. AgentSkills folder form is read/write at ~/.gemini/config/skills and <workspace>/.agents/skills; CLI direct markdown skills, rules, plugins, and plugin-contained agents remain discovery/scan only."
     },
     {
       "id": "windsurf",

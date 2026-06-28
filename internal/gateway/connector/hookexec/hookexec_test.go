@@ -205,6 +205,19 @@ func TestDecisionGolden(t *testing.T) {
 			respBody:  `{"action":"allow"}`,
 			wantCode:  0,
 		},
+		{
+			name:      "antigravity allow with no hook_output exit 0",
+			connector: "antigravity",
+			respBody:  `{"action":"allow"}`,
+			wantCode:  0,
+		},
+		{
+			name:       "antigravity echoes hook_output deny exit 0",
+			connector:  "antigravity",
+			respBody:   `{"hook_output":{"decision":"deny","reason":"no"}}`,
+			wantStdout: `{"decision":"deny","reason":"no"}` + "\n",
+			wantCode:   0,
+		},
 	}
 
 	for _, tt := range tests {
@@ -364,6 +377,12 @@ func TestResponseFailure(t *testing.T) {
 		if r.stdout != cursorDeny("DefenseClaw hook failed closed")+"\n" {
 			t.Errorf("stdout = %q", r.stdout)
 		}
+		if !strings.Contains(r.stderr, "possible token drift") {
+			t.Errorf("stderr should explain possible token drift, got %q", r.stderr)
+		}
+		if !strings.Contains(r.stderr, "defenseclaw doctor --fix") {
+			t.Errorf("stderr should suggest doctor --fix, got %q", r.stderr)
+		}
 	})
 
 	t.Run("invalid JSON body is a response failure", func(t *testing.T) {
@@ -510,7 +529,7 @@ func TestReadTokenFile(t *testing.T) {
 
 func TestSupportedConnectorsSorted(t *testing.T) {
 	got := SupportedConnectors()
-	want := []string{"claudecode", "codex", "copilot", "cursor", "geminicli", "hermes", "openhands", "windsurf"}
+	want := []string{"antigravity", "claudecode", "codex", "copilot", "cursor", "geminicli", "hermes", "openhands", "windsurf"}
 	if len(got) != len(want) {
 		t.Fatalf("got %v, want %v", got, want)
 	}

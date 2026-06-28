@@ -42,6 +42,7 @@ var (
 	OpenHandsHooksPathOverride    string
 	OpenHandsWorkspaceDirOverride string
 	AntigravityHooksPathOverride  string
+	OpenCodePluginPathOverride    string
 )
 
 type hookOnlyConnector struct {
@@ -52,9 +53,54 @@ type hookOnlyConnector struct {
 	configPath  func(SetupOpts) string
 	capability  func(SetupOpts) HookCapability
 
+	// pluginArtifact connectors are governed by a host-agent plugin FILE
+	// that DefenseClaw writes (and the agent auto-loads) rather than a
+	// bundled shell hook + a config-file patch. opencode is the first:
+	// it loads JS/TS plugins from ~/.config/opencode/plugins/ and a
+	// plugin's tool.execute.before throws to block. For these connectors
+	// configPath resolves to the plugin file's destination and
+	// pluginArtifactAsset names the embedded template under hooks/.
+	// Setup/Teardown/VerifyClean branch on this flag; everything else
+	// (HookProfile, Capabilities, Authenticate, Route) is shared.
+	pluginArtifact      bool
+	pluginArtifactAsset string
+
 	gatewayToken string
 	masterKey    string
 	loopbackWarn sync.Once
+}
+
+// NewOpenCodeConnector governs opencode (https://opencode.ai). Unlike the
+// shell-hook connectors, opencode has no command-hook config surface: it
+// auto-loads JavaScript/TypeScript plugins from
+// ~/.config/opencode/plugins/ at startup. DefenseClaw ships a
+// dependency-free bridge plugin (opencode-plugin.js) whose
+// tool.execute.before POSTs each tool call to /api/v1/opencode/hook and
+// throws new Error(reason) when the gateway returns a block decision —
+// which aborts the tool the same way opencode's own .env-protection
+// example does. The thrown error is authoritative, so opencode genuinely
+// supports fail-closed: on an unreachable gateway the bridge throws when
+// FAIL_MODE=closed.
+func NewOpenCodeConnector() *hookOnlyConnector {
+	return &hookOnlyConnector{
+		name:                "opencode",
+		description:         "auto-loaded JS bridge plugin (~/.config/opencode/plugins) with tool.execute.before blocking",
+		apiPath:             "/api/v1/opencode/hook",
+		scriptName:          "opencode-plugin.js",
+		configPath:          opencodePluginPath,
+		pluginArtifact:      true,
+		pluginArtifactAsset: "opencode-plugin.js",
+		capability: func(opts SetupOpts) HookCapability {
+			return HookCapability{
+				CanBlock:           true,
+				CanAskNative:       false,
+				BlockEvents:        []string{"tool.execute.before"},
+				SupportsFailClosed: true,
+				Scope:              "user",
+				ConfigPath:         opencodePluginPath(opts),
+			}
+		},
+	}
 }
 
 func NewHermesConnector() *hookOnlyConnector {
@@ -304,6 +350,10 @@ func (c *hookOnlyConnector) HookProfile(opts SetupOpts) HookProfile {
 		// empirical agy-version notes.
 		profile.Decode = antigravityProfileDecode
 	}
+	// NOTE: hermes needs no Decode override. Its nested `extra` content
+	// is recovered by the generic decoder's ContentEnvelopeKey fallback
+	// (declared on the hermes hook contract), and its wire replies are
+	// shaped by the hermes case in hookOnlyProfileRespond.
 	return ApplyHookContract(profile, opts)
 }
 
@@ -359,7 +409,8 @@ func geminiCLINativeOTLPSpec(opts SetupOpts) *NativeOTLPSpec {
 
 func (c *hookOnlyConnector) Capabilities(opts SetupOpts) ConnectorCapabilities {
 	caps := ConnectorCapabilities{
-		Hooks: c.capability(opts),
+		LLMTrafficMode: LLMTrafficModeForConnector(c.name),
+		Hooks:          c.capability(opts),
 		CodeGuard: CodeGuardCapability{
 			Supported:    false,
 			OptInOnly:    true,
@@ -552,18 +603,46 @@ func (c *hookOnlyConnector) Capabilities(opts SetupOpts) ConnectorCapabilities {
 			Notes:            []string{"DefenseClaw reports the required environment variables but does not mutate shell rc files."},
 		}
 	case "antigravity":
-		// Antigravity v1 publishes only the hooks surface in its
-		// documented configuration files; MCP / skills / rules /
-		// plugins / agents are not exposed as documented local
-		// install surfaces, so DefenseClaw treats those as
-		// unsupported until Google publishes contracts. This matches
-		// the conservative posture taken for Windsurf at first
-		// integration.
-		caps.MCP = unsupportedSurface("Antigravity MCP install surface is not documented; DefenseClaw v1 manages hooks only.")
-		caps.Skills = unsupportedSurface("Antigravity skills are not exposed as a documented local install surface.")
-		caps.Rules = unsupportedSurface("Antigravity rule install surface is not documented.")
-		caps.Plugins = pluginsAreOpenClawOnly()
-		caps.Agents = unsupportedSurface("Antigravity agent / subagent asset installation is not supported.")
+		caps.MCP = SurfaceCapability{
+			Supported:       true,
+			Scope:           "workspace,user",
+			ConfigPaths:     antigravityMCPPaths(opts),
+			ReadPaths:       antigravityMCPPaths(opts),
+			WritePaths:      antigravityMCPPaths(opts),
+			SupportsBackup:  true,
+			SupportsRestore: true,
+			Notes:           []string{"Antigravity MCP uses ~/.gemini/config/mcp_config.json and <workspace>/.agents/mcp_config.json. DefenseClaw writes remote servers with serverUrl and reads url as a compatibility alias."},
+		}
+		caps.Skills = SurfaceCapability{
+			Supported:      true,
+			Scope:          "workspace,user",
+			ReadPaths:      antigravitySkillReadPaths(opts),
+			WritePaths:     antigravitySkillWritePaths(opts),
+			InstallTargets: []string{"skill"},
+			RequiresOptIn:  true,
+			Notes:          []string{"AgentSkills folder form is supported for read/write. CLI direct markdown skills under ~/.gemini/antigravity-cli/skills are discovery-only until Google reconciles the skill shape conflict."},
+		}
+		caps.Rules = SurfaceCapability{
+			Supported:     true,
+			Scope:         "workspace,user",
+			ReadPaths:     antigravityRuleReadPaths(opts),
+			DiscoveryOnly: true,
+			Notes:         []string{"Antigravity rules are discovery-only; DefenseClaw does not write rules until activation metadata and file naming are documented."},
+		}
+		caps.Plugins = SurfaceCapability{
+			Supported:     true,
+			Scope:         "workspace,user",
+			ReadPaths:     antigravityPluginPaths(opts),
+			DiscoveryOnly: true,
+			Notes:         []string{"Antigravity plugins are scan/discovery-only; DefenseClaw does not install or disable agy plugins in PR #365."},
+		}
+		caps.Agents = SurfaceCapability{
+			Supported:     true,
+			Scope:         "plugin",
+			ReadPaths:     antigravityPluginPaths(opts),
+			DiscoveryOnly: true,
+			Notes:         []string{"No standalone Antigravity agent path is documented. Plugin-contained agents under <plugin>/agents are discovered through Antigravity plugin roots only."},
+		}
 		caps.CodeGuard.Supported = false
 	case "openhands":
 		caps.MCP = SurfaceCapability{
@@ -608,6 +687,9 @@ func (c *hookOnlyConnector) Capabilities(opts SetupOpts) ConnectorCapabilities {
 
 func (c *hookOnlyConnector) Setup(ctx context.Context, opts SetupOpts) error {
 	_ = ctx
+	if c.pluginArtifact {
+		return c.setupPluginArtifact(opts)
+	}
 	hookDir := filepath.Join(opts.DataDir, "hooks")
 	if err := WriteHookScriptsForConnectorObjectWithOpts(hookDir, opts, c); err != nil {
 		return fmt.Errorf("%s hook script: %w", c.name, err)
@@ -616,6 +698,43 @@ func (c *hookOnlyConnector) Setup(ctx context.Context, opts SetupOpts) error {
 		return fmt.Errorf("%s hook config: %w", c.name, err)
 	}
 	return nil
+}
+
+// setupPluginArtifact renders the embedded bridge-plugin template
+// (APIAddr / APIToken / FailMode substituted) and writes it to the host
+// agent's auto-load plugin directory at 0o600 (it carries the gateway
+// token, so it is owner-only and never executable). The destination is
+// captured in the managed-file backup so Teardown can heal it: if the
+// plugin file is unchanged since setup it is removed (we created it);
+// if the operator hand-edited it, the backup restore leaves it alone.
+func (c *hookOnlyConnector) setupPluginArtifact(opts SetupOpts) error {
+	tmpl, err := hookFS.ReadFile("hooks/" + c.pluginArtifactAsset)
+	if err != nil {
+		return fmt.Errorf("%s read plugin template %s: %w", c.name, c.pluginArtifactAsset, err)
+	}
+	failMode := normalizeHookFailMode(opts.HookFailMode)
+	if failMode == "closed" && !c.capability(opts).SupportsFailClosed {
+		failMode = "open"
+	}
+	rendered, err := renderTemplate(string(tmpl), templateData{
+		APIAddr:  opts.APIAddr,
+		APIToken: opts.APIToken,
+		FailMode: failMode,
+	})
+	if err != nil {
+		return fmt.Errorf("%s render plugin template: %w", c.name, err)
+	}
+	path := c.configPath(opts)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("%s create plugin dir: %w", c.name, err)
+	}
+	if err := captureManagedFileBackup(opts.DataDir, c.name, "config", path); err != nil {
+		return fmt.Errorf("%s capture plugin backup: %w", c.name, err)
+	}
+	if err := atomicWriteFile(path, []byte(rendered), 0o600); err != nil {
+		return fmt.Errorf("%s write plugin: %w", c.name, err)
+	}
+	return updateManagedFileBackupPostHash(opts.DataDir, c.name, "config", path)
 }
 
 // hookCommand returns the command an agent runs for this connector's hook. On
@@ -646,6 +765,9 @@ func (c *hookOnlyConnector) hookCommand(opts SetupOpts) string {
 // failure does not mask a config-restore failure (or vice versa).
 func (c *hookOnlyConnector) Teardown(ctx context.Context, opts SetupOpts) error {
 	_ = ctx
+	if c.pluginArtifact {
+		return c.teardownPluginArtifact(opts)
+	}
 	var errs []string
 
 	path := managedFileBackupTargetPath(opts.DataDir, c.name, "config", c.configPath(opts))
@@ -671,6 +793,30 @@ func (c *hookOnlyConnector) Teardown(ctx context.Context, opts SetupOpts) error 
 	return nil
 }
 
+// teardownPluginArtifact heals the host agent's plugin directory. The
+// managed-file backup removes the plugin when it is unchanged since
+// setup (we created it, so "restore to pristine-missing" = delete) and
+// otherwise leaves an operator-edited file in place. No tombstone is
+// written: unlike a shell hook (whose absolute path a long-running host
+// process caches and re-execs), an opencode plugin is re-read from the
+// plugins directory on each startup, so simply removing the file stops
+// it loading.
+func (c *hookOnlyConnector) teardownPluginArtifact(opts SetupOpts) error {
+	path := managedFileBackupTargetPath(opts.DataDir, c.name, "config", c.configPath(opts))
+	restored, err := restoreManagedFileBackupIfUnchanged(opts.DataDir, c.name, "config", path)
+	if err != nil {
+		return fmt.Errorf("%s restore plugin backup: %w", c.name, err)
+	}
+	if !restored {
+		// The plugin was hand-edited after setup; leave it for the
+		// operator rather than clobbering their changes. Doctor surfaces
+		// the lingering managed plugin.
+		return nil
+	}
+	discardManagedFileBackup(opts.DataDir, c.name, "config")
+	return nil
+}
+
 func (c *hookOnlyConnector) VerifyClean(opts SetupOpts) error {
 	path := managedFileBackupTargetPath(opts.DataDir, c.name, "config", c.configPath(opts))
 	data, err := os.ReadFile(path)
@@ -679,6 +825,15 @@ func (c *hookOnlyConnector) VerifyClean(opts SetupOpts) error {
 			return nil
 		}
 		return err
+	}
+	if c.pluginArtifact {
+		// The bridge plugin is a standalone managed file; a clean
+		// teardown removes it entirely. Any residual DefenseClaw marker
+		// means the heal did not complete.
+		if bytes.Contains(data, []byte("DefenseClaw")) || bytes.Contains(data, []byte(c.apiPath)) {
+			return fmt.Errorf("%s teardown incomplete: managed plugin still present at %s", c.name, path)
+		}
+		return nil
 	}
 	needle := c.hookCommand(opts)
 	if bytes.Contains(data, []byte(needle)) || bytes.Contains(data, []byte(c.scriptName)) {
@@ -828,6 +983,17 @@ func hermesConfigPath(SetupOpts) string {
 	return homePath(".hermes", "config.yaml")
 }
 
+// opencodePluginPath resolves the destination of DefenseClaw's bridge
+// plugin in opencode's global auto-load directory. opencode loads any
+// JS/TS file under ~/.config/opencode/plugins/ at startup, so writing
+// the file is the entire install — no opencode.json edit is required.
+func opencodePluginPath(SetupOpts) string {
+	if OpenCodePluginPathOverride != "" {
+		return OpenCodePluginPathOverride
+	}
+	return homePath(".config", "opencode", "plugins", "defenseclaw.js")
+}
+
 func cursorHooksPath(SetupOpts) string {
 	if CursorHooksPathOverride != "" {
 		return CursorHooksPathOverride
@@ -868,27 +1034,14 @@ func openhandsHooksPath(opts SetupOpts) string {
 
 // antigravityHooksPath returns the global Antigravity hook config path.
 //
-// Antigravity (`agy` v1.0.x) reads PreToolUse hooks from
-// ~/.gemini/config/hooks.json. This was determined empirically during
-// the v0.5.0 smoke test: an earlier draft of this connector wrote to
-// ~/.gemini/antigravity-cli/hooks.json (the marketing-facing path
-// printed by `agy --help`), but agy never evaluated entries from that
-// file. Tracer hooks installed at ~/.gemini/config/hooks.json fired
-// reliably; the same entries at ~/.gemini/antigravity-cli/hooks.json
-// were silently ignored. agy's binary `strings` confirmed only the
-// `config/hooks.json` suffix is referenced at runtime.
-//
-// agy still merges every hooks.json it discovers (global config,
-// project-local under <workspace>/.antigravitycli/hooks.json, and the
-// legacy ~/.gemini/hooks.json) which causes a single hook to fire
-// once per discovered file. To keep the audit trail clean and prevent
-// double-billing of policy evaluations, DefenseClaw writes only the
-// global config file. Operators who must scope hooks to a single
-// workspace can override at runtime via AntigravityHooksPathOverride;
-// doctor surfaces a warning when more than one merged path holds a
-// defenseclaw-managed entry, and a separate migration warning when
-// the legacy ~/.gemini/antigravity-cli/hooks.json still contains
-// defenseclaw-managed entries from a pre-v0.5.0 install.
+// Antigravity (`agy`) reads hooks from ~/.gemini/config/hooks.json.
+// The Antigravity contract also documents workspace hooks at
+// <workspace>/.agents/hooks.json and plugin-contained hooks at
+// <plugin>/hooks.json, but DefenseClaw writes only the global config
+// file. Current PR evidence says agy merges global and workspace hook
+// files, so writing the same DefenseClaw hook to more than one path
+// would duplicate-fire policy evaluations. Workspace and plugin hook
+// files remain discovery-only surfaces.
 func antigravityHooksPath(SetupOpts) string {
 	if AntigravityHooksPathOverride != "" {
 		return AntigravityHooksPathOverride
@@ -1022,6 +1175,52 @@ func openhandsSkillPaths(opts SetupOpts) []string {
 	return uniqueNonEmptyStrings(paths)
 }
 
+func antigravityMCPPaths(opts SetupOpts) []string {
+	return uniqueNonEmptyStrings([]string{
+		homePath(".gemini", "config", "mcp_config.json"),
+		antigravityWorkspacePath(opts, ".agents", "mcp_config.json"),
+	})
+}
+
+func antigravitySkillReadPaths(opts SetupOpts) []string {
+	return uniqueNonEmptyStrings(append(antigravitySkillWritePaths(opts),
+		homePath(".gemini", "antigravity-cli", "skills"),
+		antigravityWorkspacePath(opts, ".agent", "skills"),
+	))
+}
+
+func antigravitySkillWritePaths(opts SetupOpts) []string {
+	return uniqueNonEmptyStrings([]string{
+		homePath(".gemini", "config", "skills"),
+		antigravityWorkspacePath(opts, ".agents", "skills"),
+	})
+}
+
+func antigravityRuleReadPaths(opts SetupOpts) []string {
+	return uniqueNonEmptyStrings([]string{
+		homePath(".gemini", "GEMINI.md"),
+		antigravityWorkspacePath(opts, ".agents", "rules"),
+	})
+}
+
+func antigravityPluginPaths(opts SetupOpts) []string {
+	return uniqueNonEmptyStrings([]string{
+		homePath(".gemini", "config", "plugins"),
+		homePath(".gemini", "antigravity-cli", "plugins"),
+		antigravityWorkspacePath(opts, ".agents", "plugins"),
+		antigravityWorkspacePath(opts, "_agents", "plugins"),
+	})
+}
+
+func antigravityWorkspacePath(opts SetupOpts, parts ...string) string {
+	root := strings.TrimSpace(opts.WorkspaceDir)
+	if root == "" {
+		return ""
+	}
+	all := append([]string{root}, parts...)
+	return filepath.Join(all...)
+}
+
 func windsurfMCPPaths() []string {
 	return []string{
 		homePath(".codeium", "windsurf", "mcp_config.json"),
@@ -1080,6 +1279,19 @@ func patchHermesHooks(path, hookScript string) error {
 	if hooks == nil {
 		hooks = map[string]interface{}{}
 		cfg["hooks"] = hooks
+	}
+	// Hermes prompts for per-(event, command) consent the first time it
+	// sees a shell hook and persists the decision to
+	// ~/.hermes/shell-hooks-allowlist.json. On non-TTY runs (the gateway
+	// daemon, cron, CI) there is no prompt, so an un-accepted hook is
+	// silently skipped and never fires. hooks_auto_accept is the
+	// documented escape hatch that lets all of DefenseClaw's lifecycle
+	// hooks register without an interactive prompt. We only set it when
+	// the operator has not made an explicit choice, so a deliberate
+	// `hooks_auto_accept: false` is preserved (and surfaced by doctor).
+	// The managed-file backup captures and heals this key on teardown.
+	if _, ok := cfg["hooks_auto_accept"]; !ok {
+		cfg["hooks_auto_accept"] = true
 	}
 	for _, spec := range []struct {
 		event   string
@@ -1441,9 +1653,8 @@ var antigravityLifecycleEvents = []string{
 //
 // This shape was determined empirically for PreToolUse:
 //   - During the v0.5.0 smoke test, an earlier flat schema
-//     ({event, matcher, command, description}) was written to
-//     ~/.gemini/antigravity-cli/hooks.json. agy ignored it
-//     entirely — no tracer fires, no agy log lines, nothing.
+//     ({event, matcher, command, description}) was ignored entirely
+//     by agy — no tracer fires, no agy log lines, nothing.
 //   - Replacing the file with a Claude-Code-nested schema at
 //     ~/.gemini/config/hooks.json caused agy to invoke the
 //     configured command on every tool call, with the canonical

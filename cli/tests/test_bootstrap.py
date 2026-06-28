@@ -29,7 +29,9 @@ from defenseclaw.config import (
     Config,
     GatewayConfig,
     GuardrailConfig,
+    HILTConfig,
     OpenShellConfig,
+    PerConnectorGuardrailConfig,
 )
 
 
@@ -170,6 +172,52 @@ class ApplyFirstRunChoicesHookFailModeTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# _apply_first_run_choices: judge setup
+#
+# ``init`` and ``quickstart`` expose a single "enable judge" choice. When
+# selected, that choice must be effective for hook connectors without asking
+# for a second coverage list.
+# ---------------------------------------------------------------------------
+
+
+class ApplyFirstRunChoicesJudgeTests(unittest.TestCase):
+    def setUp(self):
+        from defenseclaw.config import default_config
+        self.cfg = default_config()
+
+    def _apply(self, *, with_judge: bool) -> None:
+        from defenseclaw.bootstrap import (
+            FirstRunOptions,
+            _apply_first_run_choices,
+        )
+
+        opts = FirstRunOptions(connector="codex", profile="observe", with_judge=with_judge)
+        _apply_first_run_choices(self.cfg, opts, "codex", "observe", "local")
+
+    def test_with_judge_enables_all_hook_coverage(self):
+        self._apply(with_judge=True)
+        self.assertTrue(self.cfg.guardrail.judge.enabled)
+        self.assertEqual(self.cfg.guardrail.detection_strategy, "regex_judge")
+        self.assertEqual(self.cfg.guardrail.judge.hook_connectors, ["*"])
+
+    def test_with_judge_bumps_regex_only_strategy(self):
+        self.cfg.guardrail.detection_strategy = "regex_only"
+        self._apply(with_judge=True)
+        self.assertEqual(self.cfg.guardrail.detection_strategy, "regex_judge")
+        self.assertEqual(self.cfg.guardrail.judge.hook_connectors, ["*"])
+
+    def test_first_run_choice_clears_stale_multi_connector_map(self):
+        self.cfg.guardrail.connectors = {
+            "codex": PerConnectorGuardrailConfig(),
+            "hermes": PerConnectorGuardrailConfig(),
+        }
+        self._apply(with_judge=False)
+        self.assertEqual(sorted(self.cfg.guardrail.connectors), ["codex"])
+        self.assertNotIn("hermes", self.cfg.guardrail.connectors)
+        self.assertEqual(self.cfg.active_connectors(), ["codex"])
+
+
+# ---------------------------------------------------------------------------
 # _apply_first_run_choices: HITL (Human-In-the-Loop) plumbing
 #
 # These pin the contract that ``defenseclaw init`` / ``quickstart`` rely
@@ -206,6 +254,7 @@ class ApplyFirstRunChoicesHITLTests(unittest.TestCase):
     def _apply(
         self,
         *,
+        connector: str = "codex",
         human_approval: bool | None = None,
         hilt_min_severity: str = "",
     ) -> None:
@@ -215,12 +264,12 @@ class ApplyFirstRunChoicesHITLTests(unittest.TestCase):
         )
 
         opts = FirstRunOptions(
-            connector="codex",
+            connector=connector,
             profile="action",
             human_approval=human_approval,
             hilt_min_severity=hilt_min_severity,
         )
-        _apply_first_run_choices(self.cfg, opts, "codex", "action", "local")
+        _apply_first_run_choices(self.cfg, opts, connector, "action", "local")
 
     def test_none_preserves_existing_enabled(self):
         self.cfg.guardrail.hilt.enabled = True
@@ -292,6 +341,40 @@ class ApplyFirstRunChoicesHITLTests(unittest.TestCase):
         self._apply(human_approval=False, hilt_min_severity="MEDIUM")
         self.assertFalse(self.cfg.guardrail.hilt.enabled)
         self.assertEqual(self.cfg.guardrail.hilt.min_severity, "MEDIUM")
+
+    def test_explicit_choice_updates_selected_connector_hilt_override(self):
+        self.cfg.guardrail.connectors = {
+            "codex": PerConnectorGuardrailConfig(
+                hilt=HILTConfig(enabled=True, min_severity="LOW")
+            ),
+            "hermes": PerConnectorGuardrailConfig(
+                hilt=HILTConfig(enabled=False, min_severity="HIGH")
+            ),
+        }
+        self.cfg.guardrail.hilt.enabled = False
+
+        self._apply(connector="hermes", human_approval=True)
+
+        self.assertEqual(sorted(self.cfg.guardrail.connectors), ["hermes"])
+        hermes_hilt = self.cfg.guardrail.connectors["hermes"].hilt
+        self.assertIsNotNone(hermes_hilt)
+        self.assertTrue(hermes_hilt.enabled)
+        self.assertEqual(hermes_hilt.min_severity, "HIGH")
+        self.assertTrue(self.cfg.guardrail.effective_hilt("hermes").enabled)
+
+    def test_explicit_false_updates_selected_connector_hilt_override(self):
+        self.cfg.guardrail.connectors = {
+            "hermes": PerConnectorGuardrailConfig(
+                hilt=HILTConfig(enabled=True, min_severity="MEDIUM")
+            ),
+        }
+
+        self._apply(connector="hermes", human_approval=False)
+
+        hermes_hilt = self.cfg.guardrail.connectors["hermes"].hilt
+        self.assertIsNotNone(hermes_hilt)
+        self.assertFalse(hermes_hilt.enabled)
+        self.assertEqual(hermes_hilt.min_severity, "MEDIUM")
 
 
 # ---------------------------------------------------------------------------
@@ -377,6 +460,16 @@ class StartGatewayStructuredDriftTests(unittest.TestCase):
         stack = ExitStack()
         stack.enter_context(patch("shutil.which", return_value="/usr/bin/defenseclaw-gateway"))
         stack.enter_context(patch.object(subprocess, "run", side_effect=fake_run))
+        # _pid_file_running now also checks
+        # /proc/<pid>/cmdline against known gateway binary names.
+        # Tests use os.getpid() (the python test runner) which won't
+        # match — stub the cmdline check to keep the test focused on
+        # drift detection, not on the new spoof guard. The spoof
+        # guard has its own dedicated tests.
+        stack.enter_context(patch(
+            "defenseclaw.bootstrap._pid_looks_like_gateway",
+            return_value=True,
+        ))
         return stack
 
     def test_already_running_no_drift_does_not_restart(self):
@@ -523,6 +616,68 @@ class RunningConnectorFromStateFileTests(unittest.TestCase):
         from defenseclaw.bootstrap import _running_connector_from_state_file
         self._write('"openclaw"')
         self.assertIsNone(_running_connector_from_state_file(self._tmp.name))
+
+
+class ApplyGatewayDefaultsTokenGateTests(unittest.TestCase):
+    """SU-03 / ND-2: the OpenClaw gateway token must only be adopted when
+    openclaw is a genuinely active connector — never leaked onto a hook-only
+    install that merely has a stray ``openclaw.json`` reachable on disk."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self._prev_home = os.environ.get("DEFENSECLAW_HOME")
+        os.environ["DEFENSECLAW_HOME"] = self._tmp.name
+        self.addCleanup(self._restore_home)
+
+    def _restore_home(self) -> None:
+        if self._prev_home is None:
+            os.environ.pop("DEFENSECLAW_HOME", None)
+        else:
+            os.environ["DEFENSECLAW_HOME"] = self._prev_home
+
+    def _stray_openclaw_json(self, token: str) -> str:
+        import json
+
+        path = os.path.join(self._tmp.name, "openclaw.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(
+                {"gateway": {"model": "local", "port": 19000, "auth": {"token": token}}},
+                fh,
+            )
+        return path
+
+    def test_hook_only_install_does_not_pin_openclaw_token(self):
+        from defenseclaw.bootstrap import _apply_gateway_defaults
+
+        cfg = _cfg_for(os.path.join(self._tmp.name, "dchome"))
+        os.makedirs(cfg.data_dir, exist_ok=True)
+        # Hook-only: codex is the active connector, openclaw is NOT.
+        cfg.claw.mode = "codex"
+        cfg.guardrail.connector = "codex"
+        cfg.claw.config_file = self._stray_openclaw_json("stray-proxy-secret")
+
+        _apply_gateway_defaults(cfg, is_new_config=True)
+
+        self.assertEqual(cfg.gateway.token_env, "DEFENSECLAW_GATEWAY_TOKEN")
+        # The stray proxy secret must never be copied into the dotenv.
+        env_path = os.path.join(cfg.data_dir, ".env")
+        if os.path.exists(env_path):
+            with open(env_path, encoding="utf-8") as fh:
+                self.assertNotIn("stray-proxy-secret", fh.read())
+
+    def test_openclaw_install_still_pins_openclaw_token(self):
+        from defenseclaw.bootstrap import _apply_gateway_defaults
+
+        cfg = _cfg_for(os.path.join(self._tmp.name, "dchome"))
+        os.makedirs(cfg.data_dir, exist_ok=True)
+        cfg.claw.mode = "openclaw"
+        cfg.guardrail.connector = "openclaw"
+        cfg.claw.config_file = self._stray_openclaw_json("legit-openclaw-secret")
+
+        _apply_gateway_defaults(cfg, is_new_config=True)
+
+        self.assertEqual(cfg.gateway.token_env, "OPENCLAW_GATEWAY_TOKEN")
 
 
 if __name__ == "__main__":

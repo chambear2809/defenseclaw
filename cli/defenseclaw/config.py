@@ -67,6 +67,7 @@ from defenseclaw.connector_paths import (  # noqa: F401
 
 _log = logging.getLogger(__name__)
 _privacy_disable_redaction_warned = False
+_llm_migration_warned_keys: set[tuple[str, ...]] = set()
 
 DATA_DIR_NAME = ".defenseclaw"
 AUDIT_DB_NAME = "audit.db"
@@ -125,6 +126,34 @@ else:
         fcntl.flock(file_obj.fileno(), fcntl.LOCK_UN)
 
 
+def _coerce_bool(value: Any, *, default: bool = False) -> bool:
+    """Robustly coerce a YAML/JSON config scalar into a real boolean.
+
+    Plain ``bool`` values pass through unchanged. Strings are matched
+    case-insensitively against well-known truthy/falsey tokens so a
+    quoted ``"false"`` loaded from ``config.yaml`` resolves to ``False``
+    instead of collapsing to ``True`` via Python's ``bool("false")``
+    (every non-empty string is truthy). This is the security-relevant
+    case for TLS skip-verify flags: ``insecure_skip_verify: "false"``
+    must NOT disable certificate verification. Unknown / unparseable
+    values fall back to ``default``.
+    """
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        token = value.strip().lower()
+        if token in ("1", "true", "yes", "on"):
+            return True
+        if token in ("0", "false", "no", "off", ""):
+            return False
+        return default
+    return default
+
+
 def _home() -> Path:
     return Path.home()
 
@@ -169,7 +198,10 @@ def _expand(p: str) -> str:
 # ---------------------------------------------------------------------------
 
 def detect_environment() -> str:
-    if platform.system() == "Darwin":
+    system = platform.system()
+    if system == "Windows":
+        return "windows"
+    if system == "Darwin":
         return "macos"
     if Path("/etc/dgx-release").exists():
         return "dgx-spark"
@@ -601,7 +633,7 @@ class SkillScannerConfig:
 @dataclass
 class MCPScannerConfig:
     binary: str = "mcp-scanner"
-    analyzers: str = "yara"
+    analyzers: str = "auto"
     scan_prompts: bool = False
     scan_resources: bool = False
     scan_instructions: bool = False
@@ -667,10 +699,34 @@ class SplunkConfig:
     index: str = "defenseclaw"
     source: str = "defenseclaw"
     sourcetype: str = "_json"
-    verify_tls: bool = False
+    # (and parity with Go ): TLS verification is now ON by
+    # default. ``verify_tls`` is the LEGACY opt-in-to-security flag and
+    # is honoured when explicitly true (no-op against the new secure
+    # default); explicit false is silently IGNORED. Operators that
+    # genuinely need to bypass certificate validation (dev environments
+    # with self-signed HEC) must set ``insecure_skip_verify=True``.
+    verify_tls: bool = True
+    insecure_skip_verify: bool = False
     enabled: bool = False
     batch_size: int = 50
     flush_interval_s: int = 5
+
+    def tls_verify_enabled(self) -> bool:
+        """Resolve effective TLS verification posture.
+
+        returns False only when ``insecure_skip_verify`` is
+        explicitly true. ``verify_tls=False`` no longer downgrades the
+        sink — operators must move the explicit opt-out to the new
+        ``insecure_skip_verify`` flag. Any other combination yields a
+        secure default of True so omitting the field never silently
+        leaks the HEC token to a MITM peer.
+
+        The flag is run through :func:`_coerce_bool` so a quoted
+        ``"false"`` persisted in ``config.yaml`` (a truthy non-empty
+        string under bare ``bool()``) cannot silently disable TLS
+        verification.
+        """
+        return not _coerce_bool(self.insecure_skip_verify)
 
     def resolved_hec_token(self) -> str:
         """Return HEC token from env var (if set) or direct value."""
@@ -953,12 +1009,179 @@ def _default_nonruntime_asset_type_policy() -> AssetTypePolicy:
 
 
 @dataclass
+class PerConnectorAssetTypePolicy:
+    """Per-connector scalar overrides for one asset type (OTHER-7).
+
+    Scalars-only, mirroring :class:`PerConnectorGuardrailConfig`: an empty
+    ``default`` / ``registry_empty_action`` or a ``None``
+    ``registry_required`` inherits the global :class:`AssetTypePolicy`
+    value (the ``None`` pointer mirrors the Go ``*bool`` inherit-on-nil
+    semantics). Rule lists (``registry`` / ``allowed`` / ``denied``) and
+    ``runtime_detection`` are deliberately NOT per-connector — they stay on
+    the global per-type policy and are filtered by ``rule.connector`` at
+    match time. Mirrors ``PerConnectorAssetTypePolicy`` in
+    ``internal/config/asset_policy.go``.
+    """
+
+    default: str = ""
+    registry_required: bool | None = None
+    registry_empty_action: str = ""
+
+
+@dataclass
+class PerConnectorAssetPolicy:
+    """Per-connector ``asset_policy`` overrides keyed by connector name.
+
+    Mirrors ``PerConnectorAssetPolicy`` in
+    ``internal/config/asset_policy.go``. ``mode`` empty inherits the global
+    ``asset_policy.mode``; each per-type block, when present, overrides only
+    the scalars it sets and inherits the rest. A ``None`` per-type block
+    means "inherit the global per-type policy entirely".
+    """
+
+    mode: str = ""
+    mcp: PerConnectorAssetTypePolicy | None = None
+    skill: PerConnectorAssetTypePolicy | None = None
+    plugin: PerConnectorAssetTypePolicy | None = None
+
+
+@dataclass
 class AssetPolicyConfig:
     enabled: bool = False
     mode: str = "observe"
     mcp: AssetTypePolicy = field(default_factory=_default_runtime_asset_type_policy)
     skill: AssetTypePolicy = field(default_factory=_default_nonruntime_asset_type_policy)
     plugin: AssetTypePolicy = field(default_factory=_default_nonruntime_asset_type_policy)
+    # Per-connector overrides keyed by connector name (OTHER-7). Empty/absent
+    # preserves the legacy global-only behavior. Only the scalar settings are
+    # per-connector; rule lists + runtime_detection stay on the global per-type
+    # policy. Resolution goes through the ``effective_*`` methods, never by
+    # reading the map directly. Mirrors ``AssetPolicyConfig.Connectors`` in
+    # ``internal/config/asset_policy.go`` and the ``guardrail.connectors`` shape.
+    connectors: dict[str, PerConnectorAssetPolicy] = field(default_factory=dict)
+
+    def _connector_override(self, connector: str) -> PerConnectorAssetPolicy | None:
+        """Return the override block for ``connector`` if configured.
+
+        An empty connector name or empty map yields ``None`` so callers fall
+        through to the global value. Lookup is connector-name-insensitive
+        (exact key first, then via ``connector_paths.normalize``), mirroring
+        :meth:`GuardrailConfig._connector_override` and the Go
+        ``connectorOverride``.
+        """
+        if not connector or not self.connectors:
+            return None
+        pc = self.connectors.get(connector)
+        if pc is not None:
+            return pc
+        want = connector_paths.normalize(connector)
+        for name, entry in self.connectors.items():
+            if connector_paths.normalize(name) == want:
+                return entry
+        return None
+
+    def effective_mode(self, connector: str = "") -> str:
+        """Per-connector override > global mode > ``"observe"``."""
+        pc = self._connector_override(connector)
+        if pc is not None and pc.mode.strip():
+            return pc.mode.strip()
+        if self.mode.strip():
+            return self.mode.strip()
+        return "observe"
+
+    def effective_asset_type_policy(
+        self, connector: str, target_type: str
+    ) -> AssetTypePolicy | None:
+        """Resolve the effective per-type policy for a connector.
+
+        Returns a copy of the global per-type :class:`AssetTypePolicy` with
+        only the three scalars (``default`` / ``registry_required`` /
+        ``registry_empty_action``) overridden where the per-connector entry
+        sets them; the rule lists and ``runtime_detection`` stay the global
+        policy's. Returns ``None`` for an unsupported target type so the
+        caller can fall through to its allow-unsupported path. Mirrors the Go
+        ``assetPolicyFor(connector, targetType)`` overlay.
+        """
+        if target_type not in ("mcp", "skill", "plugin"):
+            return None
+        base: AssetTypePolicy = getattr(self, target_type)
+        pc = self._connector_override(connector)
+        override = getattr(pc, target_type, None) if pc is not None else None
+        if override is None:
+            return base
+        changes: dict[str, Any] = {}
+        if override.default.strip():
+            changes["default"] = override.default.strip()
+        if override.registry_required is not None:
+            changes["registry_required"] = override.registry_required
+        if override.registry_empty_action.strip():
+            changes["registry_empty_action"] = (
+                override.registry_empty_action.strip().lower()
+            )
+        if not changes:
+            return base
+        return replace(base, **changes)
+
+    def validate(self) -> None:
+        """Validate per-connector asset_policy VALUE invariants only.
+
+        Mirrors :meth:`GuardrailConfig.validate` over the NEW
+        ``asset_policy.connectors`` map: rejects empty / alias-duplicate
+        connector names and checks each override's enum values (``mode`` and
+        the per-type ``default`` / ``registry_empty_action`` scalars). It
+        deliberately does NOT re-validate the global asset_policy fields
+        (those predate per-connector support and were never gated by
+        ``load()``) and never touches the connector registry — unknown
+        connector identity is left to the gateway boot loop, exactly like
+        guardrail. Raises :class:`ValueError` on the first violation.
+        """
+        seen: dict[str, str] = {}
+        for name in sorted(self.connectors):
+            if not name.strip():
+                raise ValueError(
+                    "asset_policy.connectors: empty connector name is not allowed"
+                )
+            norm = connector_paths.normalize(name)
+            if norm in seen:
+                raise ValueError(
+                    f"asset_policy.connectors: {seen[norm]!r} and {name!r} refer "
+                    f"to the same connector {norm!r}; keep only one"
+                )
+            seen[norm] = name
+            pc = self.connectors[name]
+            try:
+                _validate_asset_policy_mode(pc.mode)
+                for ttype in ("mcp", "skill", "plugin"):
+                    block = getattr(pc, ttype, None)
+                    if block is not None:
+                        _validate_asset_type_default(block.default)
+                        _validate_registry_empty_action(block.registry_empty_action)
+            except ValueError as exc:
+                raise ValueError(
+                    f"asset_policy.connectors[{name!r}]: {exc}"
+                ) from exc
+
+
+def _validate_asset_policy_mode(mode: str) -> None:
+    if (mode or "").strip().lower() not in {"", "observe", "action"}:
+        raise ValueError(
+            f'invalid asset_policy mode {mode!r} (want "observe" or "action")'
+        )
+
+
+def _validate_asset_type_default(value: str) -> None:
+    if (value or "").strip().lower() not in {"", "allow", "deny", "block"}:
+        raise ValueError(
+            f'invalid asset_policy default {value!r} (want "allow" or "deny")'
+        )
+
+
+def _validate_registry_empty_action(value: str) -> None:
+    if (value or "").strip().lower() not in {"", "deny", "warn", "allow", "block"}:
+        raise ValueError(
+            f"invalid registry_empty_action {value!r} "
+            '(want "deny", "warn", or "allow")'
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1071,6 +1294,17 @@ class JudgeConfig:
     # so the operator's choice survives a process restart.
     exfil: bool = True
     timeout: float = 30.0
+    # ``hook_connectors`` gates the hook-lane judge per connector
+    # (mirrors Go ``JudgeConfig.HookConnectors``): hook connectors
+    # listed here forward prompts / tool results to the LLM judge in
+    # addition to the regex + Cisco AID lanes. Empty = hook lane off
+    # (the proxy lane is unaffected); ``"*"`` enables every connector.
+    hook_connectors: list[str] = field(default_factory=list)
+    # Hook-lane judge timeout in seconds (Go ``JudgeConfig.HookTimeout``).
+    # 0 means the gateway default (5s, sized under the hook scripts'
+    # ``curl --max-time 10`` budget — the proxy lane's 30s would let the
+    # client hang up before a verdict lands).
+    hook_timeout: float = 0.0
     # LLM overrides the top-level ``llm:`` block for the LLM judge.
     # Prefer ``Config.resolve_llm("guardrail.judge")`` over reading this
     # directly; the legacy ``model``/``api_key_env``/``api_base`` fields
@@ -1121,6 +1355,126 @@ class WebhookConfig:
         if self.secret_env:
             return os.environ.get(self.secret_env, "")
         return ""
+
+
+@dataclass
+class PerConnectorObservability:
+    """Per-connector observability override (D5b) keyed by connector name.
+
+    A connector's events route to *its* configured sinks/webhooks,
+    falling back to the GLOBAL list (top-level ``audit_sinks:`` /
+    ``webhooks:``) when a dimension is unset. Each dimension is
+    independently tri-state, mirroring the Go ``*[]T`` / nil-vs-empty
+    pointer semantics used elsewhere in this file:
+
+    * ``None``       — key absent; INHERIT the global list. This is the
+                       default and the safety fallback: a connector with
+                       no per-connector config still emits to the global
+                       sinks (no silent drop).
+    * present list   — OVERRIDE: route this connector's events to exactly
+                       these entries. An explicit empty list ``[]``
+                       suppresses the global list for that connector.
+
+    ``audit_sinks`` is kept as raw mappings rather than a typed dataclass
+    so it round-trips verbatim alongside the unmodelled top-level
+    ``audit_sinks:`` list (whose schema is owned by the Go gateway and
+    ``defenseclaw.observability.writer``). ``webhooks`` reuses the modeled
+    :class:`WebhookConfig`, parity with the top-level ``webhooks:`` list.
+    """
+
+    audit_sinks: list[dict[str, Any]] | None = None
+    webhooks: list[WebhookConfig] | None = None
+
+
+@dataclass
+class ObservabilityConfig:
+    """Per-connector observability routing (D5b).
+
+    ``connectors`` maps a connector name to its
+    :class:`PerConnectorObservability` override. Empty/absent preserves the
+    legacy global-only behavior. Resolution goes through
+    :meth:`effective_audit_sinks` / :meth:`effective_webhooks` (which take
+    the global list and fall back to it), never by reading the map
+    directly — mirroring :class:`AssetPolicyConfig` and
+    ``guardrail.connectors``.
+
+    NOTE (lane boundary): the runtime event-emit dispatch lives in the Go
+    gateway (``internal/gateway/webhook.go`` for webhooks,
+    ``internal/audit/sinks`` for audit sinks). This Python structure is the
+    config + resolution surface so ``Config.save()`` round-trips the block
+    and Python consumers can resolve it; HONORING the resolution at emit
+    time additionally requires the matching Go change (flagged separately —
+    those files are outside this lane).
+    """
+
+    connectors: dict[str, PerConnectorObservability] = field(default_factory=dict)
+
+    def _connector_override(self, connector: str) -> PerConnectorObservability | None:
+        """Return the override block for ``connector`` if configured.
+
+        Lookup is connector-name-insensitive (exact key first, then via
+        ``connector_paths.normalize``), mirroring
+        :meth:`AssetPolicyConfig._connector_override`.
+        """
+        if not connector or not self.connectors:
+            return None
+        pc = self.connectors.get(connector)
+        if pc is not None:
+            return pc
+        want = connector_paths.normalize(connector)
+        for name, entry in self.connectors.items():
+            if connector_paths.normalize(name) == want:
+                return entry
+        return None
+
+    def effective_audit_sinks(
+        self, connector: str, global_sinks: list[dict[str, Any]] | None,
+    ) -> list[dict[str, Any]]:
+        """Resolve the audit sinks a connector's events route to.
+
+        Per-connector override (when the ``audit_sinks`` dimension is set)
+        wins; otherwise inherit ``global_sinks``. ``global_sinks`` is passed
+        in because the global ``audit_sinks:`` list is unmodelled (read from
+        raw YAML), not a :class:`Config` field.
+        """
+        pc = self._connector_override(connector)
+        if pc is not None and pc.audit_sinks is not None:
+            return list(pc.audit_sinks)
+        return list(global_sinks or [])
+
+    def effective_webhooks(
+        self, connector: str, global_webhooks: list[WebhookConfig] | None,
+    ) -> list[WebhookConfig]:
+        """Resolve the webhooks a connector's events route to.
+
+        Per-connector override (when the ``webhooks`` dimension is set)
+        wins; otherwise inherit ``global_webhooks`` (``cfg.webhooks``).
+        """
+        pc = self._connector_override(connector)
+        if pc is not None and pc.webhooks is not None:
+            return list(pc.webhooks)
+        return list(global_webhooks or [])
+
+    def validate(self) -> None:
+        """Reject empty / alias-duplicate connector names.
+
+        Value-only check mirroring :meth:`AssetPolicyConfig.validate` —
+        never touches the connector registry. Raises :class:`ValueError`
+        on the first violation.
+        """
+        seen: dict[str, str] = {}
+        for name in sorted(self.connectors):
+            if not name.strip():
+                raise ValueError(
+                    "observability.connectors: empty connector name is not allowed"
+                )
+            norm = connector_paths.normalize(name)
+            if norm in seen:
+                raise ValueError(
+                    f"observability.connectors: {seen[norm]!r} and {name!r} refer "
+                    f"to the same connector {norm!r}; keep only one"
+                )
+            seen[norm] = name
 
 
 @dataclass
@@ -1203,17 +1557,21 @@ class GuardrailConfig:
     # mode for every generated hook (codex-hook, claude-code-hook,
     # inspect-*). Two values are supported:
     #
-    #   - ``"open"`` (default): when the gateway answers with a 4xx,
-    #     malformed JSON, or a missing action field, hooks ALLOW the
-    #     tool/prompt with a stderr warning and a record in
-    #     ``$DEFENSECLAW_HOME/logs/hook-failures.jsonl``. A
-    #     misbehaving gateway that bricks every agent interaction is
-    #     strictly worse UX than a brief observability gap.
+    #   - ``"closed"`` (default, safer): when the gateway answers
+    #     with a 4xx, malformed JSON, or a missing action field,
+    #     hooks BLOCK the tool/prompt at the response-layer boundary.
+    #     CodeGuard rule codeguard-0-authorization-access-control:
+    #     deny by default.
     #
-    #   - ``"closed"``: the same response-layer failures BLOCK the
-    #     tool/prompt. Choose when you'd rather take the agent
-    #     offline than miss a policy decision (regulated workflows
-    #     where every prompt MUST be inspected).
+    #   - ``"open"``: the same response-layer failures ALLOW the
+    #     tool/prompt with a stderr warning and a record in
+    #     ``$DEFENSECLAW_HOME/logs/hook-failures.jsonl``. Choose when
+    #     a brief observability gap is preferable to bricking the
+    #     agent on a gateway hiccup.
+    #
+    # Backwards compat: existing v3 installs are pinned to ``"open"``
+    # by ``_migrate_0_4_0_seed_hook_fail_mode`` so the flip is a
+    # NEW-INSTALL-ONLY behavior change.
     #
     # Transport-layer failures (gateway unreachable / 5xx) are
     # handled separately by each hook's ``fail_unreachable`` helper
@@ -1221,7 +1579,7 @@ class GuardrailConfig:
     # availability via ``DEFENSECLAW_STRICT_AVAILABILITY=1`` —
     # regardless of this field's value. Mirrors
     # ``GuardrailConfig.HookFailMode`` in internal/config/config.go.
-    hook_fail_mode: str = "open"
+    hook_fail_mode: str = "closed"
     # ``llm_role`` is the operator's answer to "should DefenseClaw's
     # LLM be used only as a judge, or also as the agent's upstream?".
     # One of:
@@ -1532,8 +1890,19 @@ class Config:
     asset_policy: AssetPolicyConfig = field(default_factory=AssetPolicyConfig)
     registries: RegistriesConfig = field(default_factory=RegistriesConfig)
     webhooks: list[WebhookConfig] = field(default_factory=list)
+    # Per-connector observability routing (D5b). Empty/absent preserves the
+    # legacy global-only behavior; resolution goes through
+    # :class:`ObservabilityConfig` resolvers, never by reading the map directly.
+    observability: ObservabilityConfig = field(default_factory=ObservabilityConfig)
     privacy: PrivacyConfig = field(default_factory=lambda: PrivacyConfig())
     _loaded_authoritative_dicts: dict[str, dict[str, Any]] = field(default_factory=dict, repr=False, compare=False)
+    # Loaded raw values of _OWNED_NESTED_KEYS paths (absent = key not in
+    # the file at load). Lets the merge distinguish "this process loaded
+    # a value and deliberately cleared it" (drop the on-disk key) from
+    # "this process never saw a value" (a concurrent writer added one —
+    # preserve it). Parity with _loaded_authoritative_dicts for the
+    # dict-shaped authoritative paths.
+    _loaded_owned_nested_values: dict[str, Any] = field(default_factory=dict, repr=False, compare=False)
     ai_discovery: AIDiscoveryConfig = field(default_factory=AIDiscoveryConfig)
     notifications: NotificationsConfig = field(default_factory=lambda: NotificationsConfig())
 
@@ -1572,6 +1941,40 @@ class Config:
             return connector_paths.normalize(self.claw.mode)
         return "openclaw"
 
+    def effective_webhooks(self, connector: str = "") -> list[WebhookConfig]:
+        """Resolve which webhooks ``connector``'s events route to (D5b).
+
+        Per-connector override (``observability.connectors[connector].webhooks``)
+        wins; otherwise inherit the global ``webhooks:`` list. Convenience
+        wrapper around :meth:`ObservabilityConfig.effective_webhooks` that
+        supplies ``self.webhooks`` as the global fallback. The matching audit
+        sink resolver lives on :class:`ObservabilityConfig` because the global
+        ``audit_sinks:`` list is unmodelled (raw YAML), not a Config field.
+        """
+        return self.observability.effective_webhooks(connector, self.webhooks)
+
+    def has_connector_configured(self) -> bool:
+        """Return True when the operator has explicitly configured a connector.
+
+        Distinguishes a genuinely unconfigured install — every connector
+        marker empty, e.g. after ``setup remove`` clears the last one
+        (which persists ``claw.mode: ''``) — from a real single-connector
+        openclaw install, which pins ``claw.mode``/``guardrail.connector``
+        to ``openclaw`` (see ``cmd_setup``). :meth:`active_connectors` and
+        the shared list/scan resolver use this to avoid fabricating a
+        phantom ``openclaw`` when nothing is set up.
+
+        NOTE: a *missing* config file still loads ``claw.mode`` as the
+        ``"openclaw"`` default (``config.load``), so this reports True
+        there — the unconfigured signal is the explicit empty marker
+        written on removal, not file absence.
+        """
+        return bool(
+            self.guardrail.connectors
+            or self.guardrail.connector.strip()
+            or self.claw.mode.strip()
+        )
+
     def active_connectors(self) -> list[str]:
         """Return the full resolved set of connector names, sorted.
 
@@ -1582,6 +1985,15 @@ class Config:
         value, so the legacy single-connector behavior is preserved. The
         multi-connector boot loop iterates this list while existing
         single-connector callers keep using :meth:`active_connector`.
+
+        When nothing is configured (:meth:`has_connector_configured` is
+        False) this returns an empty list rather than flooring to
+        ``["openclaw"]`` — callers that fan out over connectors (``status``,
+        ``aibom``, the shared list/scan resolver) then render an explicit
+        "no connector configured" empty state instead of a phantom
+        openclaw. :meth:`active_connector` keeps its singular ``"openclaw"``
+        default untouched, so path resolution and other single-connector
+        callers are unaffected.
         """
         if self.guardrail.connectors:
             # Dedupe after normalization so two alias keys (e.g. "claude-code"
@@ -1597,6 +2009,8 @@ class Config:
             )
             if names:
                 return names
+        if not self.has_connector_configured():
+            return []
         return [self.active_connector()]
 
     def skill_dirs(self, connector: str | None = None) -> list[str]:
@@ -1831,6 +2245,7 @@ class Config:
             merged = _merge_preserving_unmodeled(
                 existing, dataclass_data, owned_keys,
                 authoritative_base=self._loaded_authoritative_dicts,
+                owned_base=self._loaded_owned_nested_values,
             )
             write_config_yaml_secure(path, merged)
 
@@ -2018,6 +2433,7 @@ def _config_to_dict(cfg: Config) -> dict[str, Any]:
     from dataclasses import asdict
     d = asdict(cfg)
     d.pop("_loaded_authoritative_dicts", None)
+    d.pop("_loaded_owned_nested_values", None)
     gw = d.get("gateway")
     if gw and not gw.get("token"):
         gw.pop("token", None)
@@ -2029,6 +2445,15 @@ def _config_to_dict(cfg: Config) -> dict[str, Any]:
     guardrail = d.get("guardrail") or {}
     _strip_empty_llm(guardrail, "llm")
     _strip_empty_llm(guardrail.get("judge"), "llm")
+    # Mirror Go's ``yaml:",omitempty"`` on the hook-lane judge keys so a
+    # config that never opted into the hook-lane judge stays
+    # byte-identical after a load/save round-trip.
+    judge = guardrail.get("judge")
+    if isinstance(judge, dict):
+        if not judge.get("hook_connectors"):
+            judge.pop("hook_connectors", None)
+        if not judge.get("hook_timeout"):
+            judge.pop("hook_timeout", None)
     # Mirror Go's ``yaml:"connectors,omitempty"`` — drop the empty
     # per-connector overrides map so existing single-connector configs
     # stay byte-identical after a load/save round-trip. The block
@@ -2077,15 +2502,7 @@ def _config_to_dict(cfg: Config) -> dict[str, Any]:
     # ``webhookDefaultCooldown``. An explicit ``0`` or positive int is
     # kept verbatim.
     for wh in d.get("webhooks") or []:
-        if not isinstance(wh, dict):
-            continue
-        if wh.get("cooldown_seconds", None) is None:
-            wh.pop("cooldown_seconds", None)
-        # Mirror Go's ``yaml:"name,omitempty"`` — drop empty-string names
-        # so legacy files that never set ``name:`` stay byte-identical
-        # after a load/save cycle.
-        if wh.get("name", "") == "":
-            wh.pop("name", None)
+        _strip_webhook_omitempty(wh)
     # Mirror Go's ``yaml:"privacy,omitempty"`` — drop the block
     # entirely when it carries only defaults so existing configs
     # without a ``privacy:`` block stay byte-identical after a
@@ -2108,6 +2525,12 @@ def _config_to_dict(cfg: Config) -> dict[str, Any]:
         d.pop("notifications", None)
     if d.get("asset_policy") == _default_asset_policy_dict():
         d.pop("asset_policy", None)
+    else:
+        _serialize_asset_policy_connectors(cfg, d.get("asset_policy"))
+    # Per-connector observability (D5b): drop the empty block (omitempty),
+    # or serialize it with inherited (None) dimensions + webhook omitempty
+    # stripped. Mirrors the asset_policy.connectors handling.
+    _serialize_observability(cfg, d.get("observability"), d)
     # Drop the registries: block when no sources are configured so an
     # operator-untouched config stays byte-identical after a load/save
     # round-trip. The block reappears the moment any source is added.
@@ -2247,6 +2670,41 @@ _AUTHORITATIVE_MODELED_DICT_PATHS: frozenset[str] = frozenset({
     # deleted/cleared connector propagate to disk, which is the whole
     # point of the removal.
     "guardrail.connectors",
+    # Per-connector asset_policy overrides map (OTHER-7). Same rationale as
+    # guardrail.connectors: the dataclass is the single source of truth for
+    # the configured per-connector set, so clearing an override in-memory and
+    # saving must propagate to disk rather than being rescued by the
+    # non-authoritative merge from the prior file.
+    "asset_policy.connectors",
+    # Per-connector observability overrides map (D5b). Same rationale: the
+    # dataclass is the single source of truth for the configured per-connector
+    # routing set, so clearing a connector's sinks/webhooks override in-memory
+    # and saving must propagate to disk rather than being rescued by the
+    # non-authoritative merge from the prior file.
+    "observability.connectors",
+})
+
+# Nested NON-dict keys the dataclass owns and may intentionally omit.
+#
+# ``_config_to_dict`` strips these when they hold their zero value
+# (omitempty parity with the Go side, so configs that never opted in
+# stay byte-identical across load/save). At the TOP level the merge
+# already handles this ("dataclass owns the key and chose to omit it →
+# drop"), but the nested merge preserves unknown keys by default — so
+# without this list, clearing an opted-in value pops the key from the
+# new dict and the merge resurrects the stale on-disk value forever
+# (observed live: ``guardrail judge remove all`` reported success while
+# ``hook_connectors: ['*']`` survived every save). These are list /
+# scalar keys, so the dict-shaped
+# ``_AUTHORITATIVE_MODELED_DICT_PATHS`` mechanism above cannot cover
+# them.
+#
+# Format: dotted YAML path of the KEY (not the containing dict).
+_OWNED_NESTED_KEYS: frozenset[str] = frozenset({
+    # Hook-lane judge gate: empty list = lane off, stripped on save.
+    "guardrail.judge.hook_connectors",
+    # Hook-lane judge timeout: 0 = gateway default, stripped on save.
+    "guardrail.judge.hook_timeout",
 })
 
 
@@ -2255,6 +2713,7 @@ def _merge_preserving_unmodeled(
     new: dict[str, Any],
     owned_top_level: frozenset[str],
     authoritative_base: dict[str, dict[str, Any]] | None = None,
+    owned_base: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Deep-merge ``new`` over ``existing`` while preserving unmodelled keys.
 
@@ -2301,7 +2760,10 @@ def _merge_preserving_unmodeled(
         if k in new:
             nv = new[k]
             if isinstance(ev, dict) and isinstance(nv, dict):
-                out[k] = _deep_merge_nested(ev, nv, path=k, authoritative_base=authoritative_base)
+                out[k] = _deep_merge_nested(
+                    ev, nv, path=k,
+                    authoritative_base=authoritative_base, owned_base=owned_base,
+                )
             else:
                 out[k] = nv
         elif k in owned_top_level:
@@ -2324,6 +2786,7 @@ def _deep_merge_nested(
     new: dict[str, Any],
     path: str = "",
     authoritative_base: dict[str, dict[str, Any]] | None = None,
+    owned_base: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Recursive deep-merge for nested dicts.
 
@@ -2352,13 +2815,34 @@ def _deep_merge_nested(
         return dict(new)
     out: dict[str, Any] = {}
     for k, ev in existing.items():
+        child = f"{path}.{k}" if path else k
         if k in new:
             nv = new[k]
             if isinstance(ev, dict) and isinstance(nv, dict):
-                child = f"{path}.{k}" if path else k
-                out[k] = _deep_merge_nested(ev, nv, path=child, authoritative_base=authoritative_base)
+                out[k] = _deep_merge_nested(
+                    ev, nv, path=child,
+                    authoritative_base=authoritative_base, owned_base=owned_base,
+                )
             else:
                 out[k] = nv
+        elif "." not in k and child in _OWNED_NESTED_KEYS:
+            # Dataclass owns this nested key and chose to omit it (the
+            # omitempty strip in ``_config_to_dict`` removed its zero
+            # value). Drop it ONLY when this process actually loaded a
+            # value and cleared it — that is what makes `guardrail judge
+            # remove` persist. When the loaded snapshot has no value,
+            # this process never owned a change and the on-disk value
+            # came from a concurrent writer (e.g. `judge add` in another
+            # terminal while a TUI/wizard session was open): preserve
+            # it, mirroring the stale-writer rescue the authoritative
+            # dict paths get via ``authoritative_base``. The `"." not in
+            # k` guard keeps a literal YAML key that merely contains
+            # dots (e.g. an unmodeled `judge.hook_connectors` directly
+            # under `guardrail:`) from colliding with the dotted path of
+            # a modeled key — those stay on the preserve path below.
+            if (owned_base or {}).get(child):
+                continue
+            out[k] = ev
         else:
             out[k] = ev
     for k, nv in new.items():
@@ -2375,6 +2859,130 @@ def _default_notifications_dict() -> dict[str, Any]:
 def _default_asset_policy_dict() -> dict[str, Any]:
     from dataclasses import asdict
     return asdict(AssetPolicyConfig())
+
+
+def _serialize_asset_policy_connectors(cfg: Config, asset_policy: Any) -> None:
+    """In-place YAML cleanup for ``asset_policy.connectors`` (OTHER-7).
+
+    Mirrors Go's ``yaml:",omitempty"`` tags and the ``guardrail.connectors``
+    serialization handling:
+
+    * Empty map + never loaded with connectors → drop the key so a
+      global-only config stays byte-identical after a load/save round-trip.
+    * Empty map + WAS loaded with connectors → emit an explicit
+      ``connectors: {}`` so the authoritative atomic-replace in
+      :func:`_deep_merge_nested` clears the on-disk block (the map is in
+      :data:`_AUTHORITATIVE_MODELED_DICT_PATHS`).
+    * Non-empty map → drop ``None`` per-type blocks, an unset (``None``)
+      ``registry_required``, and empty-string scalars so a populated map
+      round-trips without ``mcp: null`` / ``registry_required: null`` noise.
+
+    This runs only on a non-default ``asset_policy`` block (the all-default
+    strip already removed the default case, which still carries the
+    ``connectors: {}`` key needed for that equality check).
+    """
+    if not isinstance(asset_policy, dict):
+        return
+    connectors = asset_policy.get("connectors")
+    if not connectors:
+        had_connectors = bool(
+            (getattr(cfg, "_loaded_authoritative_dicts", None) or {}).get(
+                "asset_policy.connectors"
+            )
+        )
+        if had_connectors:
+            asset_policy["connectors"] = {}
+        else:
+            asset_policy.pop("connectors", None)
+        return
+    if not isinstance(connectors, dict):
+        asset_policy.pop("connectors", None)
+        return
+    for entry in connectors.values():
+        if not isinstance(entry, dict):
+            continue
+        if not entry.get("mode"):
+            entry.pop("mode", None)
+        for ttype in ("mcp", "skill", "plugin"):
+            block = entry.get(ttype)
+            if block is None:
+                entry.pop(ttype, None)
+                continue
+            if isinstance(block, dict):
+                if not block.get("default"):
+                    block.pop("default", None)
+                if block.get("registry_required") is None:
+                    block.pop("registry_required", None)
+                if not block.get("registry_empty_action"):
+                    block.pop("registry_empty_action", None)
+
+
+def _strip_webhook_omitempty(wh: Any) -> None:
+    """Drop omitempty webhook keys in place (cooldown_seconds None, name "").
+
+    Mirrors Go's ``yaml:"cooldown_seconds,omitempty"`` / ``yaml:"name,omitempty"``
+    so a webhook that never set those stays byte-identical after a load/save
+    cycle. Shared by the top-level ``webhooks:`` serialization and the
+    per-connector ``observability.connectors[*].webhooks`` serialization.
+    """
+    if not isinstance(wh, dict):
+        return
+    # Tri-state cooldown_seconds: None means "use the Go dispatcher default";
+    # drop the key so the YAML stays minimal. An explicit 0 / positive int is
+    # kept verbatim.
+    if wh.get("cooldown_seconds", None) is None:
+        wh.pop("cooldown_seconds", None)
+    if wh.get("name", "") == "":
+        wh.pop("name", None)
+
+
+def _serialize_observability(cfg: Config, observability: Any, d: dict[str, Any]) -> None:
+    """In-place YAML cleanup for the ``observability:`` block (D5b).
+
+    Mirrors the ``asset_policy.connectors`` serialization handling:
+
+    * Empty/absent connectors + never loaded with connectors → drop the
+      whole ``observability:`` key so a global-only config stays
+      byte-identical after a load/save round-trip.
+    * Empty connectors + WAS loaded with connectors → emit an explicit
+      ``observability: {connectors: {}}`` so the authoritative atomic-replace
+      in :func:`_deep_merge_nested` clears the on-disk block (the map is in
+      :data:`_AUTHORITATIVE_MODELED_DICT_PATHS`).
+    * Non-empty connectors → drop the ``None`` (inherit-global) dimensions and
+      strip webhook omitempty keys so a populated map round-trips without
+      ``audit_sinks: null`` / ``webhooks: null`` noise.
+    """
+    if not isinstance(observability, dict):
+        d.pop("observability", None)
+        return
+    connectors = observability.get("connectors")
+    if not connectors:
+        had_connectors = bool(
+            (getattr(cfg, "_loaded_authoritative_dicts", None) or {}).get(
+                "observability.connectors"
+            )
+        )
+        if had_connectors:
+            d["observability"] = {"connectors": {}}
+        else:
+            d.pop("observability", None)
+        return
+    if not isinstance(connectors, dict):
+        d.pop("observability", None)
+        return
+    for entry in connectors.values():
+        if not isinstance(entry, dict):
+            continue
+        # None dimension = "inherit global"; drop the key (a present list,
+        # including [], is an explicit override and is kept).
+        if entry.get("audit_sinks") is None:
+            entry.pop("audit_sinks", None)
+        webhooks = entry.get("webhooks")
+        if webhooks is None:
+            entry.pop("webhooks", None)
+        elif isinstance(webhooks, list):
+            for wh in webhooks:
+                _strip_webhook_omitempty(wh)
 
 
 def _disabled_ai_discovery_dict() -> dict[str, Any]:
@@ -2487,9 +3095,15 @@ def _merge_azure(raw: Any) -> AzureKeyConfig | None:
 def _merge_tls(raw: Any) -> LLMTLSConfig | None:
     if not isinstance(raw, dict):
         return None
+    ca_cert_pem = str(raw.get("ca_cert_pem", "") or "")
+    insecure_skip_verify = _coerce_bool(raw.get("insecure_skip_verify", False))
+    # CA pinning and skip-verify are mutually exclusive; prefer the CA when
+    # both appear in persisted config (F-0141).
+    if ca_cert_pem.strip():
+        insecure_skip_verify = False
     return LLMTLSConfig(
-        ca_cert_pem=str(raw.get("ca_cert_pem", "") or ""),
-        insecure_skip_verify=bool(raw.get("insecure_skip_verify", False)),
+        ca_cert_pem=ca_cert_pem,
+        insecure_skip_verify=insecure_skip_verify,
     )
 
 
@@ -2531,8 +3145,8 @@ def _migrate_llm_fields(cfg: Config) -> None:
     module, which is wired up to stderr + audit pipeline in
     cli/defenseclaw/__init__.py) when legacy LLM fields are detected
     so operators notice the drift before v6 removes the fallbacks.
-    The warning is emitted at most once per Config instance via a
-    sentinel attribute so reloads don't spam.
+    The warning is emitted at most once per process for the same legacy
+    field set so command-level config reloads don't spam.
     """
     legacy_fields: list[str] = []
     if cfg.inspect_llm.model or cfg.inspect_llm.provider or cfg.inspect_llm.api_key_env:
@@ -2546,16 +3160,15 @@ def _migrate_llm_fields(cfg: Config) -> None:
     if cfg.guardrail.judge.model or cfg.guardrail.judge.api_key_env or cfg.guardrail.judge.api_base:
         legacy_fields.append("guardrail.judge.{model,api_key_env,api_base}")
 
-    if legacy_fields and not getattr(cfg, "_llm_migration_warned", False):
+    legacy_key = tuple(legacy_fields)
+    if legacy_key and legacy_key not in _llm_migration_warned_keys:
         _log.warning(
             "config: deprecated v4 LLM fields detected (%s); values are still honored "
             "but will be removed in a future release. Run `defenseclaw setup migrate-llm` "
             "to rewrite config.yaml to the unified llm: block.",
             ", ".join(legacy_fields),
         )
-        # Stamped once per Config instance so reload()/save() round-trips
-        # don't spam stderr in long-running processes (gateway, TUI).
-        cfg._llm_migration_warned = True  # type: ignore[attr-defined]
+        _llm_migration_warned_keys.add(legacy_key)
     # Top-level.
     if not cfg.llm.api_key_env:
         if cfg.default_llm_api_key_env:
@@ -2675,6 +3288,52 @@ def _merge_asset_policy(raw: dict[str, Any] | None) -> AssetPolicyConfig:
         mcp=_merge_asset_type_policy(raw.get("mcp"), runtime=True),
         skill=_merge_asset_type_policy(raw.get("skill"), runtime=False),
         plugin=_merge_asset_type_policy(raw.get("plugin"), runtime=False),
+        connectors=_merge_asset_policy_connectors(raw.get("connectors")),
+    )
+
+
+def _merge_asset_policy_connectors(
+    raw: Any,
+) -> dict[str, PerConnectorAssetPolicy]:
+    """Parse the optional ``asset_policy.connectors`` map (OTHER-7).
+
+    Mirrors the Go unmarshal of ``map[string]PerConnectorAssetPolicy`` and
+    :func:`_merge_guardrail_connectors`. A non-mapping or empty value yields
+    an empty dict (legacy global-only behavior). Per-type blocks are parsed
+    only when present so ``None`` means "inherit the global per-type policy".
+    """
+    if not isinstance(raw, dict) or not raw:
+        return {}
+    out: dict[str, PerConnectorAssetPolicy] = {}
+    for name, entry in raw.items():
+        entry = entry if isinstance(entry, dict) else {}
+        out[str(name)] = PerConnectorAssetPolicy(
+            mode=str(entry.get("mode", "") or ""),
+            mcp=_merge_per_connector_asset_type_policy(entry.get("mcp")),
+            skill=_merge_per_connector_asset_type_policy(entry.get("skill")),
+            plugin=_merge_per_connector_asset_type_policy(entry.get("plugin")),
+        )
+    return out
+
+
+def _merge_per_connector_asset_type_policy(
+    raw: Any,
+) -> PerConnectorAssetTypePolicy | None:
+    """Parse one per-connector per-type scalar block.
+
+    Returns ``None`` for an absent / non-mapping / empty block so the
+    resolver inherits the global per-type policy entirely.
+    ``registry_required`` is parsed only when an explicit bool is present
+    (mirrors the Go ``*bool`` inherit-on-nil); any non-bool value (including
+    ``null``) is treated as unset.
+    """
+    if not isinstance(raw, dict) or not raw:
+        return None
+    rr = raw.get("registry_required")
+    return PerConnectorAssetTypePolicy(
+        default=str(raw.get("default", "") or ""),
+        registry_required=rr if isinstance(rr, bool) else None,
+        registry_empty_action=str(raw.get("registry_empty_action", "") or ""),
     )
 
 
@@ -2838,6 +3497,8 @@ def _merge_judge(raw: dict[str, Any] | None) -> JudgeConfig:
         tool_injection=raw.get("tool_injection", True),
         exfil=raw.get("exfil", True),
         timeout=raw.get("timeout", 30.0),
+        hook_connectors=raw.get("hook_connectors", []),
+        hook_timeout=raw.get("hook_timeout", 0.0),
         llm=_merge_llm(raw.get("llm")),
         model=raw.get("model", ""),
         api_key_env=raw.get("api_key_env", ""),
@@ -2936,14 +3597,14 @@ def _normalize_hook_fail_mode(value: Any) -> str:
 
     Mirrors ``normalizeHookFailMode`` in
     ``internal/gateway/connector/subprocess.go``. Anything other than
-    the explicit ``"closed"`` sentinel collapses to ``"open"`` so a
+    the explicit ``"open"`` sentinel collapses to ``"closed"`` so a
     typo in config.yaml never accidentally puts the agent into
-    fail-closed mode — silently fail-open is strictly safer than
-    silently fail-closed for response-layer failures.
+    fail-OPEN mode at the response-layer boundary (CodeGuard rule
+    codeguard-0-authorization-access-control: deny by default).
     """
-    if isinstance(value, str) and value.strip().lower() == "closed":
-        return "closed"
-    return "open"
+    if isinstance(value, str) and value.strip().lower() == "open":
+        return "open"
+    return "closed"
 
 
 def _merge_hilt(raw: dict[str, Any] | None) -> HILTConfig:
@@ -2964,7 +3625,7 @@ def _merge_mcp_scanner(raw: Any) -> MCPScannerConfig:
     if isinstance(raw, dict):
         return MCPScannerConfig(
             binary=raw.get("binary", "mcp-scanner"),
-            analyzers=raw.get("analyzers", "yara"),
+            analyzers=raw.get("analyzers", "auto"),
             scan_prompts=raw.get("scan_prompts", False),
             scan_resources=raw.get("scan_resources", False),
             scan_instructions=raw.get("scan_instructions", False),
@@ -3043,6 +3704,31 @@ def _snapshot_authoritative_dicts(raw: dict[str, Any]) -> dict[str, dict[str, An
     return out
 
 
+def _snapshot_owned_nested_values(raw: dict[str, Any]) -> dict[str, Any]:
+    """Record the loaded raw value of each _OWNED_NESTED_KEYS path.
+
+    Paths absent from the file are simply omitted from the snapshot —
+    absence (vs an explicit zero value) is what lets the merge's
+    stale-writer rescue tell "this process never saw a value" apart
+    from "this process loaded one and cleared it". The walk is
+    structural (one dict level per path segment), so a literal YAML key
+    that merely *contains* dots never satisfies a path here.
+    """
+    out: dict[str, Any] = {}
+    for path in _OWNED_NESTED_KEYS:
+        cur: Any = raw
+        found = True
+        parts = path.split(".")
+        for part in parts[:-1]:
+            cur = cur.get(part) if isinstance(cur, dict) else None
+            if cur is None:
+                found = False
+                break
+        if found and isinstance(cur, dict) and parts[-1] in cur:
+            out[path] = cur[parts[-1]]
+    return out
+
+
 def _merge_webhooks(raw: list[dict[str, Any]] | None) -> list[WebhookConfig]:
     if not raw:
         return []
@@ -3076,6 +3762,48 @@ def _merge_webhooks(raw: list[dict[str, Any]] | None) -> list[WebhookConfig]:
             enabled=entry.get("enabled", False),
         ))
     return webhooks
+
+
+def _merge_observability(raw: Any) -> ObservabilityConfig:
+    """Parse the optional ``observability:`` block (D5b)."""
+    if not isinstance(raw, dict):
+        return ObservabilityConfig()
+    return ObservabilityConfig(
+        connectors=_merge_observability_connectors(raw.get("connectors")),
+    )
+
+
+def _merge_observability_connectors(
+    raw: Any,
+) -> dict[str, PerConnectorObservability]:
+    """Parse the optional ``observability.connectors`` map (D5b).
+
+    Mirrors :func:`_merge_asset_policy_connectors`. A non-mapping / empty
+    value yields an empty dict (legacy global-only behavior). For each
+    dimension, an absent key parses to ``None`` ("inherit global"); a
+    present list (including an explicit empty list) parses to a list
+    ("override", and ``[]`` suppresses global for that connector).
+    """
+    if not isinstance(raw, dict) or not raw:
+        return {}
+    out: dict[str, PerConnectorObservability] = {}
+    for name, entry in raw.items():
+        entry = entry if isinstance(entry, dict) else {}
+        sinks = entry.get("audit_sinks")
+        webhooks_raw = entry.get("webhooks")
+        out[str(name)] = PerConnectorObservability(
+            audit_sinks=(
+                [dict(s) for s in sinks if isinstance(s, dict)]
+                if isinstance(sinks, list)
+                else None
+            ),
+            webhooks=(
+                _merge_webhooks(webhooks_raw)
+                if isinstance(webhooks_raw, list)
+                else None
+            ),
+        )
+    return out
 
 
 def _merge_openshell(raw: dict[str, Any] | None) -> OpenShellConfig:
@@ -3332,7 +4060,13 @@ def load() -> Config:
                 "index": hec.get("index", "defenseclaw"),
                 "source": hec.get("source", "defenseclaw"),
                 "sourcetype": hec.get("sourcetype", "_json"),
-                "verify_tls": bool(hec.get("verify_tls", False)),
+                # default verify_tls to True so promoting an
+                # audit_sinks declaration into the legacy SplunkConfig
+                # block never silently downgrades verification. The
+                # explicit opt-out lives on the new
+                # ``insecure_skip_verify`` field.
+                "verify_tls": _coerce_bool(hec.get("verify_tls", True), default=True),
+                "insecure_skip_verify": _coerce_bool(hec.get("insecure_skip_verify", False)),
             }
             break
 
@@ -3400,7 +4134,12 @@ def load() -> Config:
             index=splunk_raw.get("index", "defenseclaw"),
             source=splunk_raw.get("source", "defenseclaw"),
             sourcetype=splunk_raw.get("sourcetype", "_json"),
-            verify_tls=splunk_raw.get("verify_tls", False),
+            # default verify_tls to True so callers that load a
+            # legacy config without the new field still get certificate
+            # verification. The explicit dev-mode opt-out lives on
+            # ``insecure_skip_verify`` and is wired separately.
+            verify_tls=_coerce_bool(splunk_raw.get("verify_tls", True), default=True),
+            insecure_skip_verify=_coerce_bool(splunk_raw.get("insecure_skip_verify", False)),
             enabled=splunk_raw.get("enabled", False),
             batch_size=splunk_raw.get("batch_size", 50),
             flush_interval_s=splunk_raw.get("flush_interval_s", 5),
@@ -3426,11 +4165,13 @@ def load() -> Config:
         asset_policy=_merge_asset_policy(raw.get("asset_policy")),
         registries=_merge_registries(raw.get("registries")),
         webhooks=_merge_webhooks(raw.get("webhooks")),
+        observability=_merge_observability(raw.get("observability")),
         privacy=_merge_privacy(raw.get("privacy")),
         ai_discovery=_merge_ai_discovery(raw.get("ai_discovery")),
         notifications=_merge_notifications(raw.get("notifications")),
     )
     cfg._loaded_authoritative_dicts = _snapshot_authoritative_dicts(raw)
+    cfg._loaded_owned_nested_values = _snapshot_owned_nested_values(raw)
     _migrate_llm_fields(cfg)
     _warn_disable_redaction_config(cfg)
     _warn_plaintext_secrets(cfg)
@@ -3438,6 +4179,14 @@ def load() -> Config:
     # gateway's Load() which rejects the same shapes. Value-only check —
     # no registry access (see GuardrailConfig.validate).
     cfg.guardrail.validate()
+    # Same value-only guard for the per-connector asset_policy overrides
+    # (OTHER-7) — empty/duplicate connector names + bad scalar enums. The
+    # global asset_policy fields are intentionally not re-validated here.
+    cfg.asset_policy.validate()
+    # Same value-only guard for per-connector observability overrides (D5b):
+    # empty / alias-duplicate connector names. The sink/webhook payloads are
+    # validated by their respective writers at write time.
+    cfg.observability.validate()
     return cfg
 
 

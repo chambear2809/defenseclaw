@@ -36,11 +36,13 @@ Design contract for every migration:
 
 from __future__ import annotations
 
+import importlib
 import json
 import os
 import re
 import secrets
 import shutil
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -62,6 +64,50 @@ def _ver_tuple(v: str) -> tuple[int, ...]:
         m = re.match(r"\d+", part)
         out.append(int(m.group(0)) if m else 0)
     return tuple(out)
+
+
+def _ensure_legacy_openclaw_restart_shim(
+    from_version: str,
+    to_version: str,
+    data_dir: str,
+) -> None:
+    """Prevent pre-0.6.1 upgraders from crashing when ``openclaw`` is absent.
+
+    The 0.4.0-0.6.0 ``cmd_upgrade`` path installs the target wheel, imports
+    this module, runs migrations, and then calls ``subprocess.run(["openclaw",
+    "gateway", "restart"], check=False)``. If ``openclaw`` is not installed,
+    Python raises ``FileNotFoundError`` before ``check=False`` can matter,
+    aborting an otherwise successful upgrade. We cannot patch those already
+    released command modules, but we can provide a process-local PATH shim
+    before their ``finally`` block runs.
+    """
+    if os.name == "nt":
+        return
+    if _ver_tuple(to_version) < _ver_tuple("0.8.0"):
+        return
+    if _ver_tuple(from_version) >= _ver_tuple("0.6.1"):
+        return
+    if shutil.which("openclaw"):
+        return
+
+    shim_dir = os.path.join(data_dir, ".upgrade-shims")
+    shim_path = os.path.join(shim_dir, "openclaw")
+    try:
+        os.makedirs(shim_dir, mode=0o700, exist_ok=True)
+        with open(shim_path, "w", encoding="utf-8") as fh:
+            fh.write(
+                "#!/bin/sh\n"
+                "printf '%s\\n' 'openclaw CLI not found; skipping automatic gateway restart' >&2\n"
+                "exit 127\n"
+            )
+        os.chmod(shim_path, 0o700)
+    except OSError as exc:
+        ux.warn(f"could not create legacy openclaw restart shim: {exc}", indent="    ")
+        return
+
+    path_parts = [part for part in os.environ.get("PATH", "").split(os.pathsep) if part]
+    if shim_dir not in path_parts:
+        os.environ["PATH"] = os.pathsep.join([shim_dir, *path_parts])
 
 
 # ---------------------------------------------------------------------------
@@ -108,100 +154,126 @@ def _migrate_0_3_0(ctx: MigrationContext) -> None:
     The fetch interceptor introduced in 0.3.0 handles routing transparently,
     so these entries are no longer needed and must be cleaned up on upgrade.
 
-    Strategy: restore the pristine backup of openclaw.json that was captured
-    before DefenseClaw first touched the file, then re-apply only the plugin
-    registration that 0.3.0 needs. This is cleaner than surgically patching
-    individual keys and avoids leaving behind stale or unexpected entries.
-
-    Falls back to surgical removal if no pristine backup exists (e.g.
-    guardrail was never enabled, or the backup was deleted).
+    S3.HIGH_BUG ("Migration can overwrite live OpenClaw config with a
+    stale pristine snapshot"): the previous strategy restored a pristine
+    backup taken BEFORE DefenseClaw first touched openclaw.json and then
+    re-applied only the plugin registration. That destroyed any model
+    providers, plugin entries, approval settings, or workspace config the
+    operator added between the pristine snapshot and the upgrade. The
+    pristine-restore branch is removed; we always surgically patch the
+    live config so operator changes are preserved.
     """
     oc_json = os.path.join(ctx.openclaw_home, "openclaw.json")
     if not os.path.isfile(oc_json):
         return
 
-    from defenseclaw.guardrail import pristine_backup_path
-
-    pristine = pristine_backup_path(oc_json, ctx.data_dir)
-
-    if pristine:
-        _migrate_0_3_0_from_pristine(oc_json, pristine)
-    else:
-        _migrate_0_3_0_surgical(oc_json)
-
-
-def _migrate_0_3_0_from_pristine(oc_json: str, pristine: str) -> None:
-    """Restore pristine openclaw.json and re-apply plugin registration."""
-    try:
-        with open(pristine) as f:
-            cfg = json.load(f)
-    except (OSError, json.JSONDecodeError) as exc:
-        click.echo(f"    pristine backup unreadable ({exc}), falling back to surgical fix")
-        _migrate_0_3_0_surgical(oc_json)
-        return
-
-    plugins = cfg.setdefault("plugins", {})
-    allow = plugins.setdefault("allow", [])
-    if "defenseclaw" not in allow:
-        allow.append("defenseclaw")
-    entries = plugins.setdefault("entries", {})
-    if "defenseclaw" not in entries:
-        entries["defenseclaw"] = {"enabled": True}
-    else:
-        entries["defenseclaw"]["enabled"] = True
-    install_path = os.path.join(os.path.dirname(oc_json), "extensions", "defenseclaw")
-    load = plugins.setdefault("load", {})
-    paths = load.setdefault("paths", [])
-    if install_path not in paths:
-        paths.append(install_path)
-
-    shutil.copy2(oc_json, oc_json + ".pre-0.3.0-migration")
-
-    with open(oc_json, "w") as f:
-        json.dump(cfg, f, indent=2, ensure_ascii=False)
-        f.write("\n")
-
-    click.echo(f"    restored openclaw.json from pristine backup ({os.path.basename(pristine)})")
-    click.echo("    re-applied plugin registration for 0.3.0")
+    _migrate_0_3_0_surgical(oc_json)
 
 
 def _migrate_0_3_0_surgical(oc_json: str) -> None:
-    """Fallback: surgically remove legacy entries when no pristine backup exists."""
+    """Surgically remove legacy entries from the LIVE openclaw.json.
+
+    Mutates only the keys DefenseClaw 0.2.x added (models.providers.defenseclaw,
+    models.providers.litellm, defenseclaw/litellm-prefixed primary model) and
+    re-registers the 0.3.0 plugin entry. All other operator-managed config
+    (other providers, plugin entries, approvals, workspace) is preserved.
+    """
     try:
         with open(oc_json) as f:
             cfg = json.load(f)
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError) as exc:
+        click.echo(f"    openclaw.json unreadable ({exc}); skipping surgical fix")
+        return
+
+    if not isinstance(cfg, dict):
+        click.echo("    openclaw.json is not a JSON object; skipping surgical fix")
         return
 
     changed = False
     changes = []
 
+    # Step 1: remove ONLY the legacy defenseclaw/litellm provider entries
+    # that 0.2.0 injected. Any other provider the operator added stays.
     providers = cfg.get("models", {}).get("providers", {})
-    for key in ("defenseclaw", "litellm"):
-        if key in providers:
-            del providers[key]
-            changes.append(f"removed providers.{key}")
+    if isinstance(providers, dict):
+        for key in ("defenseclaw", "litellm"):
+            if key in providers:
+                del providers[key]
+                changes.append(f"removed providers.{key}")
+                changed = True
+
+    # Step 2: restore the unprefixed primary model name. We only touch
+    # values that start with the legacy prefixes; bare model names from
+    # the operator are not modified.
+    model = cfg.get("agents", {}).get("defaults", {}).get("model", {})
+    if isinstance(model, dict):
+        primary = model.get("primary", "")
+        if isinstance(primary, str) and primary.startswith(("defenseclaw/", "litellm/")):
+            restored = primary.split("/", 1)[1]
+            model["primary"] = restored
+            changes.append(f"restored model.primary: {primary} → {restored}")
             changed = True
 
-    model = cfg.get("agents", {}).get("defaults", {}).get("model", {})
-    primary = model.get("primary", "")
-    if primary.startswith(("defenseclaw/", "litellm/")):
-        restored = primary.split("/", 1)[1]
-        model["primary"] = restored
-        changes.append(f"restored model.primary: {primary} → {restored}")
-        changed = True
+    # Step 3: re-register the DefenseClaw plugin entry that 0.3.0 needs.
+    # We add only the keys we own; existing plugin registrations from
+    # the operator are not modified.
+    plugins = cfg.setdefault("plugins", {})
+    if isinstance(plugins, dict):
+        allow = plugins.setdefault("allow", [])
+        if isinstance(allow, list) and "defenseclaw" not in allow:
+            allow.append("defenseclaw")
+            changes.append("added plugins.allow[defenseclaw]")
+            changed = True
+        entries = plugins.setdefault("entries", {})
+        if isinstance(entries, dict):
+            existing = entries.get("defenseclaw")
+            if not isinstance(existing, dict):
+                entries["defenseclaw"] = {"enabled": True}
+                changes.append("added plugins.entries.defenseclaw")
+                changed = True
+            elif not existing.get("enabled"):
+                existing["enabled"] = True
+                changes.append("enabled plugins.entries.defenseclaw")
+                changed = True
+        install_path = os.path.join(
+            os.path.dirname(oc_json), "extensions", "defenseclaw"
+        )
+        load = plugins.setdefault("load", {})
+        if isinstance(load, dict):
+            paths = load.setdefault("paths", [])
+            if isinstance(paths, list) and install_path not in paths:
+                paths.append(install_path)
+                changes.append("added plugins.load.paths[defenseclaw]")
+                changed = True
 
     if not changed:
-        click.echo("    (no legacy entries found — nothing to change)")
+        click.echo("    (no legacy entries found and plugin already registered)")
         return
 
-    with open(oc_json, "w") as f:
-        json.dump(cfg, f, indent=2, ensure_ascii=False)
-        f.write("\n")
+    # Always back up the live config before mutating it. This gives the
+    # operator a single-step rollback path if the surgical patch turns
+    # out to break their setup.
+    try:
+        shutil.copy2(oc_json, oc_json + ".pre-0.3.0-migration")
+    except OSError as exc:
+        click.echo(f"    WARNING: could not back up openclaw.json ({exc})")
+
+    # follow-up: the previous implementation used a non-atomic
+    # ``open(..., "w") + json.dump`` pair which could leave the user's
+    # Codex MCP config truncated mid-write if the process was killed.
+    # Route through the atomic temp-file + os.replace helper used for
+    # every other migration write so a crash here is harmless: either
+    # the new content is fully present or the old file is intact. We
+    # use mode=0o644 (not 0o600) because openclaw.json is a regular
+    # config file, not a secret store.
+    payload = json.dumps(cfg, indent=2, ensure_ascii=False) + "\n"
+    if not _atomic_write_text(oc_json, payload, mode=0o644):
+        click.echo("    WARNING: failed to write openclaw.json atomically")
+        return
 
     for c in changes:
         click.echo(f"    {c}")
-    click.echo("    (no pristine backup found — applied surgical fix)")
+    click.echo("    (surgical migration applied; live config preserved)")
 
 
 # ---------------------------------------------------------------------------
@@ -269,6 +341,12 @@ _LEGACY_CODEX_ENV_FILES = ("codex_env.sh", "codex.env")
 # enabled, so for "opencode" (forward-looking placeholder for an
 # agent that never shipped) we fall back to "openclaw" too rather than
 # pretend the user opted into Codex.
+#
+# "opencode" here is ONLY the pre-0.4.0 placeholder enum, NOT the real
+# opencode connector shipped in 0.7.x. This remap is safe for the real
+# connector because it runs solely inside the cursor-gated 0.4.0
+# migration: a config old enough to be migrated across 0.4.0 cannot
+# contain the real connector. Do not apply this map outside that gate.
 _LEGACY_CLAW_MODE_REMAP = {
     "nemoclaw": "openclaw",
     "opencode": "openclaw",
@@ -291,6 +369,7 @@ def _migrate_0_4_0(ctx: MigrationContext) -> None:
         return
 
     _migrate_0_4_0_token_bootstrap(ctx)
+    _migrate_0_4_0_token_env_in_config(ctx)
     _migrate_0_4_0_tighten_perms(ctx)
     _migrate_0_4_0_remove_legacy_codex_env(ctx)
     _migrate_0_4_0_normalize_claw_mode(ctx)
@@ -355,6 +434,65 @@ def _migrate_0_4_0_token_bootstrap(ctx: MigrationContext) -> None:
             "generated first-boot DEFENSECLAW_GATEWAY_TOKEN at "
             f"{env_path} (mode 0600, 32-byte CSPRNG)"
         )
+
+
+def _migrate_0_4_0_token_env_in_config(ctx: MigrationContext) -> None:
+    """migrate stale ``gateway.token_env`` references.
+
+    The 0.4.0 migration above renames ``OPENCLAW_GATEWAY_TOKEN`` to
+    ``DEFENSECLAW_GATEWAY_TOKEN`` in ``~/.defenseclaw/.env`` but the
+    legacy installer also wrote ``gateway.token_env: OPENCLAW_GATEWAY_TOKEN``
+    into ``config.yaml``. Python and TypeScript clients honour an
+    explicit ``token_env`` first, so on upgraded installs they kept
+    reading the (now deleted) env name and sent unauthenticated
+    ``/api/v1/inspect/*`` requests. The OpenClaw plugin's tool
+    inspection path turns those 401s into ``allow/observe``, so the
+    enforcement bypass is silent. We rewrite ``token_env`` in
+    ``config.yaml`` to the new name so the upgraded clients read the
+    same key the sidecar minted.
+    """
+    config_path = os.path.join(ctx.data_dir, "config.yaml")
+    if not os.path.isfile(config_path):
+        return
+    try:
+        with open(config_path, encoding="utf-8") as fh:
+            content = fh.read()
+    except OSError:
+        return
+    if "OPENCLAW_GATEWAY_TOKEN" not in content:
+        return
+    # Conservative line-rewriter that only touches the right-hand
+    # side of `token_env:` lines pointing at the legacy name. We
+    # avoid a full YAML round-trip to preserve operator comments and
+    # ordering byte-for-byte.
+    new_lines: list[str] = []
+    rewritten = 0
+    for line in content.splitlines(keepends=True):
+        stripped = line.lstrip()
+        if (stripped.startswith("token_env:")
+                and "OPENCLAW_GATEWAY_TOKEN" in line):
+            new_lines.append(line.replace(
+                "OPENCLAW_GATEWAY_TOKEN", "DEFENSECLAW_GATEWAY_TOKEN", 1))
+            rewritten += 1
+            continue
+        new_lines.append(line)
+    if rewritten == 0:
+        return
+    try:
+        # Atomic rewrite via tempfile + rename to avoid a partial
+        # write if the operator interrupts us mid-migration.
+        tmp = config_path + ".tmp-f3395"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.writelines(new_lines)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, config_path)
+    except OSError as exc:
+        ux.warn(f"could not migrate token_env in {config_path}: {exc}", indent="    ")
+        return
+    ctx.changes.append(
+        f"migrated {rewritten} stale gateway.token_env reference(s) in config.yaml "
+        "()"
+    )
 
 
 # Files under data_dir that carry credentials or pristine backups and
@@ -568,19 +706,19 @@ def _migrate_0_4_0_seed_hook_fail_mode(ctx: MigrationContext) -> None:
     """Surface ``guardrail.hook_fail_mode`` in pre-existing config.yaml.
 
     Pre-v3 installs had no concept of a hook fail mode — every hook
-    was hardcoded to fail-closed on any gateway error, which gave
-    operators a strictly-bad UX whenever the gateway was down. The v3
-    wave introduces a dedicated config field; the runtime default is
-    ``"open"`` (set in defaultsFor() and EffectiveHookFailMode), but
-    we also write the explicit value to YAML on upgrade so:
+    was hardcoded to fail-OPEN on any gateway error, which made the
+    response-layer boundary silently leakable. The v3 wave introduced
+    a dedicated config field, and v4 () flipped the
+    BUILT-IN default to ``"closed"`` so new installs deny by default.
 
-    1. Operators inspecting ~/.defenseclaw/config.yaml after upgrade
-       SEE the new field and discover the knob exists. A field that
-       only lives in defaults is invisible — operators reach for
-       ``defenseclaw guardrail fail-mode`` only when they know it's
-       a thing.
-    2. The on-disk state is self-describing — no surprise behavior
-       change if a future release changes the runtime default.
+    To avoid a noisy behavior change under existing operators, this
+    migration writes ``hook_fail_mode: open`` into ANY pre-existing
+    config.yaml that doesn't already pin the field. That preserves
+    The legacy fail-OPEN behavior for upgraders while letting fresh
+    installs (which never run any migration on v4+) inherit the safer
+    default. Operators see the new field on next ``cat config.yaml``
+    and can opt into "closed" via ``defenseclaw guardrail fail-mode``
+    or by hand-editing the YAML.
 
     Skipped silently when the operator has already set a value (any
     value — we never overwrite an explicit choice, even one we
@@ -639,8 +777,8 @@ def _migrate_0_4_0_seed_hook_fail_mode(ctx: MigrationContext) -> None:
     if _atomic_write_text(cfg_path, new_text):
         ctx.changes.append(
             "seeded guardrail.hook_fail_mode='open' in config.yaml "
-            "(pre-v3 hooks were always fail-closed; new default is fail-open "
-            "to avoid bricking the agent on a gateway outage)"
+            "(legacy fail-open behavior preserved for upgraders; v4 "
+            "fresh installs default to 'closed' per )"
         )
 
 
@@ -859,49 +997,99 @@ def _dotenv_update_keys(
 def _atomic_write_text(path: str, body: str, *, mode: int = 0o644) -> bool:
     """Atomically write ``body`` to ``path``.
 
-    Creates parent directories as needed (mode 0o700 for the directory
-    when it carries the secret-bearing files this migration touches).
+    The temp-file creation is hardened: it uses :func:`tempfile.mkstemp`
+    in the *target* directory so the bytes never exist on disk under a
+    predictable name, applies the file mode from creation, refuses to
+    write through a pre-existing symlink at ``path``, and calls
+    :func:`os.fsync` before :func:`os.replace` so a crash mid-rename
+    cannot leave a half-written file. For secret-bearing writes
+    (``mode <= 0o600``) the parent directory is tightened to 0o700 first,
+    even when it already exists with a more permissive mode. Non-secret
+    writes (``mode > 0o600``, e.g. the surgical ``openclaw.json``
+    migration at 0o644) leave the parent permissions alone, since
+    restricting the parent of a world-readable file would break unrelated
+    readers without improving confidentiality.
 
-    File mode: when ``path`` already exists its current permissions are
-    preserved across the rewrite; ``mode`` is only the fallback for a
-    newly-created file. Without this, rewriting a single line in a
-    ``config.yaml`` an operator had locked down to 0o600 would silently
-    widen it to the 0o644 default — a migration that promises to be a
-    no-touch edit must not change a file's permission posture.
+    File mode: secret-bearing writes (``mode <= 0o600``) always pin the
+    requested tight mode and are never widened. Non-secret rewrites
+    preserve an existing file's current permissions across the rewrite,
+    so a ``config.yaml`` an operator locked down to 0o600 is not silently
+    widened to the 0o644 default; ``mode`` is only the fallback for a
+    newly-created file.
 
     Returns True on success.
     """
-    parent = os.path.dirname(path)
-    if parent:
+    import tempfile
+
+    parent = os.path.dirname(path) or "."
+    try:
+        os.makedirs(parent, mode=0o700, exist_ok=True)
+    except OSError as exc:
+        ux.warn(f"could not create {parent}: {exc}", indent="    ")
+        return False
+    # Tighten the parent dir even when it already existed with a more
+    # permissive mode (`exist_ok=True` does not re-apply the mode arg).
+    if mode <= 0o600:
         try:
-            os.makedirs(parent, mode=0o700, exist_ok=True)
-        except OSError as exc:
-            ux.warn(f"could not create {parent}: {exc}", indent="    ")
-            return False
-    # Preserve the existing file's perms; fall back to ``mode`` so a
-    # caller creating a fresh secret-bearing file (e.g. the
-    # active-connector marker at 0o600) can still pin its perms.
-    try:
-        effective_mode = os.stat(path).st_mode & 0o777
-    except OSError:
+            os.chmod(parent, 0o700)
+        except OSError:
+            pass
+    if os.path.islink(path):
+        ux.warn(
+            f"refusing to follow symlink at secret target {path}",
+            indent="    ",
+        )
+        return False
+    # Secret-bearing writes (mode <= 0o600) pin the requested tight mode
+    # and are never widened. Non-secret rewrites preserve the existing
+    # file's permissions so an operator-tightened config is not widened to
+    # the default; ``mode`` is the fallback for a newly-created file.
+    if mode <= 0o600:
         effective_mode = mode
-    tmp = path + ".tmp"
+    else:
+        try:
+            effective_mode = os.stat(path).st_mode & 0o777
+        except OSError:
+            effective_mode = mode
+    fd = -1
+    tmp_path: str | None = None
     try:
+        fd, tmp_path = tempfile.mkstemp(
+            prefix=".tmp.",
+            suffix=os.path.basename(path) or ".tmp",
+            dir=parent,
+        )
+        os.fchmod(fd, effective_mode)
         # newline="" writes ``body`` byte-for-byte (no \n -> os.linesep
         # translation), so a caller that preserved a file's CRLF endings
         # does not get them doubled to \r\r\n on Windows.
-        with open(tmp, "w", encoding="utf-8", newline="") as f:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
+            fd = -1  # ownership transferred; fdopen closes on exit
             f.write(body)
-        os.chmod(tmp, effective_mode)
-        os.replace(tmp, path)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+        # Re-apply the effective mode after replace in case the FS quirks
+        # restored a different mode (e.g. tmpfs ACL inheritance).
+        try:
+            os.chmod(path, effective_mode)
+        except OSError:
+            pass
         return True
     except OSError as exc:
         ux.warn(f"could not write {path}: {exc}", indent="    ")
-        try:
-            os.remove(tmp)
-        except OSError:
-            pass
         return False
+    finally:
+        if fd != -1:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
 
 
 def _read_config_text(cfg_path: str) -> str | None:
@@ -959,6 +1147,43 @@ def _find_top_level_block(text: str, key: str) -> re.Match[str] | None:
         text,
         flags=re.MULTILINE,
     )
+
+
+_TOP_LEVEL_KEY_LINE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*\s*:")
+
+
+def _find_top_level_yaml_block_body_span(text: str, key: str) -> tuple[int, int] | None:
+    """Return the body span for a top-level YAML block.
+
+    Unlike ``_find_top_level_block``, this helper treats top-level sequence
+    entries (``- name: ...``) as block body lines. PyYAML emits that style for
+    top-level lists by default, so migrations that inspect ``audit_sinks:``
+    need this broader matcher.
+    """
+    header_match = re.search(
+        r"^" + re.escape(key) + r":[ \t]*(?:#[^\n]*)?\r?\n",
+        text,
+        flags=re.MULTILINE,
+    )
+    if not header_match:
+        return None
+
+    pos = header_match.end()
+    end = pos
+    while end < len(text):
+        line_end = text.find("\n", end)
+        if line_end == -1:
+            line = text[end:]
+            next_pos = len(text)
+        else:
+            line = text[end : line_end + 1]
+            next_pos = line_end + 1
+
+        if _TOP_LEVEL_KEY_LINE_RE.match(line):
+            break
+        end = next_pos
+
+    return pos, end
 
 
 def _read_active_connector_from_yaml(cfg_path: str) -> str:
@@ -1531,6 +1756,172 @@ def _align_gateway_token_env_in_config(ctx: MigrationContext) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Migration: 0.8.0 — Preserve 0.7.x upgrade behavior under safer defaults
+# ---------------------------------------------------------------------------
+
+_AUDIT_SINK_TLS_SECTION_KEYS: tuple[str, ...] = ("splunk_hec", "http_jsonl")
+_FALSEY_YAML_BOOL_TOKENS: frozenset[str] = frozenset(("false", "no", "off", "0"))
+
+
+@dataclass(frozen=True)
+class _YamlKeyLine:
+    indent: str
+    key: str
+    value: str
+
+
+def _migrate_0_8_0(ctx: MigrationContext) -> None:
+    """Preserve explicit/implicit 0.7.x behavior during the 0.8.0 upgrade.
+
+    New installs should inherit the safer defaults added on this branch:
+    response-layer hook failures default to fail-closed, and audit sink TLS
+    verification defaults on. Existing installs are different: if a 0.7.x
+    config omitted ``guardrail.hook_fail_mode`` it had fail-open behavior, and
+    if a sink explicitly carried ``verify_tls: false`` it intentionally skipped
+    certificate verification. This migration pins those legacy choices in the
+    new explicit fields so a clean 0.7.2 -> 0.8.0 upgrade does not silently
+    change runtime behavior.
+    """
+    _migrate_0_4_0_seed_hook_fail_mode(ctx)
+    _migrate_0_8_0_preserve_legacy_audit_sink_tls(ctx)
+
+
+def _migrate_0_8_0_preserve_legacy_audit_sink_tls(ctx: MigrationContext) -> None:
+    """Map legacy sink ``verify_tls: false`` to ``insecure_skip_verify: true``.
+
+    The transport model changed from an opt-in ``verify_tls`` flag to an
+    opt-out ``insecure_skip_verify`` flag. Runtime code now intentionally
+    ignores ``verify_tls: false`` so a new config cannot accidentally disable
+    certificate verification. For upgraded configs, though, that old false
+    value was an explicit operator choice. Preserve it by adding the new
+    opt-out only under affected ``splunk_hec`` and ``http_jsonl`` sink blocks.
+
+    The rewrite is line-oriented and scoped to the top-level ``audit_sinks:``
+    block. It does not YAML round-trip the file, so comments, ordering, scalar
+    quoting, and CRLF line endings survive.
+    """
+    cfg_path = os.path.join(ctx.data_dir, "config.yaml")
+    if not os.path.isfile(cfg_path):
+        return
+
+    text = _read_config_text(cfg_path)
+    if text is None:
+        return
+
+    block_span = _find_top_level_yaml_block_body_span(text, "audit_sinks")
+    if block_span is None:
+        return
+
+    body_start, body_end = block_span
+    body = text[body_start:body_end]
+    new_body, inserted = _preserve_legacy_sink_tls_skip_verify_in_yaml_block(body)
+    if inserted == 0:
+        return
+
+    new_text = text[:body_start] + new_body + text[body_end:]
+    if new_text == text:
+        return
+
+    if not _atomic_write_text(cfg_path, new_text):
+        ux.warn(f"could not write {cfg_path}", indent="    ")
+        return
+
+    ctx.changes.append(
+        "preserved legacy audit_sinks TLS behavior by adding "
+        f"insecure_skip_verify=true to {inserted} sink block(s) that had "
+        "verify_tls=false"
+    )
+
+
+def _preserve_legacy_sink_tls_skip_verify_in_yaml_block(body: str) -> tuple[str, int]:
+    """Insert ``insecure_skip_verify: true`` into affected sink sub-blocks."""
+    lines = body.splitlines(keepends=True)
+    inserted = 0
+    i = 0
+    while i < len(lines):
+        parsed = _parse_yaml_key_line(lines[i])
+        if parsed is None or parsed.key not in _AUDIT_SINK_TLS_SECTION_KEYS:
+            i += 1
+            continue
+
+        section_indent_len = len(parsed.indent)
+        j = i + 1
+        verify_idx: int | None = None
+        verify_indent = ""
+        has_insecure_skip_verify = False
+
+        while j < len(lines):
+            child = _parse_yaml_key_line(lines[j])
+            if child is None:
+                j += 1
+                continue
+
+            child_indent_len = len(child.indent)
+            if child_indent_len <= section_indent_len:
+                break
+
+            if child.key == "insecure_skip_verify":
+                has_insecure_skip_verify = True
+            elif (
+                child.key == "verify_tls"
+                and verify_idx is None
+                and _is_falsey_yaml_bool_literal(child.value)
+            ):
+                verify_idx = j
+                verify_indent = child.indent
+            j += 1
+
+        if verify_idx is not None and not has_insecure_skip_verify:
+            eol = _line_ending(lines[verify_idx])
+            if not lines[verify_idx].endswith("\n"):
+                lines[verify_idx] += eol
+                j += 1
+            lines.insert(
+                verify_idx + 1,
+                f"{verify_indent}insecure_skip_verify: true{eol}",
+            )
+            inserted += 1
+            i = j + 1
+            continue
+
+        i = max(j, i + 1)
+
+    return "".join(lines), inserted
+
+
+def _parse_yaml_key_line(line: str) -> _YamlKeyLine | None:
+    """Return basic key/value parts for a simple YAML mapping line."""
+    body = line.rstrip("\r\n")
+    stripped = body.lstrip(" \t")
+    if not stripped or stripped.startswith("#"):
+        return None
+    match = re.match(r"(?P<key>[A-Za-z_][A-Za-z0-9_-]*)\s*:(?P<value>.*)$", stripped)
+    if not match:
+        return None
+    return _YamlKeyLine(
+        indent=body[: len(body) - len(stripped)],
+        key=match.group("key"),
+        value=match.group("value").strip(),
+    )
+
+
+def _is_falsey_yaml_bool_literal(value: str) -> bool:
+    """Recognize YAML-style false values without evaluating arbitrary YAML."""
+    token = value.split("#", 1)[0].strip()
+    if len(token) >= 2 and token[0] == token[-1] and token[0] in ("'", '"'):
+        token = token[1:-1].strip()
+    return token.lower() in _FALSEY_YAML_BOOL_TOKENS
+
+
+def _line_ending(line: str) -> str:
+    if line.endswith("\r\n"):
+        return "\r\n"
+    if line.endswith("\n"):
+        return "\n"
+    return "\n"
+
+
+# ---------------------------------------------------------------------------
 # Migration registry
 # ---------------------------------------------------------------------------
 
@@ -1566,6 +1957,14 @@ MIGRATIONS: list[tuple[str, str, Callable[[MigrationContext], None]]] = [
         "trip the runtime fall-through in GatewayConfig.resolved_token already masks) "
         "— see _migrate_gateway_token_env_realign docstring",
         _migrate_gateway_token_env_realign,
+    ),
+    (
+        "0.8.0",
+        "Preserve 0.7.x upgrade behavior under safer 0.8.0 defaults: seed "
+        "guardrail.hook_fail_mode=open for existing configs that omitted it "
+        "and map legacy audit_sinks verify_tls=false to "
+        "insecure_skip_verify=true",
+        _migrate_0_8_0,
     ),
 ]
 
@@ -1627,8 +2026,23 @@ def run_migrations(
     """
     from defenseclaw import migration_state
 
+    if not all(
+        hasattr(migration_state, attr)
+        for attr in ("detect_schema", "is_future_schema", "FutureSchemaError")
+    ):
+        migration_state = importlib.reload(migration_state)
+    import defenseclaw as defenseclaw_pkg
+
+    if getattr(defenseclaw_pkg, "__version__", "") != to_version:
+        importlib.reload(defenseclaw_pkg)
+    cmd_version = sys.modules.get("defenseclaw.commands.cmd_version")
+    if cmd_version is not None:
+        importlib.reload(cmd_version)
+
     if data_dir is None:
         data_dir = os.environ.get("DEFENSECLAW_HOME") or os.path.expanduser("~/.defenseclaw")
+
+    _ensure_legacy_openclaw_restart_shim(from_version, to_version, data_dir)
 
     from_t = _ver_tuple(from_version)
     to_t = _ver_tuple(to_version)
@@ -1642,6 +2056,24 @@ def run_migrations(
     # already in steady state.
     state = migration_state.load(data_dir)
     if state is None:
+        # ``load`` collapses several cases to ``None``. Most of them
+        # (missing / empty / corrupt cursor) are safe to bootstrap. But a
+        # cursor written by a NEWER build — schema greater than this
+        # build understands — must NOT be treated as a fresh host:
+        # bootstrapping would overwrite it with a stale schema-N cursor
+        # and erase the newer build's migration history (F-0081). Refuse
+        # so the operator can run ``defenseclaw doctor migration-state
+        # --reset`` instead of silently downgrading their state.
+        if migration_state.is_future_schema(data_dir):
+            raise migration_state.FutureSchemaError(
+                "migration cursor at "
+                f"{migration_state.state_path(data_dir)} was written by a "
+                "newer DefenseClaw build (schema "
+                f"{migration_state.detect_schema(data_dir)} > "
+                f"{migration_state.CURRENT_SCHEMA_VERSION}); refusing to "
+                "overwrite it. Run 'defenseclaw doctor migration-state "
+                "--reset' if you intend to run this older build."
+            )
         state = migration_state.bootstrap(
             None,
             from_version=from_version,
@@ -1668,15 +2100,19 @@ def run_migrations(
         if ver_t > to_t:
             continue
 
-        # In the upgrade case, also exclude entries strictly below
-        # ``from_version``. They should already be in the cursor;
-        # the bootstrap above handled that. Skipping here is a
-        # belt-and-suspenders against a malformed cursor that's
-        # missing entries we'd otherwise replay unnecessarily.
-        if not same_version_reapply and ver_t < from_t:
-            continue
-
         already_applied = migration_state.is_applied(state, ver)
+
+        # In the upgrade case, exclude entries strictly below
+        # ``from_version`` ONLY when the cursor already records them as
+        # applied. A lower-version migration that is MISSING from the
+        # cursor (e.g. one that failed on an earlier upgrade and was
+        # therefore never marked applied) must still be retried on a
+        # later upgrade rather than being skipped by the version
+        # comparison alone (F-0681). The cursor — not ``from_version`` —
+        # is the source of truth for what has run; migrations are
+        # idempotent, so re-attempting an unapplied lower version is safe.
+        if not same_version_reapply and ver_t < from_t and already_applied:
+            continue
 
         # Same-version reapply intentionally bypasses the cursor for
         # the matching version — see backward-compat note in the

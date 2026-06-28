@@ -108,8 +108,16 @@ set the global default. `guardrail status` is read-only and takes no
 |---------|-------------|
 | `mcp list` | List MCP servers with enforcement status |
 | `mcp scan <url>` | Scan an MCP server endpoint |
+| `mcp set <name> --command <cmd> [--connector X]` | Add/update an MCP server in the active connector config |
+| `mcp unset <name> [--connector X]` | Remove an MCP server from the active connector config |
 | `mcp block <url>` | Add an MCP server to the block list |
 | `mcp allow <url>` | Add an MCP server to the allow list |
+
+For `--connector opencode`, `mcp set` writes a command that OpenCode will
+execute from `opencode.json`. DefenseClaw refuses commands that resolve
+outside trusted install prefixes unless you add the directory to
+`DEFENSECLAW_TRUSTED_BIN_PREFIXES` or pass `--force-untrusted-command` for
+that one write.
 
 ### plugin
 
@@ -149,11 +157,22 @@ output) so they're safe to call from the TUI and CI/CD pipelines.
 
 | Command | Description |
 |---------|-------------|
-| `tool block <name>` | Block a tool (global or scoped with `--source`) |
-| `tool allow <name>` | Allow a tool (skip scan gate) |
-| `tool unblock <name>` | Remove a tool from the block/allow list |
-| `tool list` | List tools in the block/allow list |
-| `tool status <name>` | Show block/allow status of a tool |
+| `tool block <name> [--connector X] [--source S]` | Block a tool globally or for one connector |
+| `tool allow <name> [--connector X] [--source S]` | Allow a tool globally or for one connector (runtime allow bypasses the scan gate for the matching connector scope) |
+| `tool unblock <name> [--connector X]` | Remove a global or connector-scoped tool decision |
+| `tool list [--connector X]` | List global decisions plus decisions that apply to a connector |
+| `tool status <name> [--connector X]` | Show the effective block/allow status globally or for a connector |
+
+`--connector` is the runtime enforcement scope. A scoped `tool block` or
+`tool allow` applies only to calls attributed to that connector; omitting it
+keeps the decision global. `--source` is audit/source metadata that records
+where the decision came from, but it is not used as a runtime enforcement
+selector.
+
+Runtime allow semantics differ by lane. Hook/inspect calls still run CodeGuard
+on allow-listed write tools before returning a clean allow. The sidecar stream
+lane has no CodeGuard payload scanner, so a matching tool allow is a full scan
+bypass on that lane.
 
 ### policy
 
@@ -438,6 +457,21 @@ by 0.2.0's guardrail setup) while preserving plugin registration.
 **Flags:**
 - `--yes`, `-y` — skip confirmation prompts
 - `--version VERSION` — upgrade to a specific release (default: latest)
+- `--allow-unverified` — unsafe override for releases whose checksum manifest
+  is missing, unsigned, incomplete, or otherwise unverifiable
+
+Signed releases can be upgraded on hosts without `cosign`; the command warns
+and continues with SHA-256 checksum validation only. Install `cosign` to verify
+Sigstore provenance in addition to checksums.
+
+**Known recovery paths:**
+
+| Installed version | Recommendation |
+| --- | --- |
+| `0.8.0` or `0.8.1` | These versions can require local `cosign` before the fixed wheel is installed. Install `cosign` first (`brew install cosign` on macOS) and then run plain `defenseclaw upgrade`, or use `defenseclaw upgrade --allow-unverified` only if you accept the reduced provenance check for that one bridge upgrade. |
+| `0.7.x` | Upgrade directly to the latest release with plain `defenseclaw upgrade --yes` or `defenseclaw upgrade --version VERSION --yes`. Do not pass `--allow-unverified`; `0.7.x` clients do not know that option. Do not target `0.8.0`; that release had a broken migration-cache path. |
+| `0.7.0` release tag | No downloadable release assets were published for this tag, so release-asset smoke cannot cover it. Upgrade from a locally installed `0.7.0` directly to the latest release without `--allow-unverified`. |
+| `0.2.0` | This predates the `defenseclaw upgrade` command. Use the installer documented in `docs/INSTALL.md` to bridge to a modern release. |
 
 **Examples:**
 

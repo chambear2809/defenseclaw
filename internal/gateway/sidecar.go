@@ -18,6 +18,8 @@ package gateway
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -71,6 +73,12 @@ type Sidecar struct {
 	// verdict/judge/lifecycle emission lands here without plumbing
 	// the writer through every call site.
 	events *gatewaylog.Writer
+
+	// judge is the LLM judge instance shared between the proxy lane
+	// (EventRouter.SetJudge) and the hook lane (APIServer.SetHookJudge
+	// in runAPI) so both lanes use one Bifrost client cache and one
+	// verdict cache. nil when guardrail.judge.enabled is false.
+	judge *LLMJudge
 
 	// judgeStore is the async judge-body persistence queue.
 	// Non-nil only when guardrail.retain_judge_bodies is on.
@@ -222,6 +230,7 @@ func NewSidecar(cfg *config.Config, store *audit.Store, logger *audit.Logger, sh
 	// detection AND tool-result PII inspection (via inspectToolResult),
 	// so it must be initialized whenever judge is enabled — not only when
 	// tool_injection is on.
+	var hookJudge *LLMJudge
 	if cfg.Guardrail.Judge.Enabled {
 		dotenvPath := filepath.Join(cfg.DataDir, ".env")
 		judgeLLM := cfg.ResolveLLM("guardrail.judge")
@@ -229,12 +238,17 @@ func NewSidecar(cfg *config.Config, store *audit.Store, logger *audit.Logger, sh
 		judge := NewLLMJudge(&cfg.Guardrail.Judge, judgeLLM, dotenvPath, rp, providers)
 		if judge != nil {
 			router.SetJudge(judge)
+			hookJudge = judge
 			features := "tool-result-pii"
 			if cfg.Guardrail.Judge.ToolInjection {
 				features += ", tool-injection"
 			}
 			fmt.Fprintf(os.Stderr, "[sidecar] LLM judge enabled (%s) (model=%s)\n",
 				features, judgeLLM.Model)
+			if hooks := cfg.Guardrail.Judge.HookConnectors; len(hooks) > 0 {
+				fmt.Fprintf(os.Stderr, "[sidecar] LLM judge hook lane enabled for: %s\n",
+					strings.Join(hooks, ", "))
+			}
 		}
 	}
 
@@ -317,11 +331,15 @@ func NewSidecar(cfg *config.Config, store *audit.Store, logger *audit.Logger, sh
 	SetEgressTelemetry(otel)
 
 	var webhooks *WebhookDispatcher
-	if len(cfg.Webhooks) > 0 {
-		webhooks = NewWebhookDispatcher(cfg.Webhooks)
+	// Construct when there are global webhooks OR any per-connector
+	// observability override (D5b); NewWebhookDispatcher returns nil when
+	// neither yields an endpoint, and the nil-checks below tolerate that.
+	if len(cfg.Webhooks) > 0 || len(cfg.Observability.Connectors) > 0 {
+		webhooks = NewWebhookDispatcher(cfg.Webhooks, cfg.Observability)
 		if webhooks != nil {
 			webhooks.BindObservability(otel)
-			fmt.Fprintf(os.Stderr, "[sidecar] webhook dispatcher initialized (%d endpoints)\n", len(webhooks.endpoints))
+			fmt.Fprintf(os.Stderr, "[sidecar] webhook dispatcher initialized (%d global endpoints, %d per-connector overrides)\n",
+				len(webhooks.endpoints), len(webhooks.connectorOverride))
 		}
 	}
 	if shell != nil {
@@ -449,6 +467,7 @@ func NewSidecar(cfg *config.Config, store *audit.Store, logger *audit.Logger, sh
 		alertCtx:       alertCtx,
 		alertCancel:    alertCancel,
 		events:         events,
+		judge:          hookJudge,
 		judgeStore:     judgeStore,
 		judgeBodyStore: judgeBodyStore,
 	}, nil
@@ -497,6 +516,34 @@ func (s *Sidecar) Run(ctx context.Context) error {
 			fmt.Fprintf(os.Stderr, "[sidecar] OPA init skipped (falling back to built-in): %v\n", err)
 			emitError(ctx, "opa", "init-failed", "falling back to built-in policies", err)
 		}
+	}
+
+	// ("Redacted AI discovery events expose reversible
+	// path fingerprints"): the AI-discovery service runs in goroutine 5
+	// below and calls runScan(..., "startup") immediately, so it can
+	// produce path digests BEFORE any code inside runGuardrail
+	// executes. If we delay installing the keyed HMAC path-hash key
+	// until runGuardrail (which is goroutine 4 and may even error out
+	// on bad connector config), the first round of AI-discovery payloads
+	// will leak the legacy reversible `sha256:` digests — exactly the
+	// regression flagged.
+	//
+	// Solve this by resolving (and persisting if needed) the gateway
+	// token SYNCHRONOUSLY here, then installing the inventory hash key
+	// before any goroutine starts. ensureGatewayTokenSynthesis is
+	// idempotent: runGuardrail later calls the same helper and gets the
+	// cached value, so the existing Setup() / connector wiring is
+	// unchanged. SetPathHashKey is also idempotent (mutex-protected),
+	// so re-derivation in tests or restart paths stays safe.
+	//
+	// If token synthesis fails here we cannot proceed — the API server
+	// authenticates inbound hook calls with this token. Fail loudly.
+	if apiToken, tokErr := s.ensureGatewayTokenSynthesis(); tokErr != nil {
+		fmt.Fprintf(os.Stderr, "[sidecar] FATAL: failed to synthesize gateway token: %v\n", tokErr)
+		emitError(ctx, "sidecar", "token-synthesis-failed", "fatal", tokErr)
+		return fmt.Errorf("sidecar: gateway token synthesis: %w", tokErr)
+	} else {
+		inventory.SetPathHashKey(deriveAIInventoryHashKey(apiToken))
 	}
 
 	var wg sync.WaitGroup
@@ -1281,6 +1328,10 @@ func resolveActiveConnector(reg *connector.Registry, name, surface string) (conn
 
 // runGuardrail starts the Go guardrail proxy when guardrail is enabled.
 func (s *Sidecar) runGuardrail(ctx context.Context) error {
+	if s.cfg == nil || !s.cfg.HasConnectorConfigured() {
+		return s.waitForConnectorSetup(ctx)
+	}
+
 	// Reuse the rule pack already loaded by NewSidecar and stored on the
 	// router, avoiding a redundant disk/embed read and potential drift.
 	rp := s.router.rp
@@ -1320,6 +1371,15 @@ func (s *Sidecar) runGuardrail(ctx context.Context) error {
 		// somehow not blocking anything" sidecar.
 		return err
 	}
+	rp = guardrail.LoadRulePack(s.cfg.Guardrail.EffectiveRulePackDir(conn.Name()))
+	rp.Validate()
+	fmt.Fprintf(os.Stderr, "[guardrail] rule pack loaded for %s: %s\n", conn.Name(), rp)
+	if s.router != nil {
+		s.router.SetRulePack(rp)
+	}
+	ApplyRulePackOverrides(rp)
+	ApplyConnectorRulePackOverrides(conn.Name(), rp)
+	ApplyLocalPatternsOverride(rp.LocalPatterns)
 	proxyAddr := guardrailListenAddr(s.cfg.Guardrail.Port, s.cfg.Guardrail.Host)
 	apiBind := "127.0.0.1"
 	if s.cfg.Gateway.APIBind != "" {
@@ -1332,19 +1392,16 @@ func (s *Sidecar) runGuardrail(ctx context.Context) error {
 	// token into curl headers) and BEFORE the API server starts (which
 	// uses the same token to authenticate inbound hook calls). After
 	// this point, s.cfg.Gateway.Token always has a non-empty value.
-	dotenvPath := filepath.Join(s.cfg.DataDir, ".env")
-	apiToken := s.cfg.Gateway.ResolvedToken()
-	if apiToken == "" {
-		tok, err := EnsureGatewayToken(dotenvPath)
-		if err != nil {
-			s.health.SetGuardrail(StateError, err.Error(), nil)
-			return fmt.Errorf("first-boot gateway token: %w", err)
-		}
-		s.cfg.Gateway.Token = tok
-		apiToken = tok
-		// Also push into the process env so subsequent ResolveAPIKey
-		// calls (e.g. judge LLM init) see the synthesized value.
-		_ = os.Setenv("DEFENSECLAW_GATEWAY_TOKEN", tok)
+	//
+	// ensureGatewayTokenSynthesis is idempotent: if Sidecar.Run already
+	// resolved/synthesized the token synchronously (which it does so the
+	// AI-discovery goroutine can use the keyed path-hash digest from
+	// the very first scan — S2.MEDIUM), this call returns the
+	// already-resolved value without re-reading .env or regenerating.
+	apiToken, err := s.ensureGatewayTokenSynthesis()
+	if err != nil {
+		s.health.SetGuardrail(StateError, err.Error(), nil)
+		return fmt.Errorf("first-boot gateway token: %w", err)
 	}
 
 	// S0.12 follow-up: inject credentials into the connector NOW, before
@@ -1562,6 +1619,18 @@ func (s *Sidecar) runGuardrail(ctx context.Context) error {
 	return proxy.Run(ctx)
 }
 
+func (s *Sidecar) waitForConnectorSetup(ctx context.Context) error {
+	details := map[string]interface{}{
+		"summary": "no connector configured; run defenseclaw setup for a connector",
+	}
+	if s.health != nil {
+		s.health.SetGuardrail(StateDisabled, "no connector configured", details)
+	}
+	fmt.Fprintln(os.Stderr, "[guardrail] no connector configured; guardrail connector boot is idle until setup runs")
+	<-ctx.Done()
+	return nil
+}
+
 // runGuardrailMulti is the multi-connector boot loop. It activates ONLY when
 // the operator configured more than one connector (guardrail.connectors has
 // >1 entry); the guarded dispatch in Run() keeps every single-connector
@@ -1593,6 +1662,10 @@ func (s *Sidecar) runGuardrail(ctx context.Context) error {
 // hook lane (the only lane active in multi) uses the per-connector rule sets
 // described above.
 func (s *Sidecar) runGuardrailMulti(ctx context.Context) error {
+	if s.cfg == nil || !s.cfg.HasConnectorConfigured() {
+		return s.waitForConnectorSetup(ctx)
+	}
+
 	// Reuse the primary rule pack already loaded by NewSidecar (it drives
 	// the process-global scanner overrides). The per-connector packs below
 	// are loaded separately via the cache.
@@ -1836,7 +1909,9 @@ func (s *Sidecar) setupConnectorsIsolated(ctx context.Context, conns []connector
 	for _, conn := range conns {
 		opts := s.connectorSetupOpts(conn, apiToken, proxyAddr, apiAddr)
 		if err := s.setupOneConnector(ctx, conn, opts, masterKey, cache); err != nil {
-			// Isolate: log, leave the other connectors untouched, continue.
+			// Isolate: roll back this connector's partial state, log, leave
+			// the other connectors untouched, continue.
+			recordAndRollbackFailedConnectorSetup(conn, opts, ctx)
 			fmt.Fprintf(os.Stderr, "[guardrail] WARNING: connector %s setup failed, skipping (other connectors unaffected): %v\n", conn.Name(), err)
 			continue
 		}
@@ -1951,7 +2026,13 @@ func proxyShouldBindForConnector(conn connector.Connector, gc *config.GuardrailC
 	switch conn.Name() {
 	case "codex", "claudecode":
 		return false
-	case "hermes", "cursor", "windsurf", "geminicli", "copilot", "openhands", "antigravity":
+	case "hermes", "cursor", "windsurf", "geminicli", "copilot", "openhands", "antigravity", "opencode":
+		// opencode is a hook-only connector (it governs tool execution via
+		// an auto-loaded JS bridge plugin, not a proxy listener), so it can
+		// share a process in multi-connector mode like the other hook
+		// connectors. Omitting it here made the gateway reject any
+		// multi-connector set containing opencode as "requires a proxy
+		// binding".
 		return false
 	default:
 		return true
@@ -2340,6 +2421,15 @@ func (s *Sidecar) runAPI(ctx context.Context) error {
 		cisco.SetTelemetry(s.otel)
 		api.SetCiscoInspector(cisco)
 	}
+	// Wire the LLM judge onto the API server so hook connectors listed
+	// in guardrail.judge.hook_connectors get live-content adjudication
+	// on the hook lane (inspectMessageContent). Same instance as the
+	// proxy lane's router judge — one Bifrost client cache, one verdict
+	// cache. nil when guardrail.judge.enabled is false; the hook lane
+	// then skips the judge exactly as before.
+	if s.judge != nil {
+		api.SetHookJudge(s.judge)
+	}
 	api.SetAIDiscoveryService(s.aiDiscovery)
 	api.SetNotifier(s.osNotifier)
 	if s.opa != nil {
@@ -2633,4 +2723,65 @@ func (s *Sidecar) Client() *Client {
 // Health returns the shared health tracker.
 func (s *Sidecar) Health() *SidecarHealth {
 	return s.health
+}
+
+// ensureGatewayTokenSynthesis resolves and (if absent) generates the
+// gateway token used by the API server's tokenAuth middleware and by
+// every hook script written into the workspace. It is idempotent:
+//
+//	first call:  reads ResolvedToken(); if empty calls EnsureGatewayToken
+//	             which atomically writes DEFENSECLAW_GATEWAY_TOKEN into
+//	             $DEFENSECLAW_HOME/.env at mode 0600, then mirrors into
+//	             os.Setenv so subsequent ResolveAPIKey() calls see it.
+//	later calls: ResolvedToken() now returns the synthesized value,
+//	             so we short-circuit without touching .env or env vars.
+//
+// Sidecar.Run calls this BEFORE spawning any goroutine so the
+// AI-discovery service can install its keyed path-hash digest from the
+// very first scan (S2.MEDIUM). runGuardrail then calls it
+// again on its own goroutine and gets the same already-resolved value
+// — preserving the existing call sequence (Setup → API → guardrail
+// proxy) without race or double-write.
+//
+// Returns an error only when EnsureGatewayToken itself fails (disk
+// full, .env permissions wrong, etc); callers are expected to treat
+// that as fatal because the API server cannot authenticate without a
+// known token.
+func (s *Sidecar) ensureGatewayTokenSynthesis() (string, error) {
+	if tok := s.cfg.Gateway.ResolvedToken(); tok != "" {
+		return tok, nil
+	}
+	dotenvPath := filepath.Join(s.cfg.DataDir, ".env")
+	tok, err := EnsureGatewayToken(dotenvPath)
+	if err != nil {
+		return "", err
+	}
+	s.cfg.Gateway.Token = tok
+	// Mirror into the process env so sub-callers (judge LLM init,
+	// hook generators, OTLP path-token loaders) all observe the
+	// same value through their normal os.Getenv lookup path.
+	_ = os.Setenv("DEFENSECLAW_GATEWAY_TOKEN", tok)
+	return tok, nil
+}
+
+// deriveAIInventoryHashKey returns the per-installation HMAC key that
+// inventory.SetPathHashKey uses to keyed-hash discovered paths in
+// AI-discovery events. Derivation contract:
+//
+//	key = HMAC-SHA256(apiToken, "ai-discovery/path-hash/v1")
+//
+// Using the gateway token as the HMAC *secret* (rather than reusing it
+// as the key directly) means a leak of the path-hash key alone does not
+// disclose the gateway token. Namespacing with the version label means
+// the derivation can be evolved (v2, v3, ...) without rotating the
+// gateway token. Returning nil for an empty token keeps the legacy
+// unsalted SHA-256 fallback in inventory.hashPath, which is what tests
+// and detached scan utilities (no sidecar / no gateway token) expect.
+func deriveAIInventoryHashKey(apiToken string) []byte {
+	if apiToken == "" {
+		return nil
+	}
+	mac := hmac.New(sha256.New, []byte(apiToken))
+	_, _ = mac.Write([]byte("ai-discovery/path-hash/v1"))
+	return mac.Sum(nil)
 }
