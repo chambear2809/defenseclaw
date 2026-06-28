@@ -6,7 +6,7 @@ on:
       source_sha:
         description: Pinned splunk-cisco-skills commit SHA to build
         required: false
-        default: 2bce17ff8f2f29afd6f5326d7976d20c251538a4
+        default: 9bb131a104830b166dc0918b1be89332a7a8ada4
       publish:
         description: Push, sign, and open a digest-pin PR
         required: false

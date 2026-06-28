@@ -25,12 +25,12 @@ envFromSecrets:
 splunkCiscoSkills:
   enabled: true
   sourceRepo: https://github.com/chambear2809/splunk-cisco-skills
-  sourceSha: 2bce17ff8f2f29afd6f5326d7976d20c251538a4
+  sourceSha: 9bb131a104830b166dc0918b1be89332a7a8ada4
   releaseRoot: /home/node/.openclaw/splunk-cisco-skills/releases
   image:
     repository: 637423309390.dkr.ecr.us-east-1.amazonaws.com/splunk-cisco-skills-bundle
-    tag: 2bce17ff8f2f29afd6f5326d7976d20c251538a4
-    digest: "sha256:a23b4c60af963f05948583c660bd44d3fda4ad87f33bea40ebe54ae455bb9d8a"
+    tag: 9bb131a104830b166dc0918b1be89332a7a8ada4
+    digest: "sha256:f09b7cca5c2d796c4e9abb8636f80a58b9e5d6c9b45df4302148fd51dd6c3cd4"
     pullPolicy: IfNotPresent
 
 service:
