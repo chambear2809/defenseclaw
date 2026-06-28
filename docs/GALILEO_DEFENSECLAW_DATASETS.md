@@ -353,15 +353,18 @@ Use the local Splunk/Cisco skills for live Galileo and Agent Control wiring
 instead of duplicating that automation in this repo. Render and validate first:
 
 ```bash
-bash /Users/alecchamberlain/Documents/GitHub/splunk-cisco-skills/skills/galileo-platform-setup/scripts/setup.sh \
-  --render \
-  --validate \
-  --spec /Users/alecchamberlain/Documents/GitHub/splunk-cisco-skills/skills/galileo-platform-setup/template.example
+make splunk-cisco-skills-source
+SPLUNK_CISCO_SKILLS_SOURCE="${SPLUNK_CISCO_SKILLS_SOURCE:-../splunk-cisco-skills}"
 
-bash /Users/alecchamberlain/Documents/GitHub/splunk-cisco-skills/skills/galileo-agent-control-setup/scripts/setup.sh \
+bash "$SPLUNK_CISCO_SKILLS_SOURCE/skills/galileo-platform-setup/scripts/setup.sh" \
   --render \
   --validate \
-  --spec /Users/alecchamberlain/Documents/GitHub/splunk-cisco-skills/skills/galileo-agent-control-setup/template.example
+  --spec "$SPLUNK_CISCO_SKILLS_SOURCE/skills/galileo-platform-setup/template.example"
+
+bash "$SPLUNK_CISCO_SKILLS_SOURCE/skills/galileo-agent-control-setup/scripts/setup.sh" \
+  --render \
+  --validate \
+  --spec "$SPLUNK_CISCO_SKILLS_SOURCE/skills/galileo-agent-control-setup/template.example"
 ```
 
 When credentials and provider quota are restored, use those skills' rendered

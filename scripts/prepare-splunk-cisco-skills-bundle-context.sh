@@ -7,7 +7,7 @@ Usage: prepare-splunk-cisco-skills-bundle-context.sh SOURCE_REPO_DIR OUTPUT_DIR 
 
 Create a minimal Docker build context for the Splunk/Cisco skills bundle.
 Only skills/, agent/, .mcp.json, README.md, and requirements-agent.txt are
-copied. The script refuses to continue if SOURCE_REPO_DIR is not at
+copied. The script refuses to continue if SOURCE_REPO_DIR is not clean and at
 EXPECTED_SHA.
 USAGE
 }
@@ -34,6 +34,11 @@ fi
 actual_sha="$(git -C "${source_dir}" rev-parse HEAD)"
 if [ "${actual_sha}" != "${expected_sha}" ]; then
   echo "source SHA mismatch: got ${actual_sha}, expected ${expected_sha}" >&2
+  exit 1
+fi
+
+if [ -n "$(git -C "${source_dir}" status --porcelain)" ]; then
+  echo "source repo has uncommitted or untracked files: ${source_dir}" >&2
   exit 1
 fi
 

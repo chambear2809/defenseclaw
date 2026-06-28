@@ -6,7 +6,9 @@ pulling mutable GitHub branches at runtime.
 ## Release Model
 
 - Source repository: `https://github.com/chambear2809/splunk-cisco-skills`
-- Current pinned source commit: `9bb131a104830b166dc0918b1be89332a7a8ada4`
+- Current pinned source commit: `1c9925765fb033efda254577d04534c83226b8b2`
+- Local source checkout: `make splunk-cisco-skills-source` clones or fetches
+  `SPLUNK_CISCO_SKILLS_SOURCE` and checks out the pinned commit.
 - Runtime release path:
   `/home/node/.openclaw/splunk-cisco-skills/releases/<source-sha>`
 - Runtime pods do not install Python packages from PyPI. The bundle image
@@ -19,6 +21,13 @@ context containing only `skills/`, `agent/`, `.mcp.json`, `README.md`, and
 `requirements-agent.txt`. The workflow runs MCP smoke tests, a DefenseClaw skill
 scan smoke test, generates an SBOM, pushes to ECR, signs with Cosign, and opens
 a follow-up PR to pin the published digest.
+
+For a local bundle image:
+
+```bash
+make splunk-cisco-skills-source
+make docker-splunk-cisco-skills-bundle
+```
 
 ## Runtime Controls
 
@@ -47,7 +56,7 @@ kubectl -n defenseclaw rollout status deploy/defenseclaw
 kubectl -n defenseclaw rollout status deploy/openclaw
 
 kubectl -n defenseclaw exec deploy/openclaw -- \
-  sh -c 'release=/home/node/.openclaw/splunk-cisco-skills/releases/9bb131a104830b166dc0918b1be89332a7a8ada4; test -s "$release/.complete" && test "$(cat "$release/.revision")" = "9bb131a104830b166dc0918b1be89332a7a8ada4"'
+  sh -c 'release=/home/node/.openclaw/splunk-cisco-skills/releases/1c9925765fb033efda254577d04534c83226b8b2; test -s "$release/.complete" && test "$(cat "$release/.revision")" = "1c9925765fb033efda254577d04534c83226b8b2"'
 ```
 
 Then validate OpenClaw and the guarded MCP surface:

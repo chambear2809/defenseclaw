@@ -71,6 +71,7 @@ High-risk deployments should pair DefenseClaw with human review, least-privilege
 | [Sandbox](docs/SANDBOX.md) | OpenShell sandbox setup, architecture, monitoring, and debugging |
 | [Observability](docs/OBSERVABILITY.md) | Audit sinks, OTLP, Splunk, Grafana, and webhook notifications |
 | [Splunk App](docs/SPLUNK_APP.md) | Local Splunk app dashboards and investigation flow |
+| [Splunk/Cisco Skills Enterprise](docs/SPLUNK_CISCO_SKILLS_ENTERPRISE.md) | Pinned `splunk-cisco-skills` source, bundle image, and runtime controls |
 | [DefenseClaw Demo Package](docs/DEFENSECLAW_DEMO_PACKAGE.md) | Full demo package with 5, 25, 45, and 60 minute scripts |
 | [Galileo DefenseClaw Demo Datasets](docs/GALILEO_DEFENSECLAW_DATASETS.md) | Agent Watch prompt, datasets, Playground recipe, and runtime-evidence experiments |
 | [Cisco Cloud Control Tokenomics + Galileo](docs/C3_AGENT_TOKENOMICS_GALILEO.md) | Demo BFF and prebuilt MFE handoff for Cisco Cloud Control tokenomics; Agent Watch Galileo assets are documented separately |
