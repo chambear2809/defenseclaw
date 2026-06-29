@@ -374,6 +374,7 @@ data:
           source: defenseclaw
           sourcetype: defenseclaw:json
           verify_tls: false
+          insecure_skip_verify: true
     agent_control:
       enabled: true
       url: http://agent-control.defenseclaw.svc.cluster.local:8000
