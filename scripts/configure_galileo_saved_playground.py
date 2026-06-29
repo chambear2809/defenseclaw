@@ -16,8 +16,8 @@ import base64
 import datetime as dt
 import json
 import os
-from pathlib import Path
 import subprocess
+from pathlib import Path
 from typing import Any
 
 import requests
@@ -738,7 +738,11 @@ def main() -> int:
     parser.add_argument("--playground-id", default=SAVED_PLAYGROUND_ID)
     parser.add_argument("--playground-prompt-id", default=SAVED_PLAYGROUND_PROMPT_ID)
     parser.add_argument("--galileo-api-key-file", type=Path, default=None)
-    parser.add_argument("--use-k8s-secret", action="store_true", help="Read the API key from the live lab Kubernetes secret.")
+    parser.add_argument(
+        "--use-k8s-secret",
+        action="store_true",
+        help="Read the API key from the live lab Kubernetes secret.",
+    )
     parser.add_argument("--k8s-secret-namespace", default=DEFAULT_K8S_SECRET_NAMESPACE)
     parser.add_argument("--k8s-secret-name", default=DEFAULT_K8S_SECRET_NAME)
     parser.add_argument("--k8s-secret-key", default=DEFAULT_K8S_SECRET_KEY)

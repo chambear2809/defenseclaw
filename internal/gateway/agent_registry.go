@@ -342,6 +342,8 @@ type AgentIdentity struct {
 	AgentType            string
 	AgentInstanceID      string
 	SidecarInstanceID    string
+	UserID               string
+	UserName             string
 	TaskID               string
 	TaskType             string
 	TaskTokenID          string
@@ -355,6 +357,8 @@ func (id AgentIdentity) IsZero() bool {
 		id.AgentType == "" &&
 		id.AgentInstanceID == "" &&
 		id.SidecarInstanceID == "" &&
+		id.UserID == "" &&
+		id.UserName == "" &&
 		id.TaskID == "" &&
 		id.TaskType == "" &&
 		id.TaskTokenID == "" &&

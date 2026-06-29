@@ -16,9 +16,9 @@ import base64
 import datetime as dt
 import json
 import os
-from pathlib import Path
 import re
 import subprocess
+from pathlib import Path
 from typing import Any
 
 import requests
@@ -170,7 +170,10 @@ def bridgeit_chat(
     }
 
 
-def build_generated_rows(args: argparse.Namespace, bridgeit_proxy_key: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def build_generated_rows(
+    args: argparse.Namespace,
+    bridgeit_proxy_key: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     prompt_template = args.prompt.read_text(encoding="utf-8")
     source_rows = load_dataset_rows(args.dataset, args.max_rows)
     generated_rows: list[dict[str, Any]] = []
@@ -304,7 +307,9 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run a Galileo generated-output experiment using BridgeIT proxy output.")
+    parser = argparse.ArgumentParser(
+        description="Run a Galileo generated-output experiment using BridgeIT proxy output."
+    )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true")
     mode.add_argument("--execute", action="store_true")
