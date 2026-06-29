@@ -39,6 +39,8 @@ import (
 	"github.com/pelletier/go-toml/v2"
 )
 
+var testStderrMu sync.Mutex
+
 // --- Helper tests ---
 
 func TestManagedFileBackup_RestoresExactWhenUnchanged(t *testing.T) {
@@ -265,7 +267,7 @@ func TestIsLoopback(t *testing.T) {
 
 func TestRegistry_DefaultContainsAllBuiltins(t *testing.T) {
 	r := NewDefaultRegistry()
-	expected := []string{"openclaw", "zeptoclaw", "claudecode", "codex", "hermes", "cursor", "windsurf", "geminicli", "copilot", "openhands", "antigravity", "opencode"}
+	expected := []string{"openclaw", "zeptoclaw", "claudecode", "codex", "hermes", "cursor", "windsurf", "geminicli", "copilot", "openhands", "antigravity", "opencode", "omnigent"}
 	for _, name := range expected {
 		if _, ok := r.Get(name); !ok {
 			t.Errorf("default registry missing %q", name)
@@ -1842,13 +1844,20 @@ func TestCodex_Authenticate_LoopbackWarnOnce(t *testing.T) {
 	c := NewCodexConnector()
 	c.SetCredentials("gw-tok-h1", "")
 
+	testStderrMu.Lock()
 	origStderr := os.Stderr
 	pipeR, pipeW, err := os.Pipe()
 	if err != nil {
+		testStderrMu.Unlock()
 		t.Fatalf("os.Pipe: %v", err)
 	}
 	os.Stderr = pipeW
-	t.Cleanup(func() { os.Stderr = origStderr })
+	t.Cleanup(func() {
+		os.Stderr = origStderr
+		_ = pipeW.Close()
+		_ = pipeR.Close()
+		testStderrMu.Unlock()
+	})
 
 	for i := 0; i < 3; i++ {
 		r := httptest.NewRequest("POST", "/c/codex/responses", nil)
@@ -1862,6 +1871,7 @@ func TestCodex_Authenticate_LoopbackWarnOnce(t *testing.T) {
 		}
 	}
 
+	os.Stderr = origStderr
 	if err := pipeW.Close(); err != nil {
 		t.Fatalf("close pipe writer: %v", err)
 	}
@@ -1872,6 +1882,39 @@ func TestCodex_Authenticate_LoopbackWarnOnce(t *testing.T) {
 	}
 	if n := strings.Count(got, "[SECURITY] codex: rejecting loopback"); n != 1 {
 		t.Errorf("expected exactly 1 warn-once line, got %d:\n%s", n, got)
+	}
+}
+
+func TestAuthenticateHookBridgeRequest_MasterKeyOnlyWarnsOnLoopbackBypass(t *testing.T) {
+	testStderrMu.Lock()
+	origStderr := os.Stderr
+	pipeR, pipeW, err := os.Pipe()
+	if err != nil {
+		testStderrMu.Unlock()
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	os.Stderr = pipeW
+	t.Cleanup(func() {
+		os.Stderr = origStderr
+		_ = pipeW.Close()
+		_ = pipeR.Close()
+		testStderrMu.Unlock()
+	})
+
+	var warned sync.Once
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/omnigent/hook", nil)
+	r.RemoteAddr = "127.0.0.1:54321"
+	if !authenticateHookBridgeRequest(r, "", "master-key", "omnigent", "test bridge", &warned) {
+		t.Fatal("loopback bridge request should be accepted")
+	}
+
+	os.Stderr = origStderr
+	if err := pipeW.Close(); err != nil {
+		t.Fatalf("close pipe writer: %v", err)
+	}
+	captured, _ := io.ReadAll(pipeR)
+	if got := string(captured); !strings.Contains(got, "[SECURITY] omnigent: loopback request accepted") {
+		t.Fatalf("stderr missing configured-credential bypass warning:\n%s", got)
 	}
 }
 
@@ -4289,8 +4332,8 @@ func TestDiscoverPlugins_EmptyDir(t *testing.T) {
 		t.Fatalf("DiscoverPlugins on empty dir: %v", err)
 	}
 	// Should still have only built-in connectors
-	if r.Len() != 12 {
-		t.Errorf("expected 12 built-in connectors, got %d", r.Len())
+	if r.Len() != 13 {
+		t.Errorf("expected 13 built-in connectors, got %d", r.Len())
 	}
 }
 
@@ -6150,12 +6193,16 @@ func TestConnector_EnvRequirementsProvider_AllBuiltinsImplement(t *testing.T) {
 		// Codex routes via config.toml; OPENAI_BASE_URL is
 		// optional/discouraged. Scope is process-only.
 		{"codex", func() Connector { return NewCodexConnector() }, []EnvScope{EnvScopeProcess}},
+		{"claudecode", func() Connector { return NewClaudeCodeConnector() }, []EnvScope{EnvScopeNone}},
 		{"hermes", func() Connector { return NewHermesConnector() }, []EnvScope{EnvScopeNone}},
 		{"cursor", func() Connector { return NewCursorConnector() }, []EnvScope{EnvScopeNone}},
 		{"windsurf", func() Connector { return NewWindsurfConnector() }, []EnvScope{EnvScopeNone}},
 		{"geminicli", func() Connector { return NewGeminiCLIConnector() }, []EnvScope{EnvScopeNone}},
 		{"copilot", func() Connector { return NewCopilotConnector() }, []EnvScope{EnvScopeNone}},
 		{"openhands", func() Connector { return NewOpenHandsConnector() }, []EnvScope{EnvScopeNone}},
+		{"antigravity", func() Connector { return NewAntigravityConnector() }, []EnvScope{EnvScopeNone}},
+		{"opencode", func() Connector { return NewOpenCodeConnector() }, []EnvScope{EnvScopeNone}},
+		{"omnigent", func() Connector { return NewOmnigentConnector() }, []EnvScope{EnvScopeNone, EnvScopeProcess}},
 	}
 
 	for _, c := range cases {

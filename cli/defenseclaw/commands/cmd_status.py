@@ -262,6 +262,7 @@ _FRIENDLY_CONNECTOR_NAMES = {
     "openhands": "OpenHands",
     "antigravity": "Antigravity",
     "opencode": "OpenCode",
+    "omnigent": "OmniGent",
 }
 
 
