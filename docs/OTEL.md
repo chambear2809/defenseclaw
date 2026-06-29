@@ -48,7 +48,7 @@ Set once at sidecar startup. Attached to every exported log, span, and metric.
 | Attribute | Type | Example | Source |
 |---|---|---|---|
 | `service.name` | string | `defenseclaw` | hardcoded |
-| `service.version` | string | `0.6.0` | build-time `version` var |
+| `service.version` | string | `0.7.2` | build-time `version` var |
 | `service.namespace` | string | `ai-governance` | hardcoded |
 | `deployment.environment` | string | `macos` | `config.Environment` |
 | `tenant.id` | string | `tenant-a` | `config.tenant_id` when set |

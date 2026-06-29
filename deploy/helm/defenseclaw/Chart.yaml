@@ -3,4 +3,4 @@ name: defenseclaw
 description: DefenseClaw gateway deployment
 type: application
 version: 0.1.0
-appVersion: "0.6.6"
+appVersion: "0.7.2"

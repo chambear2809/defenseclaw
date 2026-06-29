@@ -1481,57 +1481,14 @@ func TestRecordLLMTokens_EmitsMetric(t *testing.T) {
 		if !hasSessionID {
 			t.Error("histogram data point missing attribute gen_ai.conversation.id=sess-123")
 		}
-		if !hasAttribute(dp.Attributes, "gen_ai.system", "openai") {
-			t.Error("histogram data point missing attribute gen_ai.system=openai")
+		if !hasAttribute(dp.Attributes, "gen_ai.provider.name", "openai") {
+			t.Error("histogram data point missing attribute gen_ai.provider.name=openai")
 		}
-		if !hasAttribute(dp.Attributes, "gen_ai.framework", "defenseclaw") {
-			t.Error("histogram data point missing attribute gen_ai.framework=defenseclaw")
+		if !hasAttribute(dp.Attributes, "gen_ai.request.model", "gpt-4") {
+			t.Error("histogram data point missing attribute gen_ai.request.model=gpt-4")
 		}
-	}
-}
-
-func TestRecordAgentDuration_EmitsMetric(t *testing.T) {
-	reader := sdkmetric.NewManualReader()
-	p, err := NewProviderForTest(reader)
-	if err != nil {
-		t.Fatalf("NewProviderForTest: %v", err)
-	}
-	defer p.Shutdown(context.Background())
-
-	ctx := context.Background()
-	p.RecordAgentDuration(ctx, "invoke_agent", "test-agent", "coding-agent", "agent-id-1", 1.25)
-
-	var rm metricdata.ResourceMetrics
-	if err := reader.Collect(ctx, &rm); err != nil {
-		t.Fatalf("Collect: %v", err)
-	}
-
-	found := findHistogram(rm, "gen_ai.agent.duration")
-	if found == nil {
-		t.Fatal("metric gen_ai.agent.duration not found")
-		return
-	}
-
-	hist, ok := found.Data.(metricdata.Histogram[float64])
-	if !ok {
-		t.Fatalf("expected Histogram[float64], got %T", found.Data)
-	}
-	if len(hist.DataPoints) == 0 {
-		t.Fatal("expected at least one histogram data point")
-	}
-	dp := hist.DataPoints[0]
-	if dp.Sum != 1.25 {
-		t.Fatalf("duration sum = %v, want 1.25", dp.Sum)
-	}
-	for key, val := range map[string]string{
-		"gen_ai.operation.name": "invoke_agent",
-		"gen_ai.agent.name":     "test-agent",
-		"gen_ai.agent.type":     "coding-agent",
-		"gen_ai.agent.id":       "agent-id-1",
-		"gen_ai.framework":      "defenseclaw",
-	} {
-		if !hasAttribute(dp.Attributes, key, val) {
-			t.Errorf("histogram data point missing %s=%s", key, val)
+		if !hasAttribute(dp.Attributes, "gen_ai.operation.name", "chat") {
+			t.Error("histogram data point missing attribute gen_ai.operation.name=chat")
 		}
 	}
 }

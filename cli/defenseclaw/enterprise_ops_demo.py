@@ -2374,7 +2374,7 @@ def _galileo_console_links(manifest: dict[str, Any]) -> dict[str, str]:
     return {
         "project": prefix,
         "log_stream": f"{prefix}/logs/{log_stream_id}" if log_stream_id else prefix,
-        "saved_playground": f"{prefix}/playgrounds/{SAVED_PLAYGROUND_ID}",
+        "saved_playground": f"{prefix}/playground/{SAVED_PLAYGROUND_ID}",
         "enterprise_dataset": f"{prefix}/datasets/{enterprise_dataset.get('id', '')}",
         "runtime_prompt": f"{prefix}/prompts/{prompt.get('id', '')}",
         "agent_flow_prompt": f"{prefix}/prompts/{agent_flow_prompt.get('id', '')}",

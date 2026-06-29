@@ -58,18 +58,32 @@ func cloneStructuredPayload(in map[string]any) map[string]any {
 	if len(in) == 0 {
 		return nil
 	}
-	buf, err := json.Marshal(in)
-	if err == nil {
-		var out map[string]any
-		if err := json.Unmarshal(buf, &out); err == nil {
-			return out
-		}
-	}
 	out := make(map[string]any, len(in))
 	for k, v := range in {
-		out[k] = v
+		out[k] = cloneStructuredValue(v)
 	}
 	return out
+}
+
+func cloneStructuredValue(v any) any {
+	switch typed := v.(type) {
+	case map[string]any:
+		return cloneStructuredPayload(typed)
+	case []any:
+		out := make([]any, len(typed))
+		for i, item := range typed {
+			out[i] = cloneStructuredValue(item)
+		}
+		return out
+	case []map[string]any:
+		out := make([]map[string]any, len(typed))
+		for i, item := range typed {
+			out[i] = cloneStructuredPayload(item)
+		}
+		return out
+	default:
+		return typed
+	}
 }
 
 // stampAuditEventEnvelope fills the envelope fields that must be identical

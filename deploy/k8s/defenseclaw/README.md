@@ -17,7 +17,8 @@ kubectl create namespace defenseclaw --dry-run=client -o yaml | kubectl apply -f
 kubectl -n defenseclaw create secret generic defenseclaw-secrets \
   --from-literal=OPENCLAW_GATEWAY_TOKEN="$OPENCLAW_GATEWAY_TOKEN" \
   --from-literal=OPENAI_API_KEY="$OPENAI_API_KEY" \
-  --from-literal=GALILEO_API_KEY="$GALILEO_API_KEY" \
+  --from-literal=GALILEO_API_KEY="${GALILEO_API_KEY:-$GALILEO_DEMO_V2_API_KEY}" \
+  --from-literal=GALILEO_DEMO_V2_API_KEY="$GALILEO_DEMO_V2_API_KEY" \
   --from-literal=CISCO_AI_DEFENSE_API_KEY="$CISCO_AI_DEFENSE_API_KEY" \
   --from-literal=CISCO_AI_DEFENSE_OAUTH_BASIC="$CISCO_AI_DEFENSE_OAUTH_BASIC" \
   --dry-run=client -o yaml | kubectl apply -f -
@@ -30,7 +31,7 @@ kubectl -n defenseclaw create secret generic defenseclaw-secrets \
 kubectl -n defenseclaw create secret generic openclaw-secrets \
   --from-literal=OPENCLAW_GATEWAY_TOKEN="$OPENCLAW_GATEWAY_TOKEN" \
   --from-literal=BRIDGEIT_CHAT_BASE_URL="${BRIDGEIT_CHAT_BASE_URL:-https://chat-ai.cisco.com}" \
-  --from-literal=BRIDGEIT_MODEL="${BRIDGEIT_MODEL:-gpt-5-nano}" \
+  --from-literal=BRIDGEIT_MODEL="${BRIDGEIT_MODEL:-gpt-4o-mini}" \
   --from-literal=BRIDGEIT_APP_KEY="$BRIDGEIT_APP_KEY" \
   --from-literal=BRIDGEIT_ACCESS_TOKEN="${BRIDGEIT_ACCESS_TOKEN:-}" \
   --from-literal=BRIDGEIT_OAUTH_TOKEN_URL="${BRIDGEIT_OAUTH_TOKEN_URL:-https://id.cisco.com/oauth2/default/v1/token}" \
@@ -40,7 +41,7 @@ kubectl -n defenseclaw create secret generic openclaw-secrets \
   --dry-run=client -o yaml | kubectl apply -f -
 
 # BridgeIT is wired two ways for OpenClaw:
-# - The default OpenClaw model provider is `bridgeit/gpt-5-nano`, routed
+# - The default OpenClaw model provider is `bridgeit/gpt-4o-mini`, routed
 #   through a local OpenAI-compatible proxy that mints short-lived Cisco
 #   OAuth tokens and calls `chat-ai.cisco.com`.
 # - The MCP server also exposes `bridgeit_chat_completion` for explicit tool
@@ -97,7 +98,7 @@ kubectl -n defenseclaw create secret generic agent-control-secrets \
 kubectl create namespace defenseclaw-tokenomics --dry-run=client -o yaml | kubectl apply -f -
 
 kubectl -n defenseclaw-tokenomics create secret generic c3-agent-tokenomics-galileo \
-  --from-literal=GALILEO_API_KEY="$GALILEO_API_KEY" \
+  --from-literal=GALILEO_API_KEY="${GALILEO_DEMO_V2_API_KEY:-$GALILEO_API_KEY}" \
   --dry-run=client -o yaml | kubectl apply -f -
 ```
 
@@ -113,8 +114,8 @@ duo-sso
 aws eks update-kubeconfig --region us-east-1 --name isovalent-demo
 
 make docker-gateway-runtime-push \
-  VERSION=0.6.6 \
-  OVERLAY_IMAGE_TAG=0.6.6-web-tui-20260607-runtime-2
+  VERSION=0.7.2 \
+  OVERLAY_IMAGE_TAG=0.7.2-web-tui
 
 # Built by the splunk-cisco-skills-bundle workflow from pinned source commit
 # 9bb131a104830b166dc0918b1be89332a7a8ada4. Runtime pods never pull GitHub
@@ -156,10 +157,13 @@ kubectl -n defenseclaw exec deploy/openclaw -- \
   sh -c 'kubectl version --client=true && kubectl auth can-i get pods -n teastore && test -s "$THOUSANDEYES_TOKEN_FILE" && test -s "$SPLUNK_O11Y_TOKEN_FILE"'
 
 kubectl -n defenseclaw exec deploy/openclaw -- \
-  python3 /usr/local/bin/defenseclaw-runtime-evidence \
-    --test-id 8597876 \
-    --service teastore-webui
+  sh -c 'test -s /home/node/.openclaw/mcp-bridges/splunk-observability-cloud/run-splunk-o11y-mcp.js && test -s /home/node/.openclaw/mcp-bridges/thousandeyes/run-thousandeyes-mcp.js'
 ```
+
+For the recorded OpenClaw TeaStore run, external evidence should come from the
+loaded `splunk-observability-cloud` and `thousandeyes-mcp` MCP tools. Do not use
+the runtime-evidence helper in the recording script; use read-only `exec` only
+for Kubernetes health because this lab does not load a Kubernetes MCP server.
 
 ## K8 Demo Surface
 
@@ -174,25 +178,25 @@ Agent Watch flow.
 | --- | --- | --- |
 | DefenseClaw API | Live `/api/v1/inspect/tool` policy decision | `kubectl -n defenseclaw port-forward svc/defenseclaw 18970:18970` |
 | DefenseClaw Browser TUI | Live DefenseClaw TUI over a PTY-backed WebSocket | `http://a246f73430d334d7ea0360d19c827954-26b8542129d36765.elb.us-east-1.amazonaws.com` (`kubectl -n defenseclaw get svc defenseclaw-tui`) |
-| Agent Control | Active runtime controls and matched policy | `kubectl -n defenseclaw get svc agent-control-ui` |
+| Agent Control | Controls page for active runtime policy; Monitor page for live matched decisions | `kubectl -n defenseclaw get svc agent-control-ui` |
 | Splunk Local | Searchable audit, verdict, gateway, and OTel evidence | `kubectl -n defenseclaw get svc splunk-local-ui` |
-| Galileo | Prompt, datasets, and completed runtime-evidence experiments | `https://app.galileo.ai/project/0ba7b20d-8262-44c4-b230-547a0cd74b2b` |
+| Galileo | Prompt, datasets, saved Playground, and completed experiment evidence | `https://console.demo-v2.galileocloud.io/project/ef0960e1-8744-4019-9faa-103b13f94e0d` |
 | Cisco Cloud Control tokenomics MFE | Prebuilt executive tokenomics UI and fixture API | `kubectl -n defenseclaw-tokenomics get svc c3-agent-tokenomics-mfe` |
 
 ### Galileo Object Inventory
 
 | Object | Value |
 | --- | --- |
-| Project | `clus-demo` |
-| Project ID | `0ba7b20d-8262-44c4-b230-547a0cd74b2b` |
-| Log stream ID | `82b893bd-fa1f-411e-81e8-e12ca66692ad` |
+| Project | `defenseclaw-enterprise-ops-20260515` |
+| Project ID | `ef0960e1-8744-4019-9faa-103b13f94e0d` |
+| Log stream ID | `7d3fa020-621d-4164-aa4a-96b600663c92` |
 | Prompt | `defenseclaw-runtime-governance` |
-| Prompt ID | `1a327ae4-264d-4036-80f6-f8a424158a91` |
-| Selected prompt version | `2` |
-| Selected prompt version ID | `a7e61200-cc43-4fbe-941f-331095be3f4e` |
+| Prompt ID | `096341e8-05c8-4c8f-9e39-12155a61a8ad` |
+| Selected prompt version | `3` |
+| Selected prompt version ID | `5d76f586-e9a7-4aed-8697-29c282da0555` |
 | Prompt variables | `user_prompt`, `cluster_context`, `agent_name`, `guardrail_mode` |
 | Playground recipe | `playgrounds/galileo/defenseclaw-runtime-governance.playground.json` |
-| Default model alias | `gpt-4.1-nano` |
+| Default model alias | `BridgeIT GPT-4o Mini (custom)` |
 | Playground settings | temperature `0.2`, max tokens `700`, top_p `1.0` |
 
 The full dataset and experiment inventory lives in
@@ -219,6 +223,10 @@ In observe mode, the useful evidence is `raw_action`, `would_block`,
 `agent_control.control_name`, and `agent_control.action`. The expected Agent
 Control match is `deny-dangerous-shell-pre-tool`.
 
+Open the Agent Control UI from `agent-control-ui`. Show **Controls** first to
+confirm the active runtime policies, then switch to **Monitor** to show the live
+decision event for the same tool request.
+
 Then open Splunk Local and pivot on the same control decision:
 
 ```spl
@@ -233,10 +241,10 @@ index=defenseclaw_local source=defenseclaw
 After the live Agent Control/Splunk flow, use Galileo as the repeatable review
 surface:
 
-1. Open project `clus-demo`.
+1. Open project `defenseclaw-enterprise-ops-20260515`.
 2. Show prompt `defenseclaw-runtime-governance` and selected version `2`.
-3. Show the six DefenseClaw datasets and explain the risk scenario behind each.
-4. Review the completed `defenseclaw-runtime-evidence-*` experiments.
+3. Show the seven DefenseClaw datasets and explain the risk scenario behind each.
+4. Review the saved enterprise Playground and completed runtime-evidence fallback experiments.
 5. Use `defenseclaw-dangerous-tool-pre-tool` as the main bridge back to Agent
    Control and Splunk evidence from the live `/api/v1/inspect/tool` demo.
 
@@ -259,21 +267,26 @@ Dry-run the model-backed Playground path:
 python3 scripts/run_galileo_playground_experiment.py --all
 ```
 
-Use it live only when Galileo's configured model provider has quota:
+Use it live after the BridgeIT custom integration is configured:
 
 ```bash
-GALILEO_API_KEY="$(kubectl -n defenseclaw get secret defenseclaw-secrets -o jsonpath='{.data.GALILEO_API_KEY}' | base64 --decode)" \
-python3 scripts/run_galileo_playground_experiment.py --all --execute
+GALILEO_API_KEY="$(kubectl -n defenseclaw get secret defenseclaw-secrets -o jsonpath='{.data.GALILEO_DEMO_V2_API_KEY}' | base64 --decode)" \
+GALILEO_CONSOLE_URL="https://console.demo-v2.galileocloud.io" \
+GALILEO_API_URL="https://api.demo-v2.galileocloud.io" \
+python3 scripts/run_galileo_playground_experiment.py \
+  --dataset defenseclaw-dangerous-tool-pre-tool \
+  --execute
 ```
 
-The reliable path is the deterministic runtime-evidence runner, which does not
-call an external LLM:
+The deterministic runtime-evidence runner is a Galileo fallback path only. Do
+not use it for the recorded OpenClaw TeaStore run, which should exercise MCP
+tool calls directly:
 
 ```bash
 python3 scripts/run_galileo_runtime_evidence_experiment.py --all
 ```
 
 ```bash
-GALILEO_API_KEY="$(kubectl -n defenseclaw get secret defenseclaw-secrets -o jsonpath='{.data.GALILEO_API_KEY}' | base64 --decode)" \
+GALILEO_API_KEY="$(kubectl -n defenseclaw get secret defenseclaw-secrets -o jsonpath='{.data.GALILEO_DEMO_V2_API_KEY}' | base64 --decode)" \
 python3 scripts/run_galileo_runtime_evidence_experiment.py --all --execute
 ```

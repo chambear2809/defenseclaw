@@ -81,13 +81,13 @@ Log stream ID: `7d3fa020-621d-4164-aa4a-96b600663c92`
 | `defenseclaw-runtime-governance` prompt | `096341e8-05c8-4c8f-9e39-12155a61a8ad` | Runtime governance prompt template. |
 | `defenseclaw-enterprise-ops-agent-flow` prompt | `ce2a5908-bc6c-45e0-89e7-cd498d6ed870` | Agent Flow metric/test block for the TeaStore incident flow. |
 
-Selected runtime-governance prompt version: `2`
+Selected runtime-governance prompt version: `3`
 
-Selected runtime-governance prompt version ID: `8ebe7696-a235-49f7-88bf-1d5abb3645d7`
+Selected runtime-governance prompt version ID: `5d76f586-e9a7-4aed-8697-29c282da0555`
 
-Selected enterprise agent-flow prompt version: `2`
+Selected enterprise agent-flow prompt version: `3`
 
-Selected enterprise agent-flow prompt version ID: `4400f9ef-699f-4812-b6a3-ae39cc35a08d`
+Selected enterprise agent-flow prompt version ID: `a152416c-c2c9-41bd-a7a6-5f2f9d0489ce`
 
 Prompt variables: `user_prompt`, `cluster_context`, `agent_name`, `guardrail_mode`
 
@@ -140,7 +140,7 @@ For the live lab, get the Galileo API key from the `defenseclaw` namespace
 without printing it:
 
 ```bash
-export GALILEO_API_KEY="$(kubectl -n defenseclaw get secret defenseclaw-secrets -o jsonpath='{.data.GALILEO_API_KEY}' | base64 --decode)"
+export GALILEO_API_KEY="$(kubectl -n defenseclaw get secret defenseclaw-secrets -o jsonpath='{.data.GALILEO_DEMO_V2_API_KEY}' | base64 --decode)"
 export GALILEO_PROJECT="defenseclaw-enterprise-ops-20260515"
 export GALILEO_PROJECT_ID="ef0960e1-8744-4019-9faa-103b13f94e0d"
 export GALILEO_LOG_STREAM="defenseclaw-enterprise-ops-20260515"
@@ -164,7 +164,7 @@ demo-v2 tenant has a saved enterprise Playground that should be updated in
 place rather than recreated:
 
 ```text
-https://console.demo-v2.galileocloud.io/project/ef0960e1-8744-4019-9faa-103b13f94e0d/playgrounds/e969b856-9d5d-48a4-90af-b33e20fe6fab
+https://console.demo-v2.galileocloud.io/project/ef0960e1-8744-4019-9faa-103b13f94e0d/playground/e969b856-9d5d-48a4-90af-b33e20fe6fab
 ```
 
 The repo carries the exact Playground recipe so the SaaS setup is repeatable:
@@ -205,13 +205,15 @@ Console fallback:
 4. Select dataset `defenseclaw-enterprise-ops-thousandeyes`, latest version.
 5. Add the enterprise dataset's `default_metrics`; keep row-level metrics such
    as `correctness` and `output_pii` when the scorer catalog exposes them.
-6. Run the Playground and log the result as an experiment when provider quota
-   is available.
+6. Select model `BridgeIT GPT-4o Mini (custom)`.
+7. Run the Playground and log the result as an experiment.
 
-The recipe uses model alias `gpt-4.1-nano` with temperature `0.2`, max tokens
-`700`, and top_p `1.0`. The metric names are aligned with each JSONL row's
-`metadata.galileo_metrics`; use `tool_errors` and `output_pii` where those are
-the row-level metrics.
+The recipe uses model alias `BridgeIT GPT-4o Mini (custom)` with temperature
+`0.2`, max tokens `700`, and top_p `1.0`. The metric names are aligned with
+each JSONL row's `metadata.galileo_metrics`; use `tool_errors` and `output_pii`
+where those are the row-level metrics. For code-backed prompt experiments, the
+runner also pins Galileo LLM scorers to the same BridgeIT custom model with one
+judge by default so prompt runs do not fall back to the OpenAI integration.
 
 The code-backed equivalent can dry-run the experiment setup:
 
@@ -222,7 +224,7 @@ The code-backed equivalent can dry-run the experiment setup:
 To start a real Galileo experiment for one dataset:
 
 ```bash
-GALILEO_API_KEY="$(kubectl -n defenseclaw get secret defenseclaw-secrets -o jsonpath='{.data.GALILEO_API_KEY}' | base64 --decode)" \
+GALILEO_API_KEY="$(kubectl -n defenseclaw get secret defenseclaw-secrets -o jsonpath='{.data.GALILEO_DEMO_V2_API_KEY}' | base64 --decode)" \
 GALILEO_CONSOLE_URL="https://console.demo-v2.galileocloud.io" \
 GALILEO_API_URL="https://api.demo-v2.galileocloud.io" \
 /tmp/defenseclaw-galileo-upload/bin/python scripts/run_galileo_playground_experiment.py \
@@ -230,14 +232,12 @@ GALILEO_API_URL="https://api.demo-v2.galileocloud.io" \
   --execute
 ```
 
-The prompt-runner path requires Galileo's configured OpenAI integration to have quota. On May 10, 2026, the configured OpenAI integration returned `insufficient_quota`, so prompt-runner experiments could be created but could not complete until that provider key is refreshed.
-
 ## Working Runtime Evidence Experiments
 
 The local-function runner logs deterministic DefenseClaw/Agent Control behavior into Galileo without calling an external LLM. This keeps the demo working even when the Playground model provider is out of quota:
 
 ```bash
-GALILEO_API_KEY="$(kubectl -n defenseclaw get secret defenseclaw-secrets -o jsonpath='{.data.GALILEO_API_KEY}' | base64 --decode)" \
+GALILEO_API_KEY="$(kubectl -n defenseclaw get secret defenseclaw-secrets -o jsonpath='{.data.GALILEO_DEMO_V2_API_KEY}' | base64 --decode)" \
 GALILEO_CONSOLE_URL="https://console.demo-v2.galileocloud.io" \
 GALILEO_API_URL="https://api.demo-v2.galileocloud.io" \
 /tmp/defenseclaw-galileo-upload/bin/python scripts/run_galileo_runtime_evidence_experiment.py \
@@ -246,11 +246,13 @@ GALILEO_API_URL="https://api.demo-v2.galileocloud.io" \
   --execute
 ```
 
-Current demo-v2 Enterprise Ops experiment:
+Current demo-v2 validation experiments:
 
 | Dataset | Experiment ID | Console link |
 | --- | --- | --- |
 | `defenseclaw-enterprise-ops-thousandeyes` | `b1d20128-4e55-4f3f-999b-f4962491c5e5` | `https://console.demo-v2.galileocloud.io/project/ef0960e1-8744-4019-9faa-103b13f94e0d/experiments/b1d20128-4e55-4f3f-999b-f4962491c5e5` |
+| `defenseclaw-safe-ops` BridgeIT Playground smoke | `ad119d54-47e4-4396-a6eb-7a68a514e11c` | `https://console.demo-v2.galileocloud.io/project/ef0960e1-8744-4019-9faa-103b13f94e0d/experiments/ad119d54-47e4-4396-a6eb-7a68a514e11c` |
+| `defenseclaw-enterprise-ops-thousandeyes` BridgeIT one-row smoke | `4726e2c8-2dd9-4fcc-bd7c-8c844ca9fbcc` | `https://console.demo-v2.galileocloud.io/project/ef0960e1-8744-4019-9faa-103b13f94e0d/experiments/4726e2c8-2dd9-4fcc-bd7c-8c844ca9fbcc` |
 
 Completed experiment set:
 

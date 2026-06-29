@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -250,6 +251,9 @@ func openSQLite(dbPath string) (*sql.DB, error) {
 }
 
 func NewStore(dbPath string) (*Store, error) {
+	if err := ensureSQLiteParentDir(dbPath); err != nil {
+		return nil, err
+	}
 	db, err := openSQLite(dbPath)
 	if err != nil {
 		return nil, err
@@ -257,6 +261,20 @@ func NewStore(dbPath string) (*Store, error) {
 	st := &Store{db: db}
 	telemetry.RegisterAuditDB(db)
 	return st, nil
+}
+
+func ensureSQLiteParentDir(dbPath string) error {
+	if dbPath == "" || dbPath == ":memory:" || strings.HasPrefix(dbPath, "file:") {
+		return nil
+	}
+	dir := filepath.Dir(dbPath)
+	if dir == "" || dir == "." {
+		return nil
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("audit: create db parent %s: %w", dir, err)
+	}
+	return nil
 }
 
 // sqliteCoded is the structural interface implemented by the

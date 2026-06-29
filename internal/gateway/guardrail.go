@@ -55,8 +55,9 @@ type ScanVerdict struct {
 	// EventVerdict, BlockEvent) can join this verdict to the
 	// per-finding scan_findings rows it produced. Not serialized on
 	// the wire; for in-process correlation only.
-	EvaluationID string   `json:"-"`
-	RuleIDs      []string `json:"-"`
+	EvaluationID string                `json:"-"`
+	RuleIDs      []string              `json:"-"`
+	AgentControl *agentControlDecision `json:"agent_control,omitempty"`
 }
 
 func allowVerdict(scanner string) *ScanVerdict {

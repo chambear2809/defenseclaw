@@ -422,17 +422,19 @@ data:
 
     Runtime Access:
     - Kubernetes: use the in-cluster service account and kubectl for investigation. Start with `kubectl auth can-i --list`, `kubectl get ns`, `kubectl -n teastore get deploy,svc,pods -o wide`, `kubectl -n teastore logs deploy/<name> --tail=100`, and `kubectl top pods -A` when metrics are available. Do not read Kubernetes Secrets or perform mutating kubectl commands unless the operator explicitly approves the exact action. The only demo mutation RBAC granted to this runtime is `get`, `patch`, and `update` on `deployment/teastore-webui-v1` in namespace `teastore`.
-    - DefenseClaw inspect: to validate proposed tool calls without executing them, run `python3 /usr/local/bin/defenseclaw-runtime-evidence --demo-inspect all` or `python3 /usr/local/bin/defenseclaw-runtime-evidence --demo-inspect dangerous-k8s-delete`. The helper calls `/api/v1/inspect/tool` with the gateway token from `OPENCLAW_GATEWAY_TOKEN`, emits redacted inspect verdicts, and never runs the proposed command. For the demo anchor, confirm `agent-dangerous-k8s-delete` returns `raw_action=block`, `would_block=true`, and Agent Control `deny-dangerous-shell-pre-tool`.
-    - Governed TeaStore Plan A v2: if the operator explicitly approves "Plan A v2" in this OpenClaw session, the exact allowed mutation is to patch only namespace `teastore`, deployment `teastore-webui-v1`, container `teastore-webui-v1`; increase the memory limit to `4Gi`; keep requests at `cpu=500m,memory=1Gi`; tune readiness to initial delay 60s, timeout 10s, failure threshold 6; and add matching liveness with initial delay 120s, timeout 10s, failure threshold 6. Do not change DNS, ThousandEyes targets, Secrets, other deployments, or replicas as part of Plan A v2. Inspect first with `python3 /usr/local/bin/defenseclaw-runtime-evidence --demo-inspect k8s-remediation`, then execute `kubectl -n teastore patch deployment teastore-webui-v1 --type=strategic -p '{"spec":{"template":{"spec":{"containers":[{"name":"teastore-webui-v1","resources":{"requests":{"cpu":"500m","memory":"1Gi"},"limits":{"cpu":"1","memory":"4Gi"}},"readinessProbe":{"httpGet":{"path":"/tools.descartes.teastore.webui/rest/ready/isready","port":8080},"initialDelaySeconds":60,"periodSeconds":10,"timeoutSeconds":10,"failureThreshold":6},"livenessProbe":{"httpGet":{"path":"/tools.descartes.teastore.webui/rest/ready/isready","port":8080},"initialDelaySeconds":120,"periodSeconds":10,"timeoutSeconds":10,"failureThreshold":6}}]}}}}'`, then `kubectl -n teastore rollout status deployment/teastore-webui-v1 --timeout=180s`.
+    - MCP-first TeaStore recording script: for the live recording surface, collect external evidence through MCP tools, not helper scripts. Use `splunk-observability-cloud` for O11y evidence and `thousandeyes-mcp` for ThousandEyes evidence. The only non-MCP exception is read-only Kubernetes shell because no Kubernetes MCP server is loaded in this lab.
+    - TeaStore MCP sequence:
+      1. Splunk O11y alert search: call `splunk-observability-cloud__o11y_search_alerts_or_incidents` with exactly one top-level `params` object, for example `{"params":{"time_range":{"start":"-2h","stop":"now"},"detector_id":"HI-D6XZA4AE","include_inactive":false,"limit":10}}`.
+      2. Splunk O11y APM context: `splunk-observability-cloud__o11y_get_apm_environments({"params":{"environment_name":"teastore","time_range":{"start":"-24h","stop":"now"}}})`, `splunk-observability-cloud__o11y_get_apm_services({"params":{"environment_name":"teastore","time_range":{"start":"-24h","stop":"now"}}})`, `splunk-observability-cloud__o11y_get_apm_service_latency({"params":{"service_name":"teastore-webui-v1","environment_name":"teastore","time_range":{"start":"-24h","stop":"now"}}})`, and provider-safe `splunk-observability-cloud__o11y_get_apm_service_errors_and_requ({"params":{"service_name":"teastore-webui-v1","environment_name":"teastore","time_range":{"start":"-24h","stop":"now"}}})`.
+      3. Kubernetes read-only health: use `exec` only for `kubectl -n teastore get deploy,svc,pods -o wide`; do not read Secrets or mutate resources.
+      4. ThousandEyes reuse check: `thousandeyes-mcp__list_network_app_synthetics_tests({"name":"defenseclaw-demo-teastore-k8s","type":"http-server","target":"teastore-webui","detail":"compact","page_size":20})`; the validated live result is test ID `8597876`.
+      5. ThousandEyes agent check: `thousandeyes-mcp__list_cloud_enterprise_agents({"agent_type":"enterprise","enabled":true})`; filter `agentName` values that start with `te-agent-aleccham`. Do not use Endpoint Agent tools for the K8s Enterprise Agent.
+      6. Policy gates: summarize DefenseClaw tool-hook decisions shown on these MCP/read-only tool calls. Do not call ThousandEyes create/update/delete, Instant Test, or Kubernetes mutation tools unless the operator explicitly approves the exact action and rollback.
+    - Governed TeaStore Plan A v2: if the operator explicitly approves "Plan A v2" in this OpenClaw session, the exact allowed mutation is to patch only namespace `teastore`, deployment `teastore-webui-v1`, container `teastore-webui-v1`; increase the memory limit to `4Gi`; keep requests at `cpu=500m,memory=1Gi`; tune readiness to initial delay 60s, timeout 10s, failure threshold 6; and add matching liveness with initial delay 120s, timeout 10s, failure threshold 6. Do not change DNS, ThousandEyes targets, Secrets, other deployments, or replicas as part of Plan A v2. The DefenseClaw tool hook must evaluate the exact patch command before execution; if it steers for approval or blocks, stop and surface the policy decision.
     - Governed TeaStore Plan A v2 rollback: after explicit rollback approval, restore the current baseline with `kubectl -n teastore patch deployment teastore-webui-v1 --type=strategic -p '{"spec":{"template":{"spec":{"containers":[{"name":"teastore-webui-v1","resources":{"requests":{"cpu":"500m","memory":"1Gi"},"limits":{"cpu":"1","memory":"3Gi"}},"readinessProbe":{"httpGet":{"path":"/tools.descartes.teastore.webui/rest/ready/isready","port":8080},"initialDelaySeconds":0,"periodSeconds":10,"timeoutSeconds":5,"failureThreshold":6},"livenessProbe":null}]}}}}'`, then `kubectl -n teastore rollout status deployment/teastore-webui-v1 --timeout=180s`.
-    - ThousandEyes: for read-only evidence, run `python3 /usr/local/bin/defenseclaw-runtime-evidence --test-id <id> --service <service>`. The helper reads `THOUSANDEYES_TOKEN_FILE=/var/run/thousandeyes/token` internally and emits only redacted summaries. Never replace the token with placeholders for live reads, and never print token contents. For AI Assistant MCP workflows, use the `thousandeyes-mcp` MCP server. Require explicit approval before any ThousandEyes write/delete/Instant Test action because those tools mutate state and/or consume ThousandEyes units. Use the `splunk-observability-thousandeyes-integration` skill for test/stream/dashboard workflows; pass `--te-token-file /var/run/thousandeyes/token`, and require explicit approval plus `--i-accept-te-mutations` for TE-side mutations.
-    - Splunk Observability Cloud: for detector and APM topology evidence, run `python3 /usr/local/bin/defenseclaw-runtime-evidence --service <service> --test-id <id>`. For a specific alerting detector, run `python3 /usr/local/bin/defenseclaw-runtime-evidence --o11y-detector-id <detector-id>`. The helper reads `SPLUNK_O11Y_REALM` and `SPLUNK_O11Y_TOKEN_FILE=/var/run/splunk-cisco-skills/splunk_o11y_token` internally and emits only redacted summaries. Never replace the token with placeholders for live reads, and never print token contents. For AI Assistant MCP workflows, use the `splunk-observability-cloud` MCP server. For deeper API workflows, use the `splunk-observability-native-ops` skill and documented topology/trace APIs before forming conclusions; include service names, environments, trace IDs, detector state, and relevant time windows in the analysis.
-    - MCP call shapes for the TeaStore incident:
-      - ThousandEyes Cloud/Enterprise synthetic tests use direct arguments, not a `params` wrapper: `thousandeyes-mcp__list_network_app_synthetics_tests({"name":"defenseclaw-demo-teastore-k8s","type":"http-server","target":"teastore-webui","detail":"compact","page_size":20})`. The validated live result is test ID `8597876`.
-      - ThousandEyes Kubernetes Enterprise Agents are Cloud/Enterprise Agents, not Endpoint Agents. Use `thousandeyes-mcp__list_cloud_enterprise_agents({"agent_type":"enterprise","enabled":true})`, then filter returned `agentName` values that start with `te-agent-aleccham`. Do not use `list_endpoint_agents` for the K8s Enterprise Agent.
-      - Splunk O11y APM tools require a top-level `params` object. Use `splunk-observability-cloud__o11y_get_apm_environments({"params":{"environment_name":"teastore","time_range":{"start":"-24h","stop":"now"}}})`, then `splunk-observability-cloud__o11y_get_apm_services({"params":{"environment_name":"teastore","time_range":{"start":"-24h","stop":"now"}}})`.
-      - For service detail, use the exact O11y service name `teastore-webui-v1`: `splunk-observability-cloud__o11y_get_apm_service_latency({"params":{"service_name":"teastore-webui-v1","environment_name":"teastore","time_range":{"start":"-24h","stop":"now"}}})` and `splunk-observability-cloud__o11y_get_apm_service_errors_and_requests({"params":{"service_name":"teastore-webui-v1","environment_name":"teastore","time_range":{"start":"-24h","stop":"now"}}})`.
-    - Prefer the loaded `splunk-cisco-skills` MCP server for ThousandEyes and Splunk setup workflows when it exposes the needed skill scripts. Use direct curl/python API reads only for evidence gathering or when the loaded skill does not cover the read path.
+    - ThousandEyes: use the `thousandeyes-mcp` MCP server for read-only evidence. Never replace the token with placeholders for live reads, and never print token contents. Require explicit approval before any ThousandEyes write/delete/Instant Test action because those tools mutate state and/or consume ThousandEyes units.
+    - Splunk Observability Cloud: use the `splunk-observability-cloud` MCP server for detector, incident, APM topology, latency, error, and request evidence. Include service names, environments, trace IDs, detector state, and relevant time windows in the analysis.
+    - Prefer the loaded `splunk-cisco-skills` MCP server for ThousandEyes and Splunk setup workflows when it exposes the needed skill scripts. Use direct API reads only if the required MCP tool is unavailable and the operator approves the fallback.
   runtime-evidence.py: |
     #!/usr/bin/env python3
     """Collect redacted, read-only DefenseClaw runtime evidence."""
@@ -1183,7 +1185,7 @@ data:
       "agents": {
         "defaults": {
           "model": {
-            "primary": "bridgeit/gpt-5-nano"
+            "primary": "bridgeit/gpt-4o-mini"
           },
           "heartbeat": {
             "every": "0m"
@@ -1199,12 +1201,12 @@ data:
             "api": "openai-completions",
             "models": [
               {
-                "id": "gpt-5-nano",
-                "name": "BridgeIT GPT-5 Nano",
-                "reasoning": true,
+                "id": "gpt-4o-mini",
+                "name": "BridgeIT GPT-4o Mini",
+                "reasoning": false,
                 "input": ["text"],
                 "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
-                "contextWindow": 200000,
+                "contextWindow": 128000,
                 "maxTokens": 8192
               }
             ]
@@ -1252,24 +1254,6 @@ data:
             "env": {
               "THOUSANDEYES_MCP_URL": "https://api.thousandeyes.com/mcp",
               "THOUSANDEYES_TOKEN_FILE": "/var/run/thousandeyes/token"
-            }
-          },
-          "bridgeit-rag": {
-            "type": "stdio",
-            "command": "node",
-            "args": [
-              "/home/node/.openclaw/extensions/defenseclaw/dist/bridgeit-rag-mcp.js"
-            ],
-            "env": {
-              "BRIDGEIT_CHAT_BASE_URL": "${BRIDGEIT_CHAT_BASE_URL}",
-              "BRIDGEIT_MODEL": "${BRIDGEIT_MODEL}",
-              "BRIDGEIT_APP_KEY": "${BRIDGEIT_APP_KEY}",
-              "BRIDGEIT_ACCESS_TOKEN": "${BRIDGEIT_ACCESS_TOKEN}",
-              "BRIDGEIT_OAUTH_TOKEN_URL": "${BRIDGEIT_OAUTH_TOKEN_URL}",
-              "BRIDGEIT_CLIENT_ID": "${BRIDGEIT_CLIENT_ID}",
-              "BRIDGEIT_CLIENT_SECRET": "${BRIDGEIT_CLIENT_SECRET}",
-              "BRIDGEIT_API_KEY_HEADER": "api-key",
-              "BRIDGEIT_RAG_TIMEOUT_MS": "15000"
             }
           }
         }
@@ -1367,7 +1351,7 @@ spec:
               subPath: openclaw-client
       containers:
         - name: defenseclaw
-          image: 637423309390.dkr.ecr.us-east-1.amazonaws.com/defenseclaw:0.6.6-web-tui-20260607-runtime-2
+          image: 637423309390.dkr.ecr.us-east-1.amazonaws.com/defenseclaw:0.7.2-web-tui
           imagePullPolicy: IfNotPresent
           env:
             - name: HOME
@@ -1454,7 +1438,7 @@ spec:
             - mountPath: /tmp
               name: tmp
         - name: defenseclaw-web-tui
-          image: 637423309390.dkr.ecr.us-east-1.amazonaws.com/defenseclaw:0.6.6-web-tui-20260607-runtime-2
+          image: 637423309390.dkr.ecr.us-east-1.amazonaws.com/defenseclaw:0.7.2-web-tui
           imagePullPolicy: IfNotPresent
           command:
             - defenseclaw-gateway
@@ -1629,6 +1613,91 @@ spec:
       protocol: TCP
       targetPort: api
 ---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  labels:
+    app.kubernetes.io/component: gateway
+    app.kubernetes.io/name: openclaw
+  name: openclaw-edge-proxy
+  namespace: defenseclaw
+data:
+  edge-proxy.js: |
+    const http = require("node:http");
+
+    const listenHost = process.env.OPENCLAW_EDGE_PROXY_HOST || "0.0.0.0";
+    const listenPort = Number.parseInt(process.env.OPENCLAW_EDGE_PROXY_PORT || "18789", 10);
+    const gatewayPort = Number.parseInt(process.env.OPENCLAW_GATEWAY_BACKEND_PORT || "18790", 10);
+    const bridgeitPort = Number.parseInt(process.env.BRIDGEIT_OPENAI_PROXY_PORT || "8787", 10);
+
+    function targetFor(req) {
+      const path = req.url || "/";
+      if (path === "/v1" || path.startsWith("/v1/")) {
+        return { hostname: "127.0.0.1", port: bridgeitPort };
+      }
+      return { hostname: "127.0.0.1", port: gatewayPort };
+    }
+
+    const server = http.createServer((req, res) => {
+      const target = targetFor(req);
+      const upstream = http.request(
+        {
+          hostname: target.hostname,
+          port: target.port,
+          method: req.method,
+          path: req.url,
+          headers: { ...req.headers, host: `127.0.0.1:${target.port}` },
+        },
+        (upstreamRes) => {
+          res.writeHead(upstreamRes.statusCode || 502, upstreamRes.headers);
+          upstreamRes.pipe(res);
+        },
+      );
+      upstream.on("error", (err) => {
+        const body = JSON.stringify({ error: { message: err.message } });
+        res.writeHead(502, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) });
+        res.end(body);
+      });
+      req.pipe(upstream);
+    });
+
+    server.on("upgrade", (req, socket, head) => {
+      const target = targetFor(req);
+      const upstream = http.request({
+        hostname: target.hostname,
+        port: target.port,
+        method: req.method,
+        path: req.url,
+        headers: { ...req.headers, host: `127.0.0.1:${target.port}` },
+      });
+
+      upstream.on("upgrade", (upstreamRes, upstreamSocket, upstreamHead) => {
+        const statusLine = `HTTP/1.1 ${upstreamRes.statusCode || 101} ${upstreamRes.statusMessage || "Switching Protocols"}`;
+        const headerLines = [];
+        for (let index = 0; index < upstreamRes.rawHeaders.length; index += 2) {
+          headerLines.push(`${upstreamRes.rawHeaders[index]}: ${upstreamRes.rawHeaders[index + 1]}`);
+        }
+        socket.write(`${[statusLine, ...headerLines].join("\r\n")}\r\n\r\n`);
+        if (upstreamHead.length > 0) socket.write(upstreamHead);
+        if (head.length > 0) upstreamSocket.write(head);
+        upstreamSocket.pipe(socket);
+        socket.pipe(upstreamSocket);
+      });
+
+      upstream.on("response", (upstreamRes) => {
+        socket.write(`HTTP/1.1 ${upstreamRes.statusCode || 502} ${upstreamRes.statusMessage || "Bad Gateway"}\r\nConnection: close\r\n\r\n`);
+        upstreamRes.resume();
+        socket.destroy();
+      });
+      upstream.on("error", () => socket.destroy());
+      socket.on("error", () => upstream.destroy());
+      upstream.end();
+    });
+
+    server.listen(listenPort, listenHost, () => {
+      console.error(`[openclaw-edge] listening on http://${listenHost}:${listenPort}; /v1 -> ${bridgeitPort}; default -> ${gatewayPort}`);
+    });
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -1670,7 +1739,7 @@ spec:
         fsGroupChangePolicy: OnRootMismatch
       initContainers:
         - name: defenseclaw-plugin-bootstrap
-          image: 637423309390.dkr.ecr.us-east-1.amazonaws.com/defenseclaw:0.6.6-web-tui-20260607-runtime-2
+          image: 637423309390.dkr.ecr.us-east-1.amazonaws.com/defenseclaw:0.7.2-web-tui
           imagePullPolicy: IfNotPresent
           command:
             - sh
@@ -1864,7 +1933,8 @@ spec:
                 ! grep -q 'splunk-cisco-skills' "${dst}" 2>/dev/null || \
                 ! grep -q 'splunk-cisco-skills/releases/9bb131a104830b166dc0918b1be89332a7a8ada4' "${dst}" 2>/dev/null || \
                 ! grep -q '"bridgeit"' "${dst}" 2>/dev/null || \
-                ! grep -q 'bridgeit-rag' "${dst}" 2>/dev/null || \
+                grep -q 'bridgeit-rag' "${dst}" 2>/dev/null || \
+                grep -q '"primary": "bridgeit/gpt-5-nano"' "${dst}" 2>/dev/null || \
                 ! grep -q 'splunk-observability-cloud' "${dst}" 2>/dev/null || \
                 ! grep -q 'thousandeyes-mcp' "${dst}" 2>/dev/null || \
                 ! grep -q 'THOUSANDEYES_TOKEN_FILE' "${dst}" 2>/dev/null || \
@@ -1937,7 +2007,8 @@ spec:
             - |
               set -eu
               node /home/node/.openclaw/extensions/defenseclaw/dist/bridgeit-openai-proxy.js &
-              exec node openclaw.mjs gateway --bind lan --port 18789
+              node openclaw.mjs gateway --bind lan --port 18790 &
+              exec node /home/node/.openclaw/edge-proxy.js
           env:
             - name: HOME
               value: /home/node
@@ -2057,6 +2128,10 @@ spec:
             - mountPath: /var/run/thousandeyes
               name: thousandeyes-token
               readOnly: true
+            - mountPath: /home/node/.openclaw/edge-proxy.js
+              name: openclaw-edge-proxy
+              readOnly: true
+              subPath: edge-proxy.js
             - mountPath: /tmp
               name: tmp
       volumes:
@@ -2070,6 +2145,9 @@ spec:
         - name: openclaw-config
           configMap:
             name: openclaw-config
+        - name: openclaw-edge-proxy
+          configMap:
+            name: openclaw-edge-proxy
         - name: defenseclaw-client-config
           configMap:
             name: defenseclaw-client-config

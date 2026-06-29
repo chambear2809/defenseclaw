@@ -515,6 +515,10 @@ func (r *EventRouter) handleSessionTool(evt EventFrame) {
 		if output == "" {
 			output = payload.Result
 		}
+		if output == "" && payload.Data != nil && payload.ExitCode == nil {
+			readLoopLogf("[bifrost] session.tool result marker has no output; waiting for session.message tool result")
+			return
+		}
 		syntheticEvt := EventFrame{
 			Type:  evt.Type,
 			Event: "tool_result",
@@ -579,7 +583,16 @@ func (r *EventRouter) handleSessionMessage(evt EventFrame) {
 			ErrorMessage string          `json:"errorMessage"`
 			Provider     string          `json:"provider"`
 			Model        string          `json:"model"`
-			Usage        *struct {
+			ToolCallID   string          `json:"toolCallId"`
+			CallID       string          `json:"callId"`
+			ID           string          `json:"id"`
+			ToolName     string          `json:"toolName"`
+			Tool         string          `json:"tool"`
+			Name         string          `json:"name"`
+			Details      *struct {
+				ExitCode *int `json:"exitCode"`
+			} `json:"details,omitempty"`
+			Usage *struct {
 				PromptTokens     int `json:"prompt_tokens"`
 				CompletionTokens int `json:"completion_tokens"`
 			} `json:"usage,omitempty"`
@@ -623,6 +636,27 @@ func (r *EventRouter) handleSessionMessage(evt EventFrame) {
 				finishReasons = []string{msg.StopReason}
 			}
 			emitLLMResponseEvent(msgCtx, msgMeta, contentStr, string(msg.Content), finishReasons)
+		case "toolResult", "tool_result":
+			toolName := firstNonEmpty(msg.ToolName, msg.Tool, msg.Name)
+			toolID := firstNonEmpty(msg.ToolCallID, msg.CallID, msg.ID)
+			var exitCode *int
+			if msg.Details != nil {
+				exitCode = msg.Details.ExitCode
+			}
+			r.handleToolResult(EventFrame{
+				Type:  evt.Type,
+				Event: "tool_result",
+				Payload: mustMarshal(ToolResultPayload{
+					Tool:      toolName,
+					Output:    sessionMessageTextContent(msg.Content),
+					ExitCode:  exitCode,
+					ID:        toolID,
+					SessionID: envelope.SessionKey,
+					RunID:     envelope.RunID,
+					AgentName: r.agentNameForStream(""),
+				}),
+				Seq: evt.Seq,
+			})
 		}
 
 		if r.hilt != nil && r.hilt.ResolveFromMessage(envelope.SessionKey, msg.Role, contentStr) {
@@ -913,6 +947,35 @@ func (r *EventRouter) handleChatEvent(evt EventFrame, seqStr string) {
 func mustMarshal(v interface{}) json.RawMessage {
 	b, _ := json.Marshal(v)
 	return b
+}
+
+func sessionMessageTextContent(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	if raw[0] == '"' {
+		var text string
+		if err := json.Unmarshal(raw, &text); err == nil {
+			return text
+		}
+	}
+	if raw[0] == '[' {
+		var blocks []struct {
+			Text string `json:"text"`
+		}
+		if err := json.Unmarshal(raw, &blocks); err == nil {
+			parts := make([]string, 0, len(blocks))
+			for _, block := range blocks {
+				if block.Text != "" {
+					parts = append(parts, block.Text)
+				}
+			}
+			if len(parts) > 0 {
+				return strings.Join(parts, "")
+			}
+		}
+	}
+	return string(raw)
 }
 
 // agentEventPayload is the structure of an agent streaming event.
@@ -1417,7 +1480,7 @@ func (r *EventRouter) handleToolResult(evt EventFrame) {
 
 		if as != nil {
 			r.otel.SetRawSpanString(as.span, "defenseclaw.tool.output", payload.Output)
-			r.otel.EndToolSpan(as.span, exitCode, len(payload.Output), as.startTime, as.tool, as.provider)
+			r.otel.EndToolSpan(as.span, exitCode, len(payload.Output), as.startTime, as.tool, as.provider, payload.Output)
 		}
 	}
 }

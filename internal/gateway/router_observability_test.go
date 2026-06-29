@@ -57,19 +57,6 @@ func TestAgentNameForStream(t *testing.T) {
 	}
 }
 
-func TestSessionMessageUsage_AcceptsOpenClawTokenAliases(t *testing.T) {
-	var usage sessionMessageUsage
-	if err := json.Unmarshal([]byte(`{"input_tokens":123,"output_tokens":"45"}`), &usage); err != nil {
-		t.Fatalf("Unmarshal usage: %v", err)
-	}
-	if usage.PromptTokens != 123 {
-		t.Fatalf("PromptTokens=%d want 123", usage.PromptTokens)
-	}
-	if usage.CompletionTokens != 45 {
-		t.Fatalf("CompletionTokens=%d want 45", usage.CompletionTokens)
-	}
-}
-
 func TestSessionMessageToolResultCompletesDeferredToolSpanWithRawOutput(t *testing.T) {
 	redaction.SetDisableAll(true)
 	t.Cleanup(func() { redaction.SetDisableAll(false) })

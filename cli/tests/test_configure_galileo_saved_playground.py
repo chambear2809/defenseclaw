@@ -15,6 +15,7 @@ import importlib.util
 import json
 import os
 import sys
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -22,6 +23,9 @@ from unittest import mock
 import requests
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+SCRIPTS_DIR = REPO_ROOT / "scripts"
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
 SCRIPT_PATH = REPO_ROOT / "scripts" / "configure_galileo_saved_playground.py"
 spec = importlib.util.spec_from_file_location("configure_galileo_saved_playground", SCRIPT_PATH)
 configure_playground = importlib.util.module_from_spec(spec)
@@ -66,6 +70,22 @@ def scorer(name: str, *, label: str | None = None):
     }
 
 
+def sdk_scorer_items(names: list[str]):
+    items = []
+    for name in names:
+        item = mock.Mock()
+        item.to_dict.return_value = scorer(name)
+        items.append(item)
+    return items
+
+
+def patch_galileo_scorers_module():
+    galileo_mod = types.ModuleType("galileo")
+    scorers_mod = types.ModuleType("galileo.scorers")
+    galileo_mod.scorers = scorers_mod
+    return mock.patch.dict(sys.modules, {"galileo": galileo_mod, "galileo.scorers": scorers_mod})
+
+
 class ConfigureGalileoSavedPlaygroundTests(unittest.TestCase):
     def test_dry_run_uses_enterprise_manifest_without_key(self):
         manifest = configure_playground.load_manifest(configure_playground.DEFAULT_MANIFEST)
@@ -77,7 +97,8 @@ class ConfigureGalileoSavedPlaygroundTests(unittest.TestCase):
         self.assertIn("agent_flow", plan["scorers"]["required"])
         self.assertIn("action_completion", plan["scorers"]["required"])
         self.assertIn("correctness", plan["scorers"]["optional"])
-        self.assertEqual(plan["model_settings"]["model_alias"], "gpt-4.1-nano")
+        self.assertEqual(plan["model_settings"]["model_alias"], "BridgeIT GPT-4o Mini (custom)")
+        self.assertIn("Cisco Live", plan["playground_description"])
         self.assertEqual(plan["playground_prompt_id"], configure_playground.SAVED_PLAYGROUND_PROMPT_ID)
         self.assertIn("{{ user_prompt }}", plan["prompt"]["template"])
         self.assertEqual(plan["prompt"]["variables"], ["user_prompt", "cluster_context", "agent_name", "guardrail_mode"])
@@ -88,18 +109,23 @@ class ConfigureGalileoSavedPlaygroundTests(unittest.TestCase):
         session = FakeSession(
             [
                 FakeResponse(200, {"versions": [{"version_index": 3}, {"version_index": 5}]}),
-                FakeResponse(200, {"scorers": [scorer(name) for name in [*required, "correctness", "output_pii"]]}),
                 FakeResponse(200, {"id": configure_playground.SAVED_PLAYGROUND_ID, "updated": True}),
                 FakeResponse(200, {"id": configure_playground.SAVED_PLAYGROUND_PROMPT_ID, "template": "set"}),
             ]
         )
 
-        result = configure_playground.execute_saved_playground_config(
-            manifest,
-            api_key="secret-token",
-            session=session,
-            timeout=7,
-        )
+        with patch_galileo_scorers_module(), mock.patch.object(
+            configure_playground, "galileo_auth_token", return_value="jwt-token"
+        ), mock.patch(
+            "galileo.scorers.Scorers", create=True
+        ) as scorers_cls:
+            scorers_cls.return_value.list.return_value = sdk_scorer_items([*required, "correctness", "output_pii"])
+            result = configure_playground.execute_saved_playground_config(
+                manifest,
+                api_key="secret-token",
+                session=session,
+                timeout=7,
+            )
 
         self.assertTrue(result["ok"], result)
         self.assertEqual(result["plan"]["dataset"]["version_index"], 5)
@@ -111,7 +137,7 @@ class ConfigureGalileoSavedPlaygroundTests(unittest.TestCase):
                 f"{configure_playground.SAVED_PLAYGROUND_PROMPT_ID}"
             ),
         )
-        patch_call = session.calls[2]
+        patch_call = session.calls[1]
         self.assertEqual(patch_call["method"], "PATCH")
         self.assertTrue(
             patch_call["url"].endswith(
@@ -119,8 +145,9 @@ class ConfigureGalileoSavedPlaygroundTests(unittest.TestCase):
             )
         )
         self.assertEqual(patch_call["headers"]["Galileo-API-Key"], "secret-token")
-        self.assertEqual(patch_call["headers"]["Authorization"], "Bearer secret-token")
+        self.assertEqual(patch_call["headers"]["Authorization"], "Bearer jwt-token")
         patch_payload = patch_call["json"]
+        self.assertEqual(patch_payload["description"], manifest["description"])
         self.assertEqual(patch_payload["dataset"]["version_index"], 5)
         self.assertEqual(
             patch_payload["prompt"]["version_id"],
@@ -128,7 +155,7 @@ class ConfigureGalileoSavedPlaygroundTests(unittest.TestCase):
         )
         self.assertEqual(patch_payload["settings"]["temperature"], 0.2)
         self.assertIn("output_pii", {item["metric"] for item in patch_payload["scorers"]})
-        prompt_call = session.calls[3]
+        prompt_call = session.calls[2]
         self.assertEqual(prompt_call["method"], "PATCH")
         self.assertTrue(prompt_call["url"].endswith(f"/prompts/{configure_playground.SAVED_PLAYGROUND_PROMPT_ID}"))
         self.assertIn("{{ cluster_context }}", prompt_call["json"]["template"])
@@ -160,12 +187,13 @@ class ConfigureGalileoSavedPlaygroundTests(unittest.TestCase):
         manifest = configure_playground.load_manifest(configure_playground.DEFAULT_MANIFEST)
         session = FakeSession([FakeResponse(403, {"message": "forbidden for this key"})])
 
-        with self.assertRaises(configure_playground.ConfigureSkipped) as ctx:
-            configure_playground.execute_saved_playground_config(
-                manifest,
-                api_key="secret-token",
-                session=session,
-            )
+        with mock.patch.object(configure_playground, "galileo_auth_token", return_value="jwt-token"):
+            with self.assertRaises(configure_playground.ConfigureSkipped) as ctx:
+                configure_playground.execute_saved_playground_config(
+                    manifest,
+                    api_key="secret-token",
+                    session=session,
+                )
 
         self.assertEqual(ctx.exception.reason, "galileo_auth_unavailable")
         self.assertNotIn("secret-token", ctx.exception.detail)
@@ -176,17 +204,22 @@ class ConfigureGalileoSavedPlaygroundTests(unittest.TestCase):
         session = FakeSession(
             [
                 FakeResponse(200, {"versions": [{"version_index": 5}]}),
-                FakeResponse(200, {"scorers": [scorer(name) for name in required]}),
                 FakeResponse(429, {"message": "provider quota exceeded"}),
             ]
         )
 
-        with self.assertRaises(configure_playground.ConfigureSkipped) as ctx:
-            configure_playground.execute_saved_playground_config(
-                manifest,
-                api_key="secret-token",
-                session=session,
-            )
+        with patch_galileo_scorers_module(), mock.patch.object(
+            configure_playground, "galileo_auth_token", return_value="jwt-token"
+        ), mock.patch(
+            "galileo.scorers.Scorers", create=True
+        ) as scorers_cls:
+            scorers_cls.return_value.list.return_value = sdk_scorer_items(required)
+            with self.assertRaises(configure_playground.ConfigureSkipped) as ctx:
+                configure_playground.execute_saved_playground_config(
+                    manifest,
+                    api_key="secret-token",
+                    session=session,
+                )
 
         self.assertEqual(ctx.exception.reason, "provider_quota_unavailable")
 

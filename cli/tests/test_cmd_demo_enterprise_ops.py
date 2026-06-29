@@ -226,6 +226,7 @@ class EnterpriseOpsDemoTests(unittest.TestCase):
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertIn("Control Room", result.output)
         self.assertIn("Saved Playground", result.output)
+        self.assertIn("/playground/", result.output)
         self.assertIn("e969b856-9d5d-48a4-90af-b33e20fe6fab", result.output)
         self.assertIn("Galileo behavior contract", result.output)
         self.assertIn("Autonomy SLO", result.output)

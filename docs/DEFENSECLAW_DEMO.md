@@ -123,7 +123,7 @@ When explaining this to new audiences, keep the split simple:
 | Surface | Role in the demo | Primary doc |
 | --- | --- | --- |
 | DefenseClaw/OpenClaw K8 lab | Live runtime, prompt/tool inspection, audit emission | [K8 demo deployment](../deploy/k8s/defenseclaw/README.md) |
-| Galileo Agent Control | Active runtime policy and matched control decisions | [K8 demo deployment](../deploy/k8s/defenseclaw/README.md#live-agent-control-and-splunk-flow) |
+| Galileo Agent Control | Controls for active policy and Monitor for matched runtime decisions | [K8 demo deployment](../deploy/k8s/defenseclaw/README.md#live-agent-control-and-splunk-flow) |
 | Splunk Local | Operational evidence, audit rows, verdicts, and dashboards | [Splunk app](SPLUNK_APP.md) |
 | Galileo Agent Watch | Prompt, datasets, Playground recipe, and completed experiments | [Galileo datasets](GALILEO_DEFENSECLAW_DATASETS.md) |
 | Cisco Cloud Control tokenomics | Optional executive tokenomics BFF and governance rollup | [Cisco Cloud Control tokenomics](C3_AGENT_TOKENOMICS_GALILEO.md) |
@@ -136,7 +136,7 @@ When explaining this to new audiences, keep the split simple:
 | EKS cluster | `isovalent-demo` |
 | Runtime namespace | `defenseclaw` |
 | Optional Cisco Cloud Control namespace | `defenseclaw-tokenomics` |
-| Validated gateway image | `637423309390.dkr.ecr.us-east-1.amazonaws.com/defenseclaw:0.6.6-web-tui-20260607-runtime-2` |
+| Validated gateway image | `637423309390.dkr.ecr.us-east-1.amazonaws.com/defenseclaw:0.7.2-web-tui` |
 | Galileo project | `clus-demo` |
 | Galileo project ID | `0ba7b20d-8262-44c4-b230-547a0cd74b2b` |
 | Galileo log stream ID | `82b893bd-fa1f-411e-81e8-e12ca66692ad` |
@@ -193,8 +193,8 @@ Credential-safe Galileo check:
 
 ```bash
 kubectl -n defenseclaw get secret defenseclaw-secrets \
-  -o jsonpath='{.metadata.name}:{.data.GALILEO_API_KEY}' \
-  | awk -F: '{ if (length($2) > 0) print $1 ":GALILEO_API_KEY=set"; else print $1 ":GALILEO_API_KEY=missing" }'
+  -o jsonpath='{.metadata.name}:{.data.GALILEO_DEMO_V2_API_KEY}' \
+  | awk -F: '{ if (length($2) > 0) print $1 ":GALILEO_DEMO_V2_API_KEY=set"; else print $1 ":GALILEO_DEMO_V2_API_KEY=missing" }'
 ```
 
 Credential-safe gateway token check:
@@ -232,7 +232,7 @@ Expected demo outcome:
 | DefenseClaw API | Response includes `would_block=true` and `raw_action=block` in observe mode. |
 | Galileo Agent Control | Matched control is `deny-dangerous-shell-pre-tool`. |
 | Splunk | Search finds the audit / verdict evidence for the same decision. |
-| Galileo | Dataset `defenseclaw-dangerous-tool-pre-tool` has completed runtime-evidence experiment. |
+| Galileo | Dataset `defenseclaw-dangerous-tool-pre-tool` has completed experiment evidence. |
 
 ## Live Tool-Call Bridge
 
@@ -314,7 +314,7 @@ Galileo Agent Control flow.
 3. Show prompt `defenseclaw-runtime-governance`.
 4. Show the prompt variables: `user_prompt`, `cluster_context`, `agent_name`, `guardrail_mode`.
 5. Show the DefenseClaw datasets, including `defenseclaw-enterprise-ops-thousandeyes`.
-6. Open completed runtime-evidence experiments.
+6. Open the saved Playground and completed runtime-evidence fallback experiments.
 7. Use `defenseclaw-dangerous-tool-pre-tool` as the bridge back to the live demo.
 
 Speaker note:
@@ -334,7 +334,7 @@ python3 scripts/run_galileo_runtime_evidence_experiment.py --all
 Live execution when credentials are available:
 
 ```bash
-GALILEO_API_KEY="$(kubectl -n defenseclaw get secret defenseclaw-secrets -o jsonpath='{.data.GALILEO_API_KEY}' | base64 --decode)" \
+GALILEO_API_KEY="$(kubectl -n defenseclaw get secret defenseclaw-secrets -o jsonpath='{.data.GALILEO_DEMO_V2_API_KEY}' | base64 --decode)" \
 python3 scripts/run_galileo_runtime_evidence_experiment.py --all --execute
 ```
 
@@ -344,9 +344,20 @@ Optional model-backed Playground dry run:
 python3 scripts/run_galileo_playground_experiment.py --all
 ```
 
-Use the model-backed path only when Galileo's configured model provider has
-quota. On May 10, 2026, the configured provider returned `insufficient_quota`,
-so the deterministic runtime-evidence path is the reliable live-demo path.
+Live BridgeIT-backed Playground run for a short recording-safe experiment:
+
+```bash
+GALILEO_API_KEY="$(kubectl -n defenseclaw get secret defenseclaw-secrets -o jsonpath='{.data.GALILEO_DEMO_V2_API_KEY}' | base64 --decode)" \
+GALILEO_CONSOLE_URL="https://console.demo-v2.galileocloud.io" \
+GALILEO_API_URL="https://api.demo-v2.galileocloud.io" \
+python3 scripts/run_galileo_playground_experiment.py \
+  --dataset defenseclaw-dangerous-tool-pre-tool \
+  --execute
+```
+
+The Playground path uses the Galileo custom model alias
+`BridgeIT GPT-4o Mini (custom)` and pins LLM scorers to the same custom model, so
+the demo does not depend on Galileo's OpenAI integration quota.
 
 ## Cisco Cloud Control Tokenomics Path
 
@@ -410,12 +421,33 @@ What to emphasize:
 
 Use this when the audience needs the story, not the mechanics.
 
+Recorded Chrome tab order for the company-story version:
+
+| Tab | Demo stop | Chrome title | URL |
+| --- | --- | --- | --- |
+| 1 | OpenClaw / DefenseClaw opening and prepared run | OpenClaw Control | <https://openclaw.rosa.fso-tme.eoha.p3.openshiftapps.com/chat?session=agent%3Amain%3Ademo-mcp-clean-4o-20260523> |
+| 2 | Galileo project overview | Splunk - Agent Observability | <https://console.demo-v2.galileocloud.io/demo-v2-poc/project/ef0960e1-8744-4019-9faa-103b13f94e0d> |
+| 3 | Galileo Playground | Splunk - Agent Observability | <https://console.demo-v2.galileocloud.io/demo-v2-poc/project/ef0960e1-8744-4019-9faa-103b13f94e0d/playgrounds> |
+| 4 | Galileo Prompts | Splunk - Agent Observability | <https://console.demo-v2.galileocloud.io/demo-v2-poc/prompts> |
+| 5 | Galileo Datasets | Splunk - Agent Observability | <https://console.demo-v2.galileocloud.io/demo-v2-poc/datasets> |
+| 6 | Galileo Log Stream / Trace / Metrics | Splunk - Agent Observability | <https://console.demo-v2.galileocloud.io/demo-v2-poc/project/ef0960e1-8744-4019-9faa-103b13f94e0d/log-streams/7d3fa020-621d-4164-aa4a-96b600663c92?timeRange=%7B%22type%22%3A%22last12Hours%22%7D&table-filters-store-v1=%7B%22state%22%3A%7B%22filters%22%3A%5B%5D%2C%22filterConnector%22%3A%22and%22%2C%22textSearch%22%3A%22%22%2C%22lastContextKey%22%3A%22ef0960e1-8744-4019-9faa-103b13f94e0d-7d3fa020-621d-4164-aa4a-96b600663c92-%22%7D%2C%22version%22%3A0%7D> |
+| 7 | Agent Control Controls | Agent Control - Runtime Guardrails for AI Agents | <https://a89883dd9e7ad4cb1bdf35fd11a2ab4a-1609073920.us-east-1.elb.amazonaws.com/agents/?id=defenseclaw-openclaw&tab=controls> |
+| 8 | Agent Control Monitor | Agent Control - Runtime Guardrails for AI Agents | <https://a89883dd9e7ad4cb1bdf35fd11a2ab4a-1609073920.us-east-1.elb.amazonaws.com/agents/?id=defenseclaw-openclaw&tab=monitor> |
+| 9 | Splunk O11y AI overview | AI Monitoring | <https://app.us1.observability.splunkcloud.com/#/ai-monitoring> |
+| 10 | Splunk O11y AI agents filtered to OpenClaw | AI Monitoring - Agents | <https://app.us1.observability.splunkcloud.com/#/ai-monitoring/agents> |
+| 11 | Splunk O11y TeaStore detector/APM | APM - Service Map | <https://app.us1.observability.splunkcloud.com/#/apm/troubleshooting?data-track-id=apm.landing.sidebar-explore&endTime=Now&filters=%7B%22traceFilter%22:%7B%22tags%22:%5B%7B%22tag%22:%22sf_environment%22,%22operation%22:%22IN%22,%22values%22:%5B%22defenseclaw%22,%22teastore%22%5D%7D%5D%7D%7D&startTime=-15m> |
+| 12 | OpenClaw Kubernetes output | OpenClaw Control | <https://openclaw.rosa.fso-tme.eoha.p3.openshiftapps.com/chat?session=demo-mcp-clean-4o-20260523> |
+| 13 | OpenClaw ThousandEyes MCP output | OpenClaw Control | <https://openclaw.rosa.fso-tme.eoha.p3.openshiftapps.com/chat?session=demo-mcp-clean-4o-20260523> |
+| 14 | DefenseClaw setup / Skill Scanner / AI Defense scanner support | DefenseClaw TUI | <http://a246f73430d334d7ea0360d19c827954-26b8542129d36765.elb.us-east-1.amazonaws.com/> |
+| 15 | Splunk Enterprise audit search | Audit And Security \| Splunk 10.2.0 | <https://a44512547a12b437ebdb89287c6f9196-415915133.us-east-1.elb.amazonaws.com/en-US/app/defenseclaw_local_mode/audit_and_security> |
+| 16 | Final OpenClaw summary | OpenClaw Control | <https://openclaw.rosa.fso-tme.eoha.p3.openshiftapps.com/chat?session=demo-mcp-clean-4o-20260523> |
+
 | Time | Action | Speaker notes |
 | --- | --- | --- |
 | 0:00-0:45 | Start with the problem. | AI agents can call tools and affect production-like systems. Governance has to happen at runtime, not just during code review. |
 | 0:45-1:30 | Show Splunk Local Mode Home or Audit And Security. | This is the operational view: sessions, risky activity, block/deny signals, and investigation pivots. |
 | 1:30-2:15 | Describe the dangerous K8 tool request. | The agent asks for `kubectl delete pods --all -n defenseclaw`. That is understandable, risky, and should not run without controls. |
-| 2:15-3:00 | Show Galileo Agent Control matched policy. | The control is explicit: `deny-dangerous-shell-pre-tool`. This makes policy explainable. |
+| 2:15-3:00 | Show Galileo Agent Control Controls and Monitor. | Controls shows the active policy; Monitor shows the matched `deny-dangerous-shell-pre-tool` decision. |
 | 3:00-4:15 | Show Galileo dataset / experiment. | The same scenario exists as repeatable Galileo Agent Watch evidence, not just a one-time live event. |
 | 4:15-5:00 | Optional Cisco Cloud Control rollup. | Executives can consume a summarized view while Splunk and Galileo remain the source systems. |
 
@@ -444,9 +476,9 @@ Use this for a customer or partner field demo.
 | 2:00-4:00 | Explain the lab environment. | The live runtime is in Kubernetes namespace `defenseclaw`; optional Cisco Cloud Control BFF is in namespace `defenseclaw-tokenomics`. |
 | 4:00-7:00 | Show Splunk Local overview. | Start from the dashboard because it is familiar to operations and security teams. |
 | 7:00-11:00 | Run or replay the live `/api/v1/inspect/tool` bridge. | Show `would_block=true`, `raw_action=block`, `decision_evidence`, and Galileo Agent Control fields. |
-| 11:00-14:00 | Open Galileo Agent Control. | Show that the matched control is a named policy, not an opaque model answer. |
+| 11:00-14:00 | Open Galileo Agent Control. | Start on Controls to show the named policy, then Monitor to show the decision emitted by the live request. |
 | 14:00-19:00 | Open Galileo Agent Watch assets. | Show the saved enterprise Playground, prompt `defenseclaw-runtime-governance`, and the DefenseClaw datasets. |
-| 19:00-22:00 | Review completed runtime-evidence experiment. | Anchor on `defenseclaw-dangerous-tool-pre-tool`. |
+| 19:00-22:00 | Review completed Galileo experiment evidence. | Anchor on `defenseclaw-dangerous-tool-pre-tool`. |
 | 22:00-24:00 | Optional Cisco Cloud Control tokenomics summary. | Position it as executive packaging, not the primary evidence source. |
 | 24:00-25:00 | Recap ownership split. | Galileo Agent Control decides, Splunk investigates, Galileo validates, Cisco Cloud Control summarizes. |
 
@@ -488,7 +520,7 @@ Use this when the audience wants architecture, controls, and repeatability.
 | 0:00-4:00 | Threat model. | Agents can receive malicious prompts, reveal sensitive outputs, and call dangerous tools. |
 | 4:00-8:00 | Architecture walkthrough. | OpenClaw produces activity; DefenseClaw inspects; Galileo Agent Control evaluates; Splunk and Galileo receive evidence. |
 | 8:00-12:00 | Validate the live cluster. | Show deployments and services in `defenseclaw`. |
-| 12:00-18:00 | Dangerous tool live flow. | Run the API bridge, show observe-mode fields, then show Splunk and Galileo Agent Control. |
+| 12:00-18:00 | Dangerous tool live flow. | Run the API bridge, show observe-mode fields, then show Splunk plus Agent Control Controls and Monitor. |
 | 18:00-23:00 | Prompt injection scenario. | Use `defenseclaw-prompt-injection-pre-llm`; explain pre-LLM inspection. |
 | 23:00-28:00 | PII steering scenario. | Use `defenseclaw-pii-post-llm`; explain post-LLM steering/redaction. Use completed evidence unless response protection is enabled in the live environment. |
 | 28:00-33:00 | Ambiguous admin intent. | Explain approval-seeking behavior and human review patterns. |
@@ -515,7 +547,7 @@ Use this for a hands-on or deeply technical session.
 | --- | --- | --- |
 | 0:00-5:00 | Set goals and vocabulary. | Use the Technology Primer. Make sure everyone understands agent, tool call, policy, evidence, dataset, experiment. |
 | 5:00-12:00 | Validate deployment. | Show EKS context, namespaces, deployments, services, and credential-safe checks. |
-| 12:00-20:00 | Walk through the live dangerous tool flow. | Inspect request, DefenseClaw verdict, Galileo Agent Control match, Splunk evidence. |
+| 12:00-20:00 | Walk through the live dangerous tool flow. | Inspect request, DefenseClaw verdict, Agent Control Controls and Monitor, then Splunk evidence. |
 | 20:00-28:00 | Splunk investigation. | Open Local Mode Home, Audit And Security, Runs And Sessions, Agent Tokenomics Overview, and Search And Drilldown. |
 | 28:00-36:00 | Galileo object model. | Explain project, prompt, variables, datasets, metrics, experiments. |
 | 36:00-44:00 | Run deterministic Galileo dry-run and discuss execute path. | Use `scripts/run_galileo_runtime_evidence_experiment.py --all`. |
@@ -530,7 +562,7 @@ Workshop exercise options:
 | Validate cluster health | `kubectl -n defenseclaw get deploy,svc` | Understand where the lab runs. |
 | Inspect a dangerous tool request | `/api/v1/inspect/tool` curl command | Understand pre-tool policy enforcement. |
 | Search for evidence | Splunk SPL pivot | Understand operational audit evidence. |
-| Review repeatability | Galileo runtime-evidence experiment | Understand dataset-backed governance proof. |
+| Review repeatability | Galileo Playground/experiment evidence | Understand dataset-backed governance proof. |
 | Compare surfaces | Galileo Agent Control vs Splunk vs Galileo vs Cisco Cloud Control | Understand source-of-truth boundaries. |
 
 ## Scenario Map

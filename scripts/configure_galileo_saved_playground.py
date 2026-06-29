@@ -30,7 +30,7 @@ SAVED_PLAYGROUND_PROMPT_ID = "42a0300b-ae09-4b13-9c11-91c89a4fb71b"
 SAVED_PLAYGROUND_NAME = "defenseclaw-enterprise-ops-thousandeyes-playground"
 DEFAULT_K8S_SECRET_NAMESPACE = "defenseclaw"
 DEFAULT_K8S_SECRET_NAME = "defenseclaw-secrets"
-DEFAULT_K8S_SECRET_KEY = "GALILEO_API_KEY"
+DEFAULT_K8S_SECRET_KEY = "GALILEO_DEMO_V2_API_KEY"
 OPTIONAL_SCORERS = ("correctness", "output_pii")
 
 
@@ -83,6 +83,40 @@ def _ordered_unique(values: list[str] | tuple[str, ...]) -> list[str]:
     return out
 
 
+def _patch_galileo_permission_enum() -> None:
+    """Tolerate newer Galileo permission actions with older generated SDKs."""
+    try:
+        from galileo.resources.models.permission import AnnotationQueueAction
+    except ImportError:
+        return
+
+    if getattr(AnnotationQueueAction, "_defenseclaw_unknown_patch", False):
+        return
+
+    def _missing_(cls, _value):
+        return cls.UPDATE
+
+    AnnotationQueueAction._missing_ = classmethod(_missing_)
+    AnnotationQueueAction._defenseclaw_unknown_patch = True
+
+
+def galileo_auth_token(api_key: str, api_url: str, console_url: str | None, project_id: str) -> str:
+    os.environ["GALILEO_API_KEY"] = api_key
+    os.environ["GALILEO_API_URL"] = api_url
+    if console_url:
+        os.environ["GALILEO_CONSOLE_URL"] = console_url
+    _patch_galileo_permission_enum()
+    from galileo.config import GalileoPythonConfig
+    from galileo.projects import get_project
+
+    # The Playground and scorer APIs expect the SDK-minted JWT as bearer auth.
+    get_project(id=project_id)
+    config = GalileoPythonConfig()
+    if not config.jwt_token:
+        raise RuntimeError("Galileo SDK did not mint a JWT token")
+    return config.jwt_token.get_secret_value()
+
+
 def scorer_plan(dataset_cfg: dict[str, Any]) -> dict[str, Any]:
     required = _ordered_unique([str(item) for item in dataset_cfg.get("default_metrics") or []])
     optional = [item for item in OPTIONAL_SCORERS if item not in set(required)]
@@ -121,6 +155,7 @@ def build_plan(
         "playground_id": playground_id,
         "playground_prompt_id": playground_prompt_id,
         "playground_name": SAVED_PLAYGROUND_NAME,
+        "playground_description": manifest.get("description"),
         "project_id": project["id"],
         "api_url": project.get("api_url") or os.environ.get("GALILEO_API_URL") or "https://api.galileo.ai",
         "console_url": project.get("console_url"),
@@ -148,10 +183,10 @@ def build_plan(
     }
 
 
-def _headers(api_key: str) -> dict[str, str]:
+def _headers(api_key: str, auth_token: str | None = None) -> dict[str, str]:
     return {
         "Accept": "application/json",
-        "Authorization": f"Bearer {api_key}",
+        "Authorization": f"Bearer {auth_token or api_key}",
         "Content-Type": "application/json",
         "Galileo-API-Key": api_key,
         "User-Agent": "defenseclaw-saved-playground-configurator/1",
@@ -190,13 +225,14 @@ def _request_json(
     path: str,
     *,
     api_key: str,
+    auth_token: str | None = None,
     timeout: float,
     json_body: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     response = session.request(
         method,
         api_base.rstrip("/") + path,
-        headers=_headers(api_key),
+        headers=_headers(api_key, auth_token),
         json=json_body,
         timeout=timeout,
     )
@@ -218,6 +254,7 @@ def _request_json_any(
     paths: list[str] | tuple[str, ...],
     *,
     api_key: str,
+    auth_token: str | None = None,
     timeout: float,
     json_body: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], str]:
@@ -232,6 +269,7 @@ def _request_json_any(
                     api_base,
                     path,
                     api_key=api_key,
+                    auth_token=auth_token,
                     timeout=timeout,
                     json_body=json_body,
                 ),
@@ -259,6 +297,7 @@ def latest_dataset_version_index(
     *,
     api_base: str,
     api_key: str,
+    auth_token: str | None = None,
     dataset_id: str,
     timeout: float,
     fallback: int | None = None,
@@ -269,6 +308,7 @@ def latest_dataset_version_index(
         api_base,
         _unversioned_and_v2(f"/datasets/{dataset_id}/versions/query"),
         api_key=api_key,
+        auth_token=auth_token,
         timeout=timeout,
         json_body={"sort": {"name": "version_index", "ascending": True, "sort_type": "column"}},
     )
@@ -299,25 +339,35 @@ def _scorer_key_values(scorer: dict[str, Any]) -> set[str]:
     return {_normalize_metric_name(item) for item in values if item}
 
 
+def _metric_lookup_keys(metric_name: str) -> list[str]:
+    try:
+        from run_galileo_runtime_evidence_experiment import STANDARD_METRIC_ATTRS
+    except ModuleNotFoundError:
+        from scripts.run_galileo_runtime_evidence_experiment import STANDARD_METRIC_ATTRS
+
+    normalized = _normalize_metric_name(metric_name)
+    keys = [normalized]
+    mapped = STANDARD_METRIC_ATTRS.get(normalized)
+    if mapped:
+        keys.append(_normalize_metric_name(mapped))
+    return _ordered_unique(keys)
+
+
 def resolve_scorers(
     session: requests.Session,
     *,
     api_base: str,
     api_key: str,
+    auth_token: str | None = None,
     required: list[str],
     optional: list[str],
     timeout: float,
 ) -> tuple[list[dict[str, Any]], list[str]]:
-    payload, _ = _request_json_any(
-        session,
-        "POST",
-        api_base,
-        _unversioned_and_v2("/scorers/list"),
-        api_key=api_key,
-        timeout=timeout,
-        json_body={"filters": [], "sort": {"name": "name", "ascending": True, "sort_type": "column"}},
-    )
-    scorers = payload.get("scorers") if isinstance(payload.get("scorers"), list) else []
+    from galileo.scorers import Scorers
+
+    # Use the SDK scorer listing because demo-v2 scorer REST response shape has
+    # changed across releases while the generated SDK normalizes it.
+    scorers = [scorer.to_dict() for scorer in Scorers().list()]
     by_metric: dict[str, dict[str, Any]] = {}
     for scorer in scorers:
         if not isinstance(scorer, dict):
@@ -329,7 +379,7 @@ def resolve_scorers(
     missing_required: list[str] = []
     skipped_optional: list[str] = []
     for metric_name in required:
-        scorer = by_metric.get(_normalize_metric_name(metric_name))
+        scorer = next((by_metric[key] for key in _metric_lookup_keys(metric_name) if key in by_metric), None)
         if scorer is None:
             missing_required.append(metric_name)
             continue
@@ -340,7 +390,7 @@ def resolve_scorers(
 
     seen_ids = {item.get("id") for item in resolved}
     for metric_name in optional:
-        scorer = by_metric.get(_normalize_metric_name(metric_name))
+        scorer = next((by_metric[key] for key in _metric_lookup_keys(metric_name) if key in by_metric), None)
         if scorer is None:
             skipped_optional.append(metric_name)
             continue
@@ -358,6 +408,8 @@ def _resolved_scorer(metric_name: str, scorer: dict[str, Any], *, required: bool
         "id": scorer.get("id"),
         "name": scorer.get("name"),
         "label": scorer.get("label"),
+        "scorer_type": scorer.get("scorer_type"),
+        "model_type": scorer.get("model_type"),
         "version_id": _scorer_version_id(scorer),
         "required": required,
     }
@@ -366,6 +418,7 @@ def _resolved_scorer(metric_name: str, scorer: dict[str, Any], *, required: bool
 def playground_patch_payload(plan: dict[str, Any]) -> dict[str, Any]:
     return {
         "name": plan["playground_name"],
+        "description": plan.get("playground_description"),
         "project_id": plan["project_id"],
         "dataset": {
             "id": plan["dataset"]["id"],
@@ -385,6 +438,10 @@ def playground_patch_payload(plan: dict[str, Any]) -> dict[str, Any]:
                 "id": scorer["id"],
                 "name": scorer.get("name"),
                 "label": scorer.get("label"),
+                "scorer_type": scorer.get("scorer_type") or "preset",
+                "model_name": plan["model_settings"]["model_alias"],
+                "num_judges": 1,
+                "cot_enabled": False,
                 "version_id": scorer.get("version_id"),
                 "metric": scorer["metric"],
             }
@@ -424,6 +481,7 @@ def patch_saved_playground(
     *,
     api_base: str,
     api_key: str,
+    auth_token: str | None = None,
     timeout: float,
     plan: dict[str, Any],
 ) -> tuple[dict[str, Any], dict[str, Any], str]:
@@ -438,6 +496,7 @@ def patch_saved_playground(
         api_base,
         paths,
         api_key=api_key,
+        auth_token=auth_token,
         timeout=timeout,
         json_body=patch,
     )
@@ -449,6 +508,7 @@ def patch_saved_playground_prompt(
     *,
     api_base: str,
     api_key: str,
+    auth_token: str | None = None,
     timeout: float,
     plan: dict[str, Any],
 ) -> tuple[dict[str, Any], dict[str, Any], str]:
@@ -463,6 +523,7 @@ def patch_saved_playground_prompt(
             str(plan["playground_prompt_id"]),
         ),
         api_key=api_key,
+        auth_token=auth_token,
         timeout=timeout,
         json_body=patch,
     )
@@ -481,12 +542,22 @@ def execute_saved_playground_config(
     session = session or requests.Session()
     initial_plan = build_plan(manifest, playground_id=playground_id, playground_prompt_id=playground_prompt_id)
     api_base = str(initial_plan["api_url"])
+    try:
+        auth_token = galileo_auth_token(
+            api_key,
+            api_base,
+            str(initial_plan.get("console_url") or ""),
+            str(initial_plan["project_id"]),
+        )
+    except Exception as exc:
+        raise ConfigureSkipped("galileo_auth_unavailable", str(exc).replace(api_key, "<redacted>")) from exc
     dataset_cfg = initial_plan["dataset"]
     score_cfg = initial_plan["scorers"]
     version_index = latest_dataset_version_index(
         session,
         api_base=api_base,
         api_key=api_key,
+        auth_token=auth_token,
         dataset_id=str(dataset_cfg["id"]),
         timeout=timeout,
     )
@@ -494,6 +565,7 @@ def execute_saved_playground_config(
         session,
         api_base=api_base,
         api_key=api_key,
+        auth_token=auth_token,
         required=list(score_cfg["required"]),
         optional=list(score_cfg["optional"]),
         timeout=timeout,
@@ -509,6 +581,7 @@ def execute_saved_playground_config(
         session,
         api_base=api_base,
         api_key=api_key,
+        auth_token=auth_token,
         timeout=timeout,
         plan=plan,
     )
@@ -516,6 +589,7 @@ def execute_saved_playground_config(
         session,
         api_base=api_base,
         api_key=api_key,
+        auth_token=auth_token,
         timeout=timeout,
         plan=plan,
     )
