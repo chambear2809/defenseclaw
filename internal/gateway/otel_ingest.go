@@ -862,12 +862,12 @@ func extractOTLPMetricTokenUsage(body []byte, source string) []otelTokenUsage {
 							serviceName,
 							"claudecode",
 						),
-						model:         model,
-						agentName:     agentName,
-						sessionID:     sessionID,
-						tokenType:     tokenType,
-						tokens:        tokens,
-						cumulative:    cumulative,
+						model:      model,
+						agentName:  agentName,
+						sessionID:  sessionID,
+						tokenType:  tokenType,
+						tokens:     tokens,
+						cumulative: cumulative,
 						seriesKey: stableLLMEventID("otlp-metric", source, serviceName,
 							otlpString(resourceAttrs, "service.instance.id"), metric.Name, model, tokenType, sessionID),
 						startTime: string(point.StartTimeUnixNano),
@@ -1040,8 +1040,35 @@ type otlpMetricDataPoint struct {
 }
 
 func otlpAggregationIsCumulative(raw json.RawMessage) bool {
-	value := strings.Trim(strings.ToUpper(strings.TrimSpace(string(raw))), `"`)
-	return value == "2" || strings.Contains(value, "CUMULATIVE")
+	return otlpAggregationTemporalityLabel(raw) == "cumulative"
+}
+
+func otlpAggregationTemporalityLabel(raw json.RawMessage) string {
+	value := strings.TrimSpace(string(raw))
+	if value == "" || value == "null" {
+		return ""
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		value = text
+	} else {
+		var number int
+		if err := json.Unmarshal(raw, &number); err == nil {
+			value = strconv.Itoa(number)
+		} else {
+			value = strings.Trim(value, `"`)
+		}
+	}
+	switch upper := strings.ToUpper(strings.TrimSpace(value)); {
+	case upper == "" || upper == "0" || strings.Contains(upper, "UNSPECIFIED"):
+		return ""
+	case upper == "1" || strings.Contains(upper, "DELTA"):
+		return "delta"
+	case upper == "2" || strings.Contains(upper, "CUMULATIVE"):
+		return "cumulative"
+	default:
+		return strings.TrimSpace(value)
+	}
 }
 
 type otlpHistogramPoints struct {
@@ -1460,7 +1487,7 @@ func extractOTLPMetricDashboardValues(body []byte, source string) []otelDashboar
 				if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(metric.Name)), "openclaw.") {
 					continue
 				}
-				temporality := firstNonEmpty(metric.Sum.AggregationTemporality, "unknown")
+				temporality := firstNonEmpty(otlpAggregationTemporalityLabel(metric.Sum.AggregationTemporality), "unknown")
 				for _, point := range metric.Sum.DataPoints {
 					attrs := otlpAttributesToMap(point.Attributes)
 					if dashboardMetric, ok := openclawDashboardMetricFromAttrs(metric.Name, metric.Unit, otlpDataPointFloat(point.AsInt, point.AsDouble), attrs, resourceAttrs, source, temporality); ok {

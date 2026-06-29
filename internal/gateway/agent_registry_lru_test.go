@@ -89,8 +89,8 @@ func TestAgentRegistry_LRUEvictionUnderConcurrency(t *testing.T) {
 			defer wg.Done()
 			id1 := r.Resolve(context.Background(), fmt.Sprintf("c-%05d", i), "agent")
 			id2 := r.Resolve(context.Background(), fmt.Sprintf("c-%05d", i), "agent")
-			if id1 != id2 {
-				t.Errorf("concurrent Resolve minted two ids for one session: %q vs %q", id1, id2)
+			if id1.AgentInstanceID != id2.AgentInstanceID {
+				t.Errorf("concurrent Resolve minted two ids for one session: %q vs %q", id1.AgentInstanceID, id2.AgentInstanceID)
 			}
 		}(i)
 	}

@@ -391,6 +391,27 @@ func TestDecodeOTLPAnyValue_DepthCap(t *testing.T) {
 	}
 }
 
+func TestOTLPAggregationTemporalityLabel(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  json.RawMessage
+		want string
+	}{
+		{name: "numeric delta", raw: json.RawMessage(`1`), want: "delta"},
+		{name: "numeric cumulative", raw: json.RawMessage(`2`), want: "cumulative"},
+		{name: "symbolic delta", raw: json.RawMessage(`"AGGREGATION_TEMPORALITY_DELTA"`), want: "delta"},
+		{name: "symbolic cumulative", raw: json.RawMessage(`"AGGREGATION_TEMPORALITY_CUMULATIVE"`), want: "cumulative"},
+		{name: "unspecified", raw: json.RawMessage(`"AGGREGATION_TEMPORALITY_UNSPECIFIED"`), want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := otlpAggregationTemporalityLabel(tt.raw); got != tt.want {
+				t.Fatalf("otlpAggregationTemporalityLabel(%s) = %q, want %q", string(tt.raw), got, tt.want)
+			}
+		})
+	}
+}
+
 // TestOTLPIngest_Logs_RejectsNonPOST guards the method contract.
 // OTLP-HTTP is POST-only per the spec; GET/PUT/DELETE etc. must
 // 405 so a misconfigured exporter (or a probing scanner) gets a
