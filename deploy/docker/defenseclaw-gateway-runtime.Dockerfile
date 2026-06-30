@@ -27,6 +27,7 @@ RUN python3 -m pip install --break-system-packages --no-cache-dir "uv==${UV_VERS
 COPY pyproject.toml uv.lock README.md LICENSE Makefile ./
 COPY cli ./cli
 COPY internal/configs ./internal/configs
+COPY internal/envvars ./internal/envvars
 COPY policies ./policies
 COPY schemas ./schemas
 COPY scripts ./scripts
