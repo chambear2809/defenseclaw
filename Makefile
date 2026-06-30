@@ -45,7 +45,7 @@ endif
         security-suite-test security-suite-eval \
         connector-matrix-test go-connector-matrix-test py-connector-matrix-test \
         test-verbose test-file lint py-lint go-lint ts-test rego-test clean \
-        check check-audit-actions check-error-codes check-schemas check-v7 check-provider-coverage check-llm-catalog check-version-sync check-upgrade-manifest \
+        check check-audit-actions check-error-codes check-schemas check-grafana-dashboards check-v7 check-provider-coverage check-llm-catalog check-version-sync check-upgrade-manifest \
         upgrade-smoke upgrade-smoke-matrix \
         set-version \
         _bundle-data \
@@ -626,7 +626,7 @@ test-file:
 # too and will fail the build on drift.
 # ---------------------------------------------------------------------------
 
-check: check-v7 check-provider-coverage check-llm-catalog check-upgrade-manifest
+check: check-v7 check-grafana-dashboards check-provider-coverage check-llm-catalog check-upgrade-manifest
 
 check-v7: check-audit-actions check-audit-no-raw-literals check-error-codes check-schemas
 	@echo "check-v7: all parity gates passed."
@@ -642,6 +642,9 @@ check-error-codes:
 
 check-schemas:
 	@$(VENV)/bin/python scripts/check_schemas.py
+
+check-grafana-dashboards: _bundle-data
+	@$(VENV)/bin/python scripts/check_grafana_dashboards.py --require-packaged
 
 # check-provider-coverage runs the shared test/testdata/llm-endpoints.json
 # corpus through both the Go shape detector (provider_coverage_test.go)
@@ -756,6 +759,7 @@ _bundle-data:
 	@mkdir -p cli/defenseclaw/_data/policies/openshell
 	@mkdir -p cli/defenseclaw/_data/policies/guardrail
 	@mkdir -p cli/defenseclaw/_data/scripts
+	@mkdir -p cli/defenseclaw/_data/envvars
 	@mkdir -p cli/defenseclaw/_data/skills
 	@mkdir -p cli/defenseclaw/_data/splunk_local_bridge
 	@mkdir -p cli/defenseclaw/_data/local_observability_stack
@@ -774,6 +778,7 @@ _bundle-data:
 	cp -r policies/guardrail/default cli/defenseclaw/_data/policies/guardrail/
 	cp -r policies/guardrail/strict cli/defenseclaw/_data/policies/guardrail/
 	cp -r policies/guardrail/permissive cli/defenseclaw/_data/policies/guardrail/
+	cp internal/envvars/registry.json cli/defenseclaw/_data/envvars/
 	cp scripts/install-openshell-sandbox.sh cli/defenseclaw/_data/scripts/
 	cp -r skills/codeguard cli/defenseclaw/_data/skills/
 	@# Curated LLM model catalog consumed by `defenseclaw setup llm` and the
