@@ -1487,7 +1487,7 @@ func (r *EventRouter) handleToolResult(evt EventFrame) {
 		if as != nil {
 			r.otel.SetRawSpanString(as.span, "defenseclaw.tool.output", payload.Output)
 			r.otel.SetGenAIToolResult(as.span, payload.Output)
-			r.otel.EndToolSpan(as.span, exitCode, len(payload.Output), as.startTime, as.tool, as.provider)
+			r.otel.EndToolSpan(as.span, exitCode, len(payload.Output), as.startTime, as.tool, as.provider, payload.Output)
 		}
 	}
 }

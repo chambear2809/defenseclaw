@@ -1750,7 +1750,7 @@ func (a *APIServer) emitHookToolSpan(
 		a.otel.SetGenAIToolResult(span, boundedHookLLMSpanContent(result))
 		span.SetAttributes(attribute.Bool("defenseclaw.telemetry.output.reported", true))
 	}
-	a.otel.EndToolSpan(span, code, len(result), startedAt, tool, "hook")
+	a.otel.EndToolSpan(span, code, len(result), startedAt, tool, "hook", boundedHookLLMSpanContent(result))
 }
 
 func isModelCompletionEvent(event string) bool {
@@ -2099,6 +2099,10 @@ func (a *APIServer) emitHookLLMSpan(ctx context.Context, meta llmEventMeta, resp
 		ctx, span, model, int(usage.promptTokens), int(usage.completionTokens), []string{"stop"}, 0,
 		"connector_hook", "observed", provider, startedAt,
 		agentName, agentType, agentID, sessionID,
+		telemetry.LLMSpanContent{
+			Input:  prompt,
+			Output: boundedHookLLMSpanContent(response),
+		},
 	)
 }
 

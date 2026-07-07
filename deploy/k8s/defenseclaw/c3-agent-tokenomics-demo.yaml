@@ -14,8 +14,9 @@ metadata:
     app.kubernetes.io/part-of: defenseclaw
     demo.cisco.com/surface: c3-agent-tokenomics
 data:
-  TOKENOMICS_DEMO_ALLOW_FIXTURE_FALLBACK: "true"
+  TOKENOMICS_DEMO_ALLOW_FIXTURE_FALLBACK: "false"
   O11Y_REALM: "us1"
+  DEFENSECLAW_GATEWAY_BASE_URL: "http://defenseclaw.defenseclaw.svc.cluster.local:18970"
   GALILEO_API_BASE: "https://api.demo-v2.galileocloud.io"
   GALILEO_PROJECT: "defenseclaw-enterprise-ops-20260515"
   GALILEO_PROJECT_ID: "ef0960e1-8744-4019-9faa-103b13f94e0d"
@@ -50,7 +51,7 @@ spec:
         fsGroupChangePolicy: OnRootMismatch
       containers:
         - name: bff
-          image: 637423309390.dkr.ecr.us-east-1.amazonaws.com/defenseclaw-c3-tokenomics-demo:c3-tokenomics-20260510044930-f809759-amd64
+          image: 637423309390.dkr.ecr.us-east-1.amazonaws.com/defenseclaw-c3-tokenomics-demo:c3-tokenomics-20260707-070430-budgetcontrol-2352a4bb-amd64
           imagePullPolicy: IfNotPresent
           command:
             - python
@@ -68,6 +69,8 @@ spec:
             - configMapRef:
                 name: c3-agent-tokenomics-demo-config
             - secretRef:
+                name: defenseclaw-gateway-access
+            - secretRef:
                 name: c3-agent-tokenomics-galileo
                 optional: true
           ports:
@@ -75,11 +78,12 @@ spec:
               containerPort: 8787
           readinessProbe:
             httpGet:
-              path: /healthz
+              path: /readyz
               port: http
             initialDelaySeconds: 5
             periodSeconds: 10
-            timeoutSeconds: 3
+            # The BFF allows its dependency check up to five seconds.
+            timeoutSeconds: 7
             failureThreshold: 6
           livenessProbe:
             httpGet:

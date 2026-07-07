@@ -13,12 +13,24 @@ package gateway
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
+
+	"github.com/defenseclaw/defenseclaw/internal/audit"
 )
 
-const openclawUsageExportInterval = 5 * time.Minute
+const openclawUsageExportIntervalDefault = 5 * time.Minute
+const openclawUsageExportIntervalEnv = "DEFENSECLAW_OPENCLAW_USAGE_EXPORT_INTERVAL"
+const openclawUsageExportIntervalMin = 10 * time.Second
+const openclawUsageExportIntervalMax = time.Hour
+const openclawUsageBaselineFile = "openclaw_usage_baseline.json"
+const openclawUsageConnectPollInterval = 1 * time.Second
+const openclawSessionInitialBackfillWindow = 24 * time.Hour
 
 type openclawUsageTotals struct {
 	Input              int64   `json:"input"`
@@ -68,18 +80,66 @@ type openclawUsageResponse struct {
 	} `json:"aggregates"`
 }
 
+type openclawSessionsListResponse struct {
+	Sessions []openclawSessionUsageEntry `json:"sessions"`
+}
+
+type openclawSessionUsageEntry struct {
+	Key              string  `json:"key"`
+	Label            string  `json:"label"`
+	SessionID        string  `json:"sessionId"`
+	UpdatedAt        int64   `json:"updatedAt"`
+	StartedAt        int64   `json:"startedAt"`
+	InputTokens      int64   `json:"inputTokens"`
+	OutputTokens     int64   `json:"outputTokens"`
+	EstimatedCostUSD float64 `json:"estimatedCostUsd"`
+	ModelProvider    string  `json:"modelProvider"`
+	Model            string  `json:"model"`
+}
+
+type openclawSessionBaseline struct {
+	Key              string  `json:"key,omitempty"`
+	Label            string  `json:"label,omitempty"`
+	SessionID        string  `json:"session_id,omitempty"`
+	AgentID          string  `json:"agent_id,omitempty"`
+	AgentName        string  `json:"agent_name,omitempty"`
+	Model            string  `json:"model,omitempty"`
+	InputTokens      int64   `json:"input_tokens,omitempty"`
+	OutputTokens     int64   `json:"output_tokens,omitempty"`
+	EstimatedCostUSD float64 `json:"estimated_cost_usd,omitempty"`
+	UpdatedAt        int64   `json:"updated_at,omitempty"`
+	StartedAt        int64   `json:"started_at,omitempty"`
+}
+
+type openclawUsageBaseline struct {
+	Date      string                             `json:"date"`
+	ByModel   map[string]openclawUsageTotals     `json:"by_model"`
+	BySession map[string]openclawSessionBaseline `json:"by_session,omitempty"`
+}
+
+func shouldExportOpenClawUsage(cfg interface{ ActiveConnectors() []string }) bool {
+	if cfg == nil {
+		return false
+	}
+	for _, name := range cfg.ActiveConnectors() {
+		if strings.EqualFold(strings.TrimSpace(name), "openclaw") {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Sidecar) startOpenClawUsageExporter(ctx context.Context) {
-	if s == nil || s.client == nil || s.logger == nil {
+	if s == nil || s.client == nil || s.logger == nil || s.cfg == nil {
 		return
 	}
 	go func() {
-		s.exportOpenClawUsageSnapshot(ctx)
-		ticker := time.NewTicker(openclawUsageExportInterval)
+		ticker := time.NewTicker(openclawUsageExportIntervalFromEnv())
 		defer ticker.Stop()
 		for {
 			select {
 			case <-ticker.C:
-				s.exportOpenClawUsageSnapshot(ctx)
+				s.exportOpenClawUsageSnapshotWhenConnected(ctx)
 			case <-ctx.Done():
 				return
 			}
@@ -87,14 +147,58 @@ func (s *Sidecar) startOpenClawUsageExporter(ctx context.Context) {
 	}()
 }
 
+func openclawUsageExportIntervalFromEnv() time.Duration {
+	raw := strings.TrimSpace(os.Getenv(openclawUsageExportIntervalEnv))
+	if raw == "" {
+		return openclawUsageExportIntervalDefault
+	}
+	interval, err := time.ParseDuration(raw)
+	if err != nil || interval < openclawUsageExportIntervalMin || interval > openclawUsageExportIntervalMax {
+		return openclawUsageExportIntervalDefault
+	}
+	return interval
+}
+
+func (s *Sidecar) exportOpenClawUsageSnapshotWhenConnected(ctx context.Context) {
+	if s == nil || s.client == nil {
+		return
+	}
+	if !waitForOpenClawGatewayConnection(ctx, s.client) {
+		return
+	}
+	s.exportOpenClawUsageSnapshot(ctx)
+}
+
+func waitForOpenClawGatewayConnection(ctx context.Context, client interface{ Connected() bool }) bool {
+	if client == nil {
+		return false
+	}
+	if client.Connected() {
+		return true
+	}
+	ticker := time.NewTicker(openclawUsageConnectPollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-ticker.C:
+			if client.Connected() {
+				return true
+			}
+		}
+	}
+}
+
 func (s *Sidecar) exportOpenClawUsageSnapshot(ctx context.Context) {
 	reqCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 
 	now := time.Now().UTC()
+	day := now.Format("2006-01-02")
 	params := map[string]any{
-		"startDate":            now.Add(-24 * time.Hour).Format("2006-01-02"),
-		"endDate":              now.Format("2006-01-02"),
+		"startDate":            day,
+		"endDate":              day,
 		"mode":                 "utc",
 		"limit":                1000,
 		"includeContextWeight": false,
@@ -104,6 +208,20 @@ func (s *Sidecar) exportOpenClawUsageSnapshot(ctx context.Context) {
 		fmt.Fprintf(os.Stderr, "[sidecar] openclaw usage snapshot export failed: %v\n", err)
 		return
 	}
+	var resp openclawUsageResponse
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		fmt.Fprintf(os.Stderr, "[sidecar] openclaw usage snapshot decode failed: %v\n", err)
+		return
+	}
+	sessionResp := openclawSessionsListResponse{}
+	sessionRaw, err := s.client.Request(reqCtx, "sessions.list", map[string]any{
+		"limit": 1000,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[sidecar] openclaw sessions.list export failed: %v\n", err)
+	} else if err := json.Unmarshal(sessionRaw, &sessionResp); err != nil {
+		fmt.Fprintf(os.Stderr, "[sidecar] openclaw sessions.list decode failed: %v\n", err)
+	}
 	metrics := openclawUsageMetricsFromResponse(raw)
 	for i := range metrics {
 		if s.cfg != nil {
@@ -111,6 +229,7 @@ func (s *Sidecar) exportOpenClawUsageSnapshot(ctx context.Context) {
 		}
 	}
 	persistDashboardMetricAuditEvents(s.logger, s.store, "openclaw", "", "openclaw:usage:snapshot", metrics)
+	s.observeOpenClawUsageSnapshot(now, day, resp, sessionResp)
 }
 
 func openclawUsageMetricsFromResponse(raw []byte) []otelDashboardMetric {
@@ -175,4 +294,257 @@ func appendUsageFloatMetric(out []otelDashboardMetric, name string, value float6
 		temporality:  "snapshot",
 		sourceSignal: "openclaw_rpc",
 	})
+}
+
+func (s *Sidecar) observeOpenClawUsageSnapshot(
+	now time.Time,
+	day string,
+	resp openclawUsageResponse,
+	sessionResp openclawSessionsListResponse,
+) {
+	if s == nil || s.budgetControl == nil || s.store == nil || s.cfg == nil {
+		return
+	}
+	// Reconnect and periodic exports can overlap. Serialize the baseline read,
+	// ledger inserts, and baseline replacement so one cumulative delta is never
+	// charged twice.
+	s.openClawUsageMu.Lock()
+	defer s.openClawUsageMu.Unlock()
+
+	path := filepath.Join(s.cfg.DataDir, openclawUsageBaselineFile)
+	baseline, err := loadOpenClawUsageBaseline(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[sidecar] openclaw usage baseline load failed: %v\n", err)
+		baseline = openclawUsageBaseline{}
+	}
+	observations, sessionBaseline := openclawSessionUsageBudgetObservations(now, baseline, sessionResp)
+	persisted := true
+	for _, obs := range observations {
+		if err := s.budgetControl.ObserveUsageUpsert(context.Background(), obs); err != nil {
+			persisted = false
+			fmt.Fprintf(os.Stderr, "[sidecar] openclaw usage budget observe failed (agent=%s session=%s model=%s): %v\n",
+				obs.AgentID, obs.SessionID, obs.Model, err)
+		}
+	}
+	if !persisted {
+		// Keep the old baseline so every failed interval is retried. Stable
+		// observation IDs make successful rows in a partial batch replaceable
+		// rather than additive on the next attempt.
+		return
+	}
+	next := openclawUsageBaseline{
+		Date:      day,
+		ByModel:   openclawUsageBaselineByModel(resp),
+		BySession: sessionBaseline,
+	}
+	if err := saveOpenClawUsageBaseline(path, next); err != nil {
+		fmt.Fprintf(os.Stderr, "[sidecar] openclaw usage baseline save failed: %v\n", err)
+	}
+}
+
+func openclawUsageBaselineByModel(resp openclawUsageResponse) map[string]openclawUsageTotals {
+	next := map[string]openclawUsageTotals{}
+	for _, row := range resp.Aggregates.ByModel {
+		key := openclawUsageBaselineKey(firstNonEmpty(row.Provider, "unknown"), firstNonEmpty(row.Model, "unknown"))
+		next[key] = row.Totals
+	}
+	return next
+}
+
+func openclawSessionUsageBudgetObservations(
+	now time.Time,
+	baseline openclawUsageBaseline,
+	resp openclawSessionsListResponse,
+) ([]audit.BudgetUsageObservation, map[string]openclawSessionBaseline) {
+	next := map[string]openclawSessionBaseline{}
+	if len(baseline.BySession) > 0 {
+		for key, row := range baseline.BySession {
+			next[key] = row
+		}
+	}
+	var observations []audit.BudgetUsageObservation
+	for _, row := range resp.Sessions {
+		key := openclawSessionBaselineKey(row)
+		if key == "" {
+			continue
+		}
+		agentID := openclawSessionAgentID(row.Key)
+		if agentID == "" {
+			agentID = "openclaw"
+		}
+		agentName := firstNonEmpty(agentID, "openclaw")
+		currentPrompt := maxInt64(row.InputTokens, 0)
+		currentCompletion := maxInt64(row.OutputTokens, 0)
+		previous := next[key]
+		deltaPrompt := deltaInt64(currentPrompt, previous.InputTokens)
+		deltaCompletion := deltaInt64(currentCompletion, previous.OutputTokens)
+		costDelta := deltaFloat64(row.EstimatedCostUSD, previous.EstimatedCostUSD)
+		if previous.SessionID == "" && !shouldBackfillOpenClawSession(now, row) {
+			deltaPrompt = 0
+			deltaCompletion = 0
+			costDelta = 0
+		}
+		if deltaPrompt > 0 || deltaCompletion > 0 || costDelta > 0 {
+			observations = append(observations, audit.BudgetUsageObservation{
+				ID: stableLLMEventID(
+					"budget-openclaw",
+					key,
+					strconv.FormatInt(previous.InputTokens, 10),
+					strconv.FormatInt(previous.OutputTokens, 10),
+					strconv.FormatFloat(previous.EstimatedCostUSD, 'g', -1, 64),
+				),
+				Timestamp:        now.UTC(),
+				Source:           "openclaw_session_snapshot",
+				Connector:        "openclaw",
+				AgentID:          agentID,
+				AgentName:        agentName,
+				SessionID:        row.SessionID,
+				Model:            firstNonEmpty(row.Model, previous.Model, "unknown"),
+				PromptTokens:     deltaPrompt,
+				CompletionTokens: deltaCompletion,
+				TotalTokens:      deltaPrompt + deltaCompletion,
+				CostUSD:          costDelta,
+			})
+		}
+		next[key] = openclawSessionBaseline{
+			Key:              row.Key,
+			Label:            row.Label,
+			SessionID:        row.SessionID,
+			AgentID:          agentID,
+			AgentName:        agentName,
+			Model:            firstNonEmpty(row.Model, previous.Model),
+			InputTokens:      currentPrompt,
+			OutputTokens:     currentCompletion,
+			EstimatedCostUSD: maxFloat64(row.EstimatedCostUSD, 0),
+			UpdatedAt:        row.UpdatedAt,
+			StartedAt:        row.StartedAt,
+		}
+	}
+	return observations, next
+}
+
+func openclawUsageBaselineKey(provider, model string) string {
+	return strings.TrimSpace(provider) + "|" + strings.TrimSpace(model)
+}
+
+func deltaInt64(current, previous int64) int64 {
+	if current <= 0 {
+		return 0
+	}
+	if previous <= 0 {
+		return current
+	}
+	if current <= previous {
+		return 0
+	}
+	return current - previous
+}
+
+func deltaFloat64(current, previous float64) float64 {
+	if current <= 0 {
+		return 0
+	}
+	if previous <= 0 {
+		return current
+	}
+	if current <= previous {
+		return 0
+	}
+	return current - previous
+}
+
+func loadOpenClawUsageBaseline(path string) (openclawUsageBaseline, error) {
+	if strings.TrimSpace(path) == "" {
+		return openclawUsageBaseline{}, nil
+	}
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return openclawUsageBaseline{}, nil
+	}
+	if err != nil {
+		return openclawUsageBaseline{}, err
+	}
+	var baseline openclawUsageBaseline
+	if err := json.Unmarshal(data, &baseline); err != nil {
+		return openclawUsageBaseline{}, err
+	}
+	if baseline.ByModel == nil {
+		baseline.ByModel = map[string]openclawUsageTotals{}
+	}
+	if baseline.BySession == nil {
+		baseline.BySession = map[string]openclawSessionBaseline{}
+	}
+	return baseline, nil
+}
+
+func saveOpenClawUsageBaseline(path string, baseline openclawUsageBaseline) error {
+	if strings.TrimSpace(path) == "" {
+		return nil
+	}
+	if baseline.ByModel == nil {
+		baseline.ByModel = map[string]openclawUsageTotals{}
+	}
+	if baseline.BySession == nil {
+		baseline.BySession = map[string]openclawSessionBaseline{}
+	}
+	data, err := json.MarshalIndent(baseline, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+func openclawSessionBaselineKey(row openclawSessionUsageEntry) string {
+	return firstNonEmpty(strings.TrimSpace(row.SessionID), strings.TrimSpace(row.Key))
+}
+
+func openclawSessionAgentID(sessionKey string) string {
+	parts := strings.SplitN(strings.TrimSpace(sessionKey), ":", 3)
+	if len(parts) >= 3 && strings.EqualFold(parts[0], "agent") {
+		return strings.TrimSpace(parts[1])
+	}
+	return ""
+}
+
+func shouldBackfillOpenClawSession(now time.Time, row openclawSessionUsageEntry) bool {
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	updatedAt := unixMillisUTC(row.UpdatedAt)
+	if updatedAt.IsZero() {
+		return false
+	}
+	if updatedAt.Before(now.Add(-openclawSessionInitialBackfillWindow)) || updatedAt.After(now.Add(5*time.Minute)) {
+		return false
+	}
+	startedAt := unixMillisUTC(row.StartedAt)
+	if startedAt.IsZero() {
+		return true
+	}
+	return !startedAt.Before(now.Add(-openclawSessionInitialBackfillWindow))
+}
+
+func unixMillisUTC(ms int64) time.Time {
+	if ms <= 0 {
+		return time.Time{}
+	}
+	return time.UnixMilli(ms).UTC()
+}
+
+func maxInt64(a, b int64) int64 {
+	if a >= b {
+		return a
+	}
+	return b
+}
+
+func maxFloat64(a, b float64) float64 {
+	if a >= b {
+		return a
+	}
+	return b
 }

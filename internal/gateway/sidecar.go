@@ -50,20 +50,23 @@ import (
 // Sidecar is the long-running process that connects to the agent gateway,
 // watches for skill installs, and exposes a local REST API.
 type Sidecar struct {
-	cfg         *config.Config
-	client      *Client
-	router      *EventRouter
-	store       *audit.Store
-	logger      *audit.Logger
-	health      *SidecarHealth
-	shell       *sandbox.OpenShell
-	otel        *telemetry.Provider
-	notify      *NotificationQueue
-	opa         *policy.Engine
-	hilt        *HILTApprovalManager
-	webhooks    *WebhookDispatcher
-	aiDiscovery *inventory.ContinuousDiscoveryService
-	osNotifier  *notifier.Dispatcher
+	cfg           *config.Config
+	client        *Client
+	router        *EventRouter
+	store         *audit.Store
+	budgetControl *budgetControlManager
+	logger        *audit.Logger
+	health        *SidecarHealth
+	shell         *sandbox.OpenShell
+	otel          *telemetry.Provider
+	notify        *NotificationQueue
+	opa           *policy.Engine
+	hilt          *HILTApprovalManager
+	webhooks      *WebhookDispatcher
+	aiDiscovery   *inventory.ContinuousDiscoveryService
+	osNotifier    *notifier.Dispatcher
+
+	openClawUsageMu sync.Mutex
 
 	alertCtx    context.Context
 	alertCancel context.CancelFunc
@@ -450,12 +453,15 @@ func NewSidecar(cfg *config.Config, store *audit.Store, logger *audit.Logger, sh
 		fmt.Fprintf(os.Stderr, "[sidecar] ai discovery init failed: %v\n", err)
 		emitError(context.Background(), "ai_discovery", "init-failed", "continuous AI discovery disabled", err)
 	}
+	budgetControl := newBudgetControlManager(store, logger)
+	budgetControl.SetOTelProvider(otel)
 
 	return &Sidecar{
 		cfg:            cfg,
 		client:         client,
 		router:         router,
 		store:          store,
+		budgetControl:  budgetControl,
 		logger:         logger,
 		health:         NewSidecarHealth(),
 		shell:          shell,
@@ -614,6 +620,10 @@ func (s *Sidecar) Run(ctx context.Context) error {
 			errCh <- err
 		}
 	}()
+
+	if shouldExportOpenClawUsage(s.cfg) {
+		s.startOpenClawUsageExporter(ctx)
+	}
 
 	// Report telemetry (OTel) health — not a goroutine, just state
 	s.reportTelemetryHealth()
@@ -832,6 +842,9 @@ func (s *Sidecar) runGatewayLoop(ctx context.Context) error {
 			"protocol": hello.Protocol,
 		})
 
+		if shouldExportOpenClawUsage(s.cfg) {
+			go s.exportOpenClawUsageSnapshotWhenConnected(ctx)
+		}
 		s.subscribeToSessions(ctx)
 
 		fmt.Fprintf(os.Stderr, "[sidecar] event loop running, waiting for events ...\n")

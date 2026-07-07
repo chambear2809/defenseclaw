@@ -18,10 +18,9 @@ renders the C3 tokenomics summary API/BFF response. That API can be backed by
 fixture data for demo development or by live O11y SignalFlow/token metrics once
 the DefenseClaw telemetry path is validated.
 
-Current caveat: the API endpoint tested for the demo returns fresh API responses,
-but the payload marks itself as `fixture_backed: true`. That means the MFE is
-API-backed, but the backend is still serving fixture/demo data until the
-tokenomics API is switched to fully live telemetry.
+The EKS demo BFF reads DefenseClaw's live budget ledger and reports
+`fixture_backed: false`. Local rehearsal remains fixture-backed unless the
+prebuilt runner is given `TOKENOMICS_BFF_URL`.
 
 ## What It Shows
 
@@ -55,7 +54,7 @@ Expected tokenomics flow:
 DefenseClaw / Agent activity
         |
         v
-O11y / OTel GenAI token telemetry + tokenomics detail data
+DefenseClaw usage ledger (OpenClaw snapshots and supported OTLP sources)
         |
         v
 C3 tokenomics summary API
@@ -202,13 +201,10 @@ The dashboard now shows the active data mode in the page:
   demo-safe data.
 - **Synthetic demo data**: `TOKENOMICS_API_URL` was not configured.
 
-Answering the current Webex question directly: data is flowing into the MFE only
-through the summary API. Traces can be present in Splunk O11y while the APM AI /
-tokenomics fields still need instrumentation or configuration validation. Once
-the BFF is switched from fixture mode to live SignalFlow reads over
-`gen_ai.client.token.usage` and the related agent/model/provider dimensions, the
-same MFE should render that live aggregate response without another frontend
-change.
+Data flows into the browser only through the summary API. The live BFF reads the
+DefenseClaw ledger; OTLP traces and audit evidence independently continue to
+Galileo and Splunk. This keeps sink credentials out of the browser and prevents
+sink query latency from weakening local enforcement.
 
 For the current demo endpoint, the health check should return `{"status":"ok"}`:
 

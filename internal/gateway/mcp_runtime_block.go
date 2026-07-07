@@ -17,6 +17,7 @@
 package gateway
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -49,6 +50,10 @@ import (
 // Returns deny=false (server may still be non-empty) when the tool is not an
 // MCP tool or the resolved server is not blocked.
 func mcpServerRuntimeBlock(pe *enforce.PolicyEngine, toolName, connector, explicitServer string) (deny bool, server, reason string) {
+	return mcpServerRuntimeBlockCtx(context.Background(), pe, toolName, connector, explicitServer)
+}
+
+func mcpServerRuntimeBlockCtx(ctx context.Context, pe *enforce.PolicyEngine, toolName, connector, explicitServer string) (deny bool, server, reason string) {
 	if pe == nil {
 		return false, "", ""
 	}
@@ -59,7 +64,7 @@ func mcpServerRuntimeBlock(pe *enforce.PolicyEngine, toolName, connector, explic
 	if server == "" {
 		return false, "", ""
 	}
-	blocked, err := pe.IsBlockedForConnector("mcp", server, connector)
+	blocked, err := pe.IsBlockedForConnectorContext(ctx, "mcp", server, connector)
 	if err != nil {
 		// Fail closed: an ambiguous / errored lookup must deny, never allow.
 		return true, server, fmt.Sprintf("mcp server %q block check failed — failing closed: %v", server, err)

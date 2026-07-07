@@ -7,7 +7,8 @@
     "build:sandbox": "node scripts/build-sandbox.js",
     "serve:tokenomics-fixture": "node scripts/serve-tokenomics-fixture.js",
     "start": "webpack serve --mode development",
-    "test": "node scripts/test-o11y-request-construction.js && node scripts/test-sandbox-build.js"
+    "test": "node scripts/test-o11y-request-construction.js && node scripts/test-sandbox-build.js",
+    "test:e2e:live": "npm --prefix e2e test"
   },
   "keywords": [],
   "author": "",

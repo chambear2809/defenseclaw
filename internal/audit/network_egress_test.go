@@ -558,6 +558,17 @@ func TestLogger_LogNetworkEgress_BlockedAlertFansOutWithCorrelationDefaults(t *t
 }
 
 func TestAgent360NetworkEgressMigrationUpgradesAlreadyMigratedDatabase(t *testing.T) {
+	agent360Version := 0
+	for idx, migration := range migrations {
+		if strings.Contains(migration.description, "agent360: correlate network egress") {
+			agent360Version = idx + 1
+			break
+		}
+	}
+	if agent360Version == 0 {
+		t.Fatal("agent360 migration not found")
+	}
+
 	dbPath := filepath.Join(t.TempDir(), "pre-agent360.db")
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
@@ -577,7 +588,7 @@ func TestAgent360NetworkEgressMigrationUpgradesAlreadyMigratedDatabase(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	for version := 1; version < len(migrations); version++ {
+	for version := 1; version < agent360Version; version++ {
 		if _, err := db.Exec(`INSERT INTO schema_version(version, applied_at) VALUES (?, CURRENT_TIMESTAMP)`, version); err != nil {
 			t.Fatal(err)
 		}

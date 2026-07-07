@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>DefenseClaw Tokenomics Control Plane</title>
+    <link rel="stylesheet" href="/shell/app.css" />
+  </head>
+  <body>
+    <div class="shell-bg"></div>
+    <main class="shell">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">Cisco Cloud Control</p>
+          <h1>Tokenomics Control Plane</h1>
+          <p class="hero-copy">
+            Live budget alerts come from DefenseClaw. Policies are still enforced locally now and can be pushed down
+            from Galileo SaaS later without changing the operator surface.
+          </p>
+        </div>
+        <div class="hero-actions">
+          <button id="refresh-button" class="button button-primary" type="button">Refresh</button>
+          <a class="button button-secondary" href="/embedded-live/?view=tokenomics" target="tokenomics-embedded" rel="noreferrer">
+            Open Embedded MFE
+          </a>
+        </div>
+      </header>
+
+      <section id="status-banner" class="status-banner hidden"></section>
+
+      <section id="summary-grid" class="summary-grid"></section>
+
+      <section class="workspace">
+        <aside class="control-rail card">
+          <div class="section-head">
+            <div>
+              <p class="section-kicker">Runtime Control</p>
+              <h2>Apply Local Budget Policy</h2>
+            </div>
+          </div>
+          <form id="policy-form" class="policy-form">
+            <label>
+              <span>Agent ID</span>
+              <input id="agent-id" name="agent_id" placeholder="openclaw or *" required />
+            </label>
+            <label>
+              <span>Agent Name</span>
+              <input id="agent-name" name="agent_name" placeholder="Operator-friendly label" />
+            </label>
+            <label>
+              <span>Action</span>
+              <select id="policy-action" name="action">
+                <option value="deny">Deny</option>
+                <option value="steer">Steer</option>
+              </select>
+            </label>
+            <label>
+              <span>Session Token Budget</span>
+              <input id="session-token-budget" name="session_token_budget" type="number" min="1" step="1" placeholder="150000" />
+            </label>
+            <label>
+              <span>Daily Token Budget</span>
+              <input id="daily-token-budget" name="daily_token_budget" type="number" min="1" step="1" placeholder="1000000" />
+            </label>
+            <label>
+              <span>Session Cost Budget (USD)</span>
+              <input id="session-cost-budget" name="session_cost_budget_usd" type="number" min="0.01" step="0.01" placeholder="25.00" />
+            </label>
+            <label>
+              <span>Daily Cost Budget (USD)</span>
+              <input id="daily-cost-budget" name="daily_cost_budget_usd" type="number" min="0.01" step="0.01" placeholder="150.00" />
+            </label>
+            <div class="form-actions">
+              <button class="button button-primary" type="submit">Apply Policy</button>
+              <button id="release-button" class="button button-secondary" type="button">Release Policy</button>
+            </div>
+            <p class="form-hint">
+              Use an alert row to prefill the target agent. Use <code>*</code> for a catch-all safety net.
+            </p>
+          </form>
+
+          <div class="section-head compact">
+            <div>
+              <p class="section-kicker">Effective Policies</p>
+              <h3>Current Control State</h3>
+            </div>
+          </div>
+          <div id="policies-list" class="stack-list"></div>
+        </aside>
+
+        <section class="main-column">
+          <div class="card">
+            <div class="section-head">
+              <div>
+                <p class="section-kicker">Active Alerts</p>
+                <h2>Budget Breach Feed</h2>
+              </div>
+            </div>
+            <div id="alerts-list" class="stack-list"></div>
+          </div>
+
+          <div class="card embedded-card">
+            <div class="section-head">
+              <div>
+                <p class="section-kicker">Embedded Surface</p>
+                <h2>C3 Tokenomics MFE</h2>
+              </div>
+            </div>
+            <iframe
+              id="embedded-frame"
+              class="embedded-frame"
+              src="/embedded-live/?view=tokenomics"
+              title="Embedded tokenomics micro frontend"
+              name="tokenomics-embedded"
+              loading="lazy"
+            ></iframe>
+          </div>
+        </section>
+      </section>
+    </main>
+    <script src="/shell/app.js"></script>
+  </body>
+</html>

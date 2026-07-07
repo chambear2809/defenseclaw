@@ -206,6 +206,31 @@ describe("DefenseClaw OpenClaw Plugin", () => {
 
       expect(result).toBeUndefined();
     });
+
+    it("blocks budget-control deny verdicts", async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            action: "block",
+            raw_action: "block",
+            severity: "HIGH",
+            reason: "daily token budget exceeded for main",
+            mode: "budget-control",
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      );
+
+      const result = await listeners.before_tool_call(
+        { toolName: "exec", params: { command: "kubectl get pods" } },
+        { sessionKey: "agent:main:main", runId: "run-1", toolName: "exec" },
+      );
+
+      expect(result).toMatchObject({
+        block: true,
+        blockReason: expect.stringContaining("daily token budget exceeded for main"),
+      });
+    });
   });
 
   // ─── Command: /scan ───

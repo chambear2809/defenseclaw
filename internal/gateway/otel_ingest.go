@@ -311,7 +311,12 @@ func (a *APIServer) handleOTLPSignal(w http.ResponseWriter, r *http.Request, sig
 		}
 		usageSessionID := firstNonEmpty(usage.sessionID, sessionID, SessionIDFromContext(ctx))
 		agentName := usage.agentName
-		agentID := SharedAgentRegistry().AgentID()
+		agentID := usage.agentID
+		if agentID == "" {
+			if reg := SharedAgentRegistry(); reg != nil {
+				agentID = reg.AgentID()
+			}
+		}
 		if snapshot, ok := a.hookLifecycleSnapshot(source, usageSessionID, ""); ok {
 			agentName = firstNonEmpty(snapshot.AgentName, agentName)
 			agentID = firstNonEmpty(snapshot.AgentID, agentID)
@@ -326,6 +331,7 @@ func (a *APIServer) handleOTLPSignal(w http.ResponseWriter, r *http.Request, sig
 	for _, duration := range durations {
 		a.otel.RecordLLMDuration(ctx, duration.operationName, duration.providerName, duration.model, duration.agentName, SharedAgentRegistry().AgentID(), duration.durationSeconds)
 	}
+	a.observeBudgetOTLPUsage(source, sessionID, recordedTokenUsage)
 	if signal == otelSignalMetrics && source == "openclaw" {
 		a.persistOTLPDashboardMetricAuditEvents(source, sessionID, extractOTLPMetricDashboardValues(summaryBody, source))
 	} else {
@@ -614,6 +620,7 @@ func otlpSessionID(attrs map[string]interface{}) string {
 type otelTokenUsage struct {
 	operationName string
 	providerName  string
+	agentID       string
 	model         string
 	agentName     string
 	sessionID     string
@@ -674,6 +681,8 @@ func extractOTLPTokenUsage(body []byte, signal otelIngestSignal, source string) 
 		return extractOTLPLogTokenUsage(body, source)
 	case otelSignalMetrics:
 		return extractOTLPMetricTokenUsage(body, source)
+	case otelSignalTraces:
+		return extractOTLPTraceTokenUsage(body, source)
 	default:
 		return nil
 	}
@@ -754,17 +763,20 @@ func extractOTLPLogTokenUsage(body []byte, source string) []otelTokenUsage {
 					continue
 				}
 
-				agentName := source
-				if agentName == "" || agentName == "unknown" {
-					agentName = firstNonEmpty(
-						otlpString(attrs, "gen_ai.agent.name"),
-						serviceName,
-						"unknown",
-					)
-				}
+				agentName := firstNonEmpty(
+					otlpString(attrs, "gen_ai.agent.name"),
+					otlpString(resourceAttrs, "gen_ai.agent.name"),
+					source,
+					serviceName,
+					"unknown",
+				)
 				out = append(out, otelTokenUsage{
 					operationName: firstNonEmpty(otlpString(attrs, "gen_ai.operation.name"), "chat"),
 					providerName:  firstNonEmpty(otlpString(attrs, "gen_ai.provider.name"), source, serviceName, "unknown"),
+					agentID: firstNonEmpty(
+						otlpString(attrs, "gen_ai.agent.id"),
+						otlpString(resourceAttrs, "gen_ai.agent.id"),
+					),
 					model: firstNonEmpty(
 						otlpString(attrs, "gen_ai.response.model"),
 						otlpString(attrs, "gen_ai.request.model"),
@@ -779,6 +791,10 @@ func extractOTLPLogTokenUsage(body []byte, source string) []otelTokenUsage {
 				out = append(out, otelTokenUsage{
 					operationName: firstNonEmpty(otlpString(attrs, "gen_ai.operation.name"), "chat"),
 					providerName:  firstNonEmpty(otlpString(attrs, "gen_ai.provider.name"), source, serviceName, "unknown"),
+					agentID: firstNonEmpty(
+						otlpString(attrs, "gen_ai.agent.id"),
+						otlpString(resourceAttrs, "gen_ai.agent.id"),
+					),
 					model: firstNonEmpty(
 						otlpString(attrs, "gen_ai.response.model"),
 						otlpString(attrs, "gen_ai.request.model"),
@@ -841,10 +857,13 @@ func extractOTLPMetricTokenUsage(body []byte, source string) []otelTokenUsage {
 					if tokenType == "" || tokens <= 0 {
 						continue
 					}
-					agentName := source
-					if agentName == "" || agentName == "unknown" {
-						agentName = firstNonEmpty(serviceName, "unknown")
-					}
+					agentName := firstNonEmpty(
+						otlpString(attrs, "gen_ai.agent.name"),
+						otlpString(resourceAttrs, "gen_ai.agent.name"),
+						source,
+						serviceName,
+						"unknown",
+					)
 					model := firstNonEmpty(
 						otlpString(attrs, "openclaw.model"),
 						otlpString(attrs, "gen_ai.response.model"),
@@ -862,6 +881,10 @@ func extractOTLPMetricTokenUsage(body []byte, source string) []otelTokenUsage {
 							serviceName,
 							"claudecode",
 						),
+						agentID: firstNonEmpty(
+							otlpString(attrs, "gen_ai.agent.id"),
+							otlpString(resourceAttrs, "gen_ai.agent.id"),
+						),
 						model:      model,
 						agentName:  agentName,
 						sessionID:  sessionID,
@@ -871,6 +894,136 @@ func extractOTLPMetricTokenUsage(body []byte, source string) []otelTokenUsage {
 						seriesKey: stableLLMEventID("otlp-metric", source, serviceName,
 							otlpString(resourceAttrs, "service.instance.id"), metric.Name, model, tokenType, sessionID),
 						startTime: string(point.StartTimeUnixNano),
+					})
+				}
+			}
+		}
+	}
+	return out
+}
+
+func extractOTLPTraceTokenUsage(body []byte, source string) []otelTokenUsage {
+	var envelope struct {
+		ResourceSpans []struct {
+			Resource struct {
+				Attributes []otlpAttribute `json:"attributes"`
+			} `json:"resource"`
+			ScopeSpans []struct {
+				Spans []struct {
+					Name       string          `json:"name"`
+					Attributes []otlpAttribute `json:"attributes"`
+				} `json:"spans"`
+			} `json:"scopeSpans"`
+		} `json:"resourceSpans"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return nil
+	}
+
+	var out []otelTokenUsage
+	for _, resource := range envelope.ResourceSpans {
+		resourceAttrs := otlpAttributesToMap(resource.Resource.Attributes)
+		serviceName := otlpString(resourceAttrs, "service.name")
+		resourceAgentID := otlpString(resourceAttrs, "gen_ai.agent.id")
+		resourceAgentName := otlpString(resourceAttrs, "gen_ai.agent.name")
+		for _, scope := range resource.ScopeSpans {
+			for _, span := range scope.Spans {
+				attrs := otlpAttributesToMap(span.Attributes)
+				if !spanLooksLikeLLMOperation(span.Name, attrs) {
+					continue
+				}
+
+				inputTokens := otlpInt(attrs,
+					"input_token_count",
+					"input_tokens",
+					"prompt_token_count",
+					"prompt_tokens",
+					"gen_ai.usage.input_tokens",
+					"gen_ai.usage.prompt_tokens",
+					"gen_ai.usage.input",
+					"gen_ai.usage.prompt",
+					"usage.input_tokens",
+					"usage.prompt_tokens",
+					"llm.usage.input_tokens",
+					"llm.usage.prompt_tokens",
+				)
+				outputTokens := otlpInt(attrs,
+					"output_token_count",
+					"output_tokens",
+					"completion_token_count",
+					"completion_tokens",
+					"generated_token_count",
+					"generated_tokens",
+					"gen_ai.usage.output_tokens",
+					"gen_ai.usage.completion_tokens",
+					"gen_ai.usage.output",
+					"gen_ai.usage.completion",
+					"usage.output_tokens",
+					"usage.completion_tokens",
+					"llm.usage.output_tokens",
+					"llm.usage.completion_tokens",
+					"response.output_tokens",
+					"response.completion_tokens",
+				)
+				if inputTokens <= 0 && outputTokens <= 0 {
+					continue
+				}
+
+				agentName := firstNonEmpty(
+					otlpString(attrs, "gen_ai.agent.name"),
+					resourceAgentName,
+					source,
+					serviceName,
+					"unknown",
+				)
+				agentID := firstNonEmpty(
+					otlpString(attrs, "gen_ai.agent.id"),
+					resourceAgentID,
+				)
+				operationName := firstNonEmpty(
+					otlpString(attrs, "openclaw.operation"),
+					otlpString(attrs, "gen_ai.operation.name"),
+					span.Name,
+					"chat",
+				)
+				providerName := firstNonEmpty(
+					otlpString(attrs, "openclaw.provider"),
+					otlpString(attrs, "gen_ai.provider.name"),
+					source,
+					serviceName,
+					"unknown",
+				)
+				model := firstNonEmpty(
+					otlpString(attrs, "openclaw.model"),
+					otlpString(attrs, "gen_ai.response.model"),
+					otlpString(attrs, "gen_ai.request.model"),
+					otlpString(attrs, "model"),
+					"unknown",
+				)
+				sessionID := firstNonEmpty(otlpSessionID(attrs), otlpSessionID(resourceAttrs))
+
+				if inputTokens > 0 {
+					out = append(out, otelTokenUsage{
+						operationName: operationName,
+						providerName:  providerName,
+						agentID:       agentID,
+						model:         model,
+						agentName:     agentName,
+						sessionID:     sessionID,
+						tokenType:     "input",
+						tokens:        inputTokens,
+					})
+				}
+				if outputTokens > 0 {
+					out = append(out, otelTokenUsage{
+						operationName: operationName,
+						providerName:  providerName,
+						agentID:       agentID,
+						model:         model,
+						agentName:     agentName,
+						sessionID:     sessionID,
+						tokenType:     "output",
+						tokens:        outputTokens,
 					})
 				}
 			}
@@ -1419,10 +1572,13 @@ func spanLooksLikeLLMOperation(name string, attrs map[string]interface{}) bool {
 
 func otelDurationFromAttrs(attrs, resourceAttrs map[string]interface{}, source string, seconds float64, fallbackOperation string) otelLLMDuration {
 	serviceName := otlpString(resourceAttrs, "service.name")
-	agentName := source
-	if agentName == "" || agentName == "unknown" {
-		agentName = firstNonEmpty(otlpString(attrs, "gen_ai.agent.name"), serviceName, "unknown")
-	}
+	agentName := firstNonEmpty(
+		otlpString(attrs, "gen_ai.agent.name"),
+		otlpString(resourceAttrs, "gen_ai.agent.name"),
+		source,
+		serviceName,
+		"unknown",
+	)
 	return otelLLMDuration{
 		operationName: firstNonEmpty(
 			otlpString(attrs, "openclaw.operation"),

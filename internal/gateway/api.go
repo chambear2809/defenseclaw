@@ -58,17 +58,18 @@ import (
 // APIServer exposes a local REST API for CLI and plugin communication
 // with the running sidecar.
 type APIServer struct {
-	health       *SidecarHealth
-	client       *Client
-	store        *audit.Store
-	logger       *audit.Logger
-	addr         string
-	scannerCfg   *config.Config
-	otel         *telemetry.Provider
-	agentControl *agentControlClient
-	hilt         *HILTApprovalManager
-	notifier     *notifier.Dispatcher
-	aiDiscovery  *inventory.ContinuousDiscoveryService
+	health        *SidecarHealth
+	client        *Client
+	store         *audit.Store
+	logger        *audit.Logger
+	addr          string
+	scannerCfg    *config.Config
+	otel          *telemetry.Provider
+	agentControl  *agentControlClient
+	budgetControl *budgetControlManager
+	hilt          *HILTApprovalManager
+	notifier      *notifier.Dispatcher
+	aiDiscovery   *inventory.ContinuousDiscoveryService
 
 	// cfgMu protects mutable fields in scannerCfg.Guardrail (Mode,
 	// ScannerMode) which can be changed at runtime via the PATCH
@@ -209,6 +210,9 @@ func (a *APIServer) SetHookJudge(j *LLMJudge) {
 // can be recorded as metrics.
 func (a *APIServer) SetOTelProvider(p *telemetry.Provider) {
 	a.otel = p
+	if a.budgetControl != nil {
+		a.budgetControl.SetOTelProvider(p)
+	}
 }
 
 // otlpPathTokenEntry bundles the cached path-token with the mtime of
@@ -587,6 +591,7 @@ func NewAPIServer(addr string, health *SidecarHealth, client *Client, store *aud
 		s.scannerCfg = cfg[0]
 		s.agentControl = newAgentControlClient(cfg[0].AgentControl, string(cfg[0].Claw.Mode))
 	}
+	s.budgetControl = newBudgetControlManager(store, logger)
 	return s
 }
 
@@ -646,6 +651,11 @@ func (a *APIServer) Run(ctx context.Context) error {
 	mux.HandleFunc("/enforce/blocked", a.handleEnforceBlocked)
 	mux.HandleFunc("/enforce/allowed", a.handleEnforceAllowed)
 	mux.HandleFunc("/alerts", a.handleAlerts)
+	mux.HandleFunc("/api/v1/budget-control/policies/effective", a.handleBudgetControlPoliciesEffective)
+	mux.HandleFunc("/api/v1/budget-control/alerts", a.handleBudgetControlAlerts)
+	mux.HandleFunc("/api/v1/budget-control/usage/observations", a.handleBudgetControlUsageObservations)
+	mux.HandleFunc("/api/v1/budget-control/controls/apply", a.handleBudgetControlApply)
+	mux.HandleFunc("/api/v1/budget-control/controls/release", a.handleBudgetControlRelease)
 	mux.HandleFunc("/audit/event", a.handleAuditEvent)
 	mux.HandleFunc("/policy/evaluate", a.handlePolicyEvaluate)
 	mux.HandleFunc("/policy/evaluate/firewall", a.handlePolicyEvaluateFirewall)

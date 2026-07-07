@@ -1,11 +1,13 @@
 openapi: 3.0.3
 info:
   title: Cisco Cloud Control Agent Tokenomics with Galileo Runtime Governance
-  version: 0.2.0
+  version: 1.0.0
   description: >-
-    Read-only Cisco Cloud Control-facing endpoint. Splunk Observability is the source of truth
-    for tokenomics; Galileo runtime controls and evals are optional server-side
-    enrichment returned when include_galileo=true.
+    Cisco Cloud Control-facing tokenomics and budget-control endpoint. The live
+    deployment reads DefenseClaw's local usage ledger and applies agent-scoped
+    policy to the DefenseClaw enforcement path. Galileo metadata is optional
+    server-side enrichment; a future Galileo SaaS control plane can write the
+    same policy contract without changing the runtime enforcement API.
 servers:
   - url: http://127.0.0.1:8787
 paths:
@@ -23,6 +25,28 @@ paths:
                   status:
                     type: string
                     example: ok
+  /readyz:
+    get:
+      summary: Live dependency readiness
+      responses:
+        '200':
+          description: Ready in live mode, or fixture mode when fallback is explicitly enabled.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, mode]
+                properties:
+                  status:
+                    type: string
+                    enum: [ready]
+                  mode:
+                    type: string
+                    enum: [live, fixture]
+                  effective_policy_count:
+                    type: integer
+        '503':
+          description: DefenseClaw is required but unavailable or misconfigured.
   /v1/c3/agent-tokenomics/summary:
     get:
       summary: Cisco Cloud Control Agent Tokenomics summary
@@ -38,15 +62,10 @@ paths:
             type: string
           example: wayne-demo
         - in: query
-          name: start
+          name: window
           schema:
             type: string
-            format: date-time
-        - in: query
-          name: end
-          schema:
-            type: string
-            format: date-time
+            default: -24h
         - in: query
           name: include_galileo
           schema:
@@ -55,11 +74,120 @@ paths:
           description: Attach Galileo runtime controls and eval evidence.
       responses:
         '200':
-          description: O11y tokenomics summary, optionally enriched with Galileo runtime governance evidence.
+          description: Live DefenseClaw tokenomics summary, optionally enriched with Galileo metadata.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/AgentTokenomicsResponse'
+        '503':
+          description: Live DefenseClaw usage is required but unavailable.
+  /v1/c3/agent-tokenomics/usage/rows:
+    get:
+      summary: Normalized live token-usage rows
+      parameters:
+        - in: query
+          name: window
+          schema:
+            type: string
+            default: -24h
+      responses:
+        '200':
+          description: Rows transformed from DefenseClaw budget usage observations.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UsageRowsResponse'
+        '503':
+          description: DefenseClaw usage is unavailable.
+  /v1/c3/agent-tokenomics/policies/effective:
+    get:
+      summary: List stored or effective budget policies
+      parameters:
+        - in: query
+          name: agent_id
+          schema:
+            type: string
+          description: Resolve the exact policy or catch-all policy effective for one agent.
+      responses:
+        '200':
+          description: Effective policies.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/BudgetPolicy'
+        '503':
+          description: DefenseClaw policy storage is unavailable.
+  /v1/c3/agent-tokenomics/alerts:
+    get:
+      summary: List budget breach alerts
+      parameters:
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 5000
+            default: 50
+      responses:
+        '200':
+          description: Open alerts first, followed by resolved or released history.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/BudgetAlert'
+        '400':
+          description: Invalid limit.
+        '503':
+          description: DefenseClaw alert storage is unavailable.
+  /v1/c3/agent-tokenomics/controls/apply:
+    post:
+      summary: Create or replace an agent budget policy
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BudgetPolicyInput'
+      responses:
+        '200':
+          description: Persisted policy after effective-policy resolution.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BudgetPolicy'
+        '400':
+          description: Invalid policy.
+        '413':
+          description: Request body exceeds 64 KiB.
+        '503':
+          description: DefenseClaw control is unavailable.
+  /v1/c3/agent-tokenomics/controls/release:
+    post:
+      summary: Delete an agent policy and release all alerts it produced
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [agent_id]
+              properties:
+                agent_id:
+                  type: string
+                  minLength: 1
+      responses:
+        '200':
+          description: Policy and associated open alerts released.
+        '400':
+          description: Invalid release request.
+        '413':
+          description: Request body exceeds 64 KiB.
+        '503':
+          description: DefenseClaw control is unavailable.
 components:
   schemas:
     AgentTokenomicsResponse:
@@ -80,6 +208,7 @@ components:
           enum:
             - c3.agent_tokenomics.v0.1
             - c3.agent_tokenomics.v0.2
+            - c3.agent_tokenomics.v1
         generated_at:
           type: string
           format: date-time
@@ -88,6 +217,8 @@ components:
           enum:
             - splunk_o11y_signalflow
             - splunk_o11y_signalflow+galileo
+            - defenseclaw_gateway_ledger
+            - fixture_rows
         tenant_id:
           type: string
         workspace_id:
@@ -124,8 +255,135 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/RuntimeEvidenceRow'
+        runtime_governance_policies:
+          type: array
+          items:
+            $ref: '#/components/schemas/BudgetPolicy'
         executive_banner:
           type: string
+    UsageRowsResponse:
+      type: object
+      required: [source, rows, debug]
+      properties:
+        generated_at:
+          type: string
+          format: date-time
+          nullable: true
+        source:
+          type: string
+          enum: [defenseclaw_gateway_ledger, fixture_rows]
+        tenant_id:
+          type: string
+        workspace_id:
+          type: string
+        rows:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        debug:
+          type: object
+          additionalProperties: true
+    BudgetPolicyInput:
+      type: object
+      required: [agent_id]
+      properties:
+        agent_id:
+          type: string
+          minLength: 1
+          description: Concrete DefenseClaw agent ID or '*' for a catch-all policy.
+        agent_name:
+          type: string
+        session_token_budget:
+          type: integer
+          minimum: 1
+        daily_token_budget:
+          type: integer
+          minimum: 1
+        session_cost_budget_usd:
+          type: number
+          format: double
+          exclusiveMinimum: 0
+        daily_cost_budget_usd:
+          type: number
+          format: double
+          exclusiveMinimum: 0
+        action:
+          type: string
+          enum: [deny, steer]
+          default: deny
+        updated_by:
+          type: string
+        source:
+          type: string
+          description: local today; reserved for Galileo SaaS policy provenance later.
+      anyOf:
+        - required: [session_token_budget]
+        - required: [daily_token_budget]
+        - required: [session_cost_budget_usd]
+        - required: [daily_cost_budget_usd]
+    BudgetPolicy:
+      allOf:
+        - $ref: '#/components/schemas/BudgetPolicyInput'
+        - type: object
+          required: [policy_id, action, updated_at]
+          properties:
+            policy_id:
+              type: string
+            updated_at:
+              type: string
+              format: date-time
+    BudgetAlert:
+      type: object
+      required:
+        - alert_key
+        - policy_id
+        - agent_id
+        - window
+        - metric
+        - action
+        - status
+        - observed_value
+        - budget_value
+      properties:
+        alert_key:
+          type: string
+        policy_id:
+          type: string
+        agent_id:
+          type: string
+        agent_name:
+          type: string
+        session_id:
+          type: string
+        window:
+          type: string
+          enum: [session, daily]
+        metric:
+          type: string
+          enum: [tokens, cost_usd]
+        action:
+          type: string
+          enum: [deny, steer]
+        status:
+          type: string
+          enum: [open, resolved, released]
+        reason:
+          type: string
+        observed_value:
+          type: number
+        budget_value:
+          type: number
+        first_triggered_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        released_at:
+          type: string
+          format: date-time
+          nullable: true
     TokenSummary:
       type: object
       properties:

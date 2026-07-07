@@ -58,6 +58,12 @@ func piiCompletionHitProvider() *mockLLMProvider {
 	}
 }
 
+func TestInspectScanTimeout_RemainsBelowJudgeGate(t *testing.T) {
+	if inspectScanTimeout >= time.Second {
+		t.Fatalf("inspectScanTimeout=%s must stay below 1s so generic /inspect/* calls skip hook-judge round-trips", inspectScanTimeout)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // J3-3b — tool-call args lane (inspectToolPolicy)
 // ---------------------------------------------------------------------------
@@ -171,19 +177,19 @@ func TestToolCallJudge_UngatedConnectorSkipsJudge(t *testing.T) {
 	}
 }
 
-// The generic /inspect/tool endpoint runs inspectToolPolicy under a
-// 200ms deadline (inspectToolPolicyCtx); the judge deadline guard must
+// The generic /inspect/tool endpoint runs inspectToolPolicy under
+// inspectScanTimeout; the judge deadline guard must
 // short-circuit there even when opted in, so the verdict still returns
 // fast rather than 504-ing on a judge round-trip (J3-3c boundary: the
 // fix gives the NATIVE lanes their own timeout, it does not widen the
-// generic endpoint's 200ms cap).
-func TestToolCallJudge_GenericEndpoint200msShortCircuits(t *testing.T) {
+// generic endpoint into the >=1s range where judge round-trips are allowed).
+func TestToolCallJudge_GenericEndpointTimeoutShortCircuits(t *testing.T) {
 	mock := injectionHitProvider()
 	a := newHookJudgeAPIServer(t,
 		config.JudgeConfig{Enabled: true, Injection: true, HookConnectors: []string{"hermes"}},
 		"judge_first", mock)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), inspectScanTimeout)
 	defer cancel()
 	a.inspectToolPolicyCtx(ctx, &ToolInspectRequest{
 		Tool: "fetch_url", Args: json.RawMessage(benignToolArgs),
@@ -191,7 +197,7 @@ func TestToolCallJudge_GenericEndpoint200msShortCircuits(t *testing.T) {
 	})
 
 	if len(mock.captured) != 0 {
-		t.Fatalf("judge provider called %d time(s) under the 200ms generic-endpoint deadline", len(mock.captured))
+		t.Fatalf("judge provider called %d time(s) under the generic-endpoint deadline", len(mock.captured))
 	}
 }
 

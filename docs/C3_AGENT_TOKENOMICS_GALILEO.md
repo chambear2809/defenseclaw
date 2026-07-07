@@ -1,9 +1,10 @@
 # Cisco Cloud Control Tokenomics + Galileo Runtime Governance Demo
 
-This demo adds a thin Cisco Cloud Control-facing bridge for the executive Agent
-Tokenomics view. It keeps Splunk Observability as the source of truth for
-tokenomics and adds Galileo as an optional runtime controls and eval enrichment
-layer.
+This demo adds a Cisco Cloud Control-facing bridge for the executive Agent
+Tokenomics view. In the live EKS path, DefenseClaw's durable budget ledger is
+the source of truth for token and reported-cost usage, and DefenseClaw enforces
+the local deny or steer policy. The same OTel stream continues to Galileo and
+Splunk; Galileo metadata remains optional server-side enrichment.
 
 The repo still uses `c3` in some live identifiers, paths, modules, and demo
 endpoints, such as `/v1/c3/agent-tokenomics/summary` and
@@ -12,9 +13,13 @@ Control.
 
 ## Customer story
 
-> O11y shows which agents, models, services, and workflows are consuming tokens.
-> Galileo evaluates and controls what the agents actually do at runtime. Cisco
-> Cloud Control gives executives one management-plane governance surface.
+> C3 shows which agents, models, services, and workflows are consuming tokens,
+> raises live budget alerts, and applies a DefenseClaw stop or steer policy.
+> Agent Control and Galileo provide the broader named runtime-governance plane,
+> while Splunk receives the operational evidence.
+
+Use [C3_AGENT_TOKENOMICS_DEMO_SCRIPT.md](C3_AGENT_TOKENOMICS_DEMO_SCRIPT.md)
+for the live EKS preflight, stage directions, and five-minute narration.
 
 ## Cisco Cloud Control fit
 
@@ -28,10 +33,10 @@ documents programmatic management for organizations, users, roles, network
 objects, and integrated products such as AI Defense.
 
 This repo does not call Cisco Cloud Control or Security Cloud Control APIs
-directly. The demo bridge models the server-side payload a Cisco Cloud
-Control-native experience could consume: Splunk Observability token usage plus
-Galileo and Agent Control governance evidence. That keeps credentials and raw
-telemetry server-side while exposing a concise executive rollup.
+directly. The demo bridge models the server-side payload and policy contract a
+Cisco Cloud Control-native experience could consume. Policy provenance is
+`local` today; a future Galileo SaaS controller can push the same contract into
+DefenseClaw without moving the enforcement point or exposing credentials.
 
 The base endpoint remains:
 
@@ -45,7 +50,7 @@ The Galileo-enriched view is opt-in:
 GET /v1/c3/agent-tokenomics/summary?include_galileo=true
 ```
 
-When `include_galileo=false`, the response is the O11y-only tokenomics DTO.
+When `include_galileo=false`, the response is the tokenomics-only DTO.
 When `include_galileo=true`, the response adds:
 
 - top-level `galileo` rollups
@@ -54,12 +59,27 @@ When `include_galileo=true`, the response adds:
 - `runtime_governance_evidence` for the evidence table
 - an executive banner that explains the O11y + Galileo + Cisco Cloud Control split
 
+The live control endpoints are:
+
+```http
+GET  /v1/c3/agent-tokenomics/usage/rows
+GET  /v1/c3/agent-tokenomics/policies/effective
+GET  /v1/c3/agent-tokenomics/alerts
+POST /v1/c3/agent-tokenomics/controls/apply
+POST /v1/c3/agent-tokenomics/controls/release
+```
+
+`GET /readyz` is the dependency-aware readiness contract. With fixture fallback
+disabled, it returns `503` until the authenticated DefenseClaw policy API is
+reachable.
+
 ## Data sources and ownership
 
 | Data | Source of truth | Cisco Cloud Control use |
 |------|-----------------|--------|
-| Token counts, token mix, models, services, traces | Splunk Observability / SignalFlow | KPI cards, top-agent/model tables, token pressure |
-| Trace summaries, runtime evals, Agent Control decisions | Galileo | Runtime controls cards and governance evidence table |
+| Token counts, reported cost, models, agents, sessions | DefenseClaw budget ledger | KPI cards, top-agent/model tables, budget evaluation |
+| Operational token and policy evidence | Galileo and Splunk via OTel/audit sinks | Cross-system investigation and demo proof |
+| Named non-budget runtime controls | Agent Control | Existing deny, steer, observe, and approval policy evaluation |
 | Unified executive view | Cisco Cloud Control-native app | One page for agent cost, behavior, and runtime governance |
 
 The Cisco Cloud Control browser experience must not receive O11y or Galileo API
@@ -160,6 +180,10 @@ http://127.0.0.1:3001/?view=tokenomics
 |----------|-----|
 | `TOKENOMICS_DEMO_FIXTURE_PATH` | Override packaged O11y metric rows fixture |
 | `TOKENOMICS_DEMO_ALLOW_FIXTURE_FALLBACK` | Stage-demo fallback guard; defaults to `true` |
+| `DEFENSECLAW_GATEWAY_BASE_URL` | Internal DefenseClaw API base URL |
+| `DEFENSECLAW_GATEWAY_TOKEN` | Server-side gateway bearer token; never returned to the browser |
+| `TOKENOMICS_BFF_URL` | Internal BFF URL used by the prebuilt MFE proxy |
+| `TOKENOMICS_BFF_TIMEOUT_MS` | MFE proxy deadline, bounded to 100-30000 ms; defaults to 7000 |
 | `GALILEO_RUNTIME_CONTROLS_FIXTURE_PATH` | Override packaged Galileo runtime controls fixture |
 | `O11Y_REALM` | Fill O11y deep-link host, for example `us0` |
 | `GALILEO_API_BASE` | Galileo API host; defaults to `https://api.galileo.ai` |
@@ -214,14 +238,15 @@ A = data('gen_ai.client.operation.duration', rollup='average').mean(by=['gen_ai.
 
 ## Kubernetes demo path
 
-`deploy/k8s/defenseclaw/c3-agent-tokenomics-demo.yaml` adds a hardened,
-fixture-backed Cisco Cloud Control BFF deployment that can sit beside the
-live-derived DefenseClaw lab manifests. It uses the pinned ECR image currently
-running in the Isovalent demo cluster and does not embed any API keys. The
+`deploy/k8s/defenseclaw/c3-agent-tokenomics-demo.yaml` adds a hardened, live
+Cisco Cloud Control BFF deployment beside DefenseClaw. Production demo mode
+sets `TOKENOMICS_DEMO_ALLOW_FIXTURE_FALLBACK=false`; readiness therefore fails
+instead of displaying synthetic usage when the gateway is unavailable. The
 ConfigMap carries safe defaults such as
 `O11Y_REALM=us1`, `GALILEO_PROJECT=clus-demo`, and
 `GALILEO_PROJECT_ID=0ba7b20d-8262-44c4-b230-547a0cd74b2b`; it also pins the
-demo log stream ID. The API key comes from an optional Secret:
+demo log stream ID. The gateway token comes from the required
+`defenseclaw-gateway-access` Secret. The Galileo API key remains optional:
 
 ```bash
 kubectl create namespace defenseclaw-tokenomics --dry-run=client -o yaml | kubectl apply -f -
@@ -239,7 +264,7 @@ UI.
 
 `deploy/k8s/defenseclaw/c3-agent-tokenomics-mfe.yaml` deploys the prebuilt MFE
 handoff beside that BFF. It serves the static MFE on service port `80` and the
-fixture tokenomics API on service port `8787`:
+same-origin proxy to the live BFF on service port `8787`:
 
 ```bash
 kubectl apply -f deploy/k8s/defenseclaw/c3-agent-tokenomics-mfe.yaml
@@ -249,9 +274,13 @@ kubectl -n defenseclaw-tokenomics get svc c3-agent-tokenomics-mfe
 
 ## Acceptance criteria
 
-- The service returns a non-empty O11y-backed tokenomics payload.
+- `/readyz` reports `mode=live` and the summary reports
+  `source=defenseclaw_gateway_ledger` with `debug.fixture_backed=false`.
+- An empty live ledger returns a truthful zero summary rather than fixture data.
 - Missing optional dimensions become `unknown` rather than endpoint failures.
-- `include_galileo=true` returns runtime-control cards and governance evidence.
-- The runtime governance evidence includes deny, steer, warn, and human-review outcomes.
+- Applying a policy creates an alert for existing over-budget usage and blocks
+  the next matching inspect request when `action=deny`.
+- Releasing a policy atomically removes it and releases all alerts it produced.
+- Budget breach and enforcement decisions reach the audit/OTel evidence path.
 - O11y and Galileo credentials remain server-side.
-- Dollar cost is not treated as authoritative; token counts are the demo source of truth.
+- Dollar cost is shown only when the source reports it; no synthetic pricing is invented.

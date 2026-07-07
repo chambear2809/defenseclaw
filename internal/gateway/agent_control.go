@@ -161,6 +161,32 @@ func newAgentControlClient(cfg config.AgentControlConfig, fallbackAgentName stri
 	}
 }
 
+func (a *APIServer) agentControlClient() *agentControlClient {
+	if a == nil {
+		return nil
+	}
+	a.cfgMu.RLock()
+	client := a.agentControl
+	a.cfgMu.RUnlock()
+	if client != nil {
+		return client
+	}
+	if a.scannerCfg == nil {
+		return nil
+	}
+
+	// Rebuild lazily from the loaded runtime config if construction-time
+	// wiring was skipped. This keeps inspect-time approval controls alive
+	// for long-running pods that start with a transient init gap.
+	a.cfgMu.Lock()
+	defer a.cfgMu.Unlock()
+	if a.agentControl != nil {
+		return a.agentControl
+	}
+	a.agentControl = newAgentControlClient(a.scannerCfg.AgentControl, string(a.scannerCfg.Claw.Mode))
+	return a.agentControl
+}
+
 func normalizedAgentControlName(name string) string {
 	name = strings.ToLower(strings.TrimSpace(name))
 	if name == "" {

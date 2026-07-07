@@ -184,7 +184,8 @@ type ActionEntry struct {
 }
 
 type Store struct {
-	db *sql.DB
+	db     *sql.DB
+	readDB *sql.DB
 }
 
 // auditPragmas is the pragma set applied to every connection in the
@@ -251,6 +252,25 @@ func openSQLite(dbPath string) (*sql.DB, error) {
 	return db, nil
 }
 
+// openSQLiteReadPool gives latency-sensitive policy lookups their own WAL
+// readers. The primary pool intentionally has one connection so audit writers
+// serialize cleanly; sharing that connection made block/allow checks queue
+// behind long startup scan persistence bursts.
+func openSQLiteReadPool(dbPath string) (*sql.DB, error) {
+	db, err := sql.Open("sqlite", dbPath+auditPragmas+"&_pragma=query_only(ON)")
+	if err != nil {
+		return nil, fmt.Errorf("audit: open read pool %s: %w", dbPath, err)
+	}
+	db.SetMaxOpenConns(4)
+	db.SetMaxIdleConns(4)
+	db.SetConnMaxLifetime(0)
+	return db, nil
+}
+
+func supportsSeparateSQLiteReadPool(dbPath string) bool {
+	return dbPath != "" && dbPath != ":memory:" && !strings.Contains(dbPath, "mode=memory")
+}
+
 func NewStore(dbPath string) (*Store, error) {
 	if err := ensureSQLiteParentDir(dbPath); err != nil {
 		return nil, err
@@ -259,9 +279,24 @@ func NewStore(dbPath string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	st := &Store{db: db}
+	readDB := db
+	if supportsSeparateSQLiteReadPool(dbPath) {
+		readDB, err = openSQLiteReadPool(dbPath)
+		if err != nil {
+			_ = db.Close()
+			return nil, err
+		}
+	}
+	st := &Store{db: db, readDB: readDB}
 	telemetry.RegisterAuditDB(db)
 	return st, nil
+}
+
+func (s *Store) readDBForQuery() *sql.DB {
+	if s != nil && s.readDB != nil {
+		return s.readDB
+	}
+	return s.db
 }
 
 func ensureSQLiteParentDir(dbPath string) error {
@@ -374,6 +409,16 @@ func (s *Store) queryDB(ctx context.Context, op string, query string, args ...an
 	err := retryBusy(ctx, op, func() error {
 		var qErr error
 		rows, qErr = s.db.QueryContext(ctx, query, args...)
+		return qErr
+	})
+	return rows, err
+}
+
+func (s *Store) queryReadDB(ctx context.Context, op string, query string, args ...any) (*sql.Rows, error) {
+	var rows *sql.Rows
+	err := retryBusy(ctx, op, func() error {
+		var qErr error
+		rows, qErr = s.readDBForQuery().QueryContext(ctx, query, args...)
 		return qErr
 	})
 	return rows, err
@@ -1372,6 +1417,68 @@ var migrations = []migration{
 			return err
 		},
 	},
+	{
+		description: "budget control: add policy, ledger, and alert tables",
+		apply: func(ex dbExecer) error {
+			if _, err := ex.Exec(`
+			CREATE TABLE IF NOT EXISTS budget_control_policies (
+				policy_id TEXT PRIMARY KEY,
+				agent_id TEXT NOT NULL UNIQUE,
+				agent_name TEXT,
+				session_token_budget INTEGER,
+				session_cost_budget_usd REAL,
+				daily_token_budget INTEGER,
+				daily_cost_budget_usd REAL,
+				action TEXT NOT NULL,
+				updated_at DATETIME NOT NULL,
+				updated_by TEXT,
+				source TEXT
+			);
+			CREATE INDEX IF NOT EXISTS idx_budget_policies_agent_id ON budget_control_policies(agent_id);
+
+			CREATE TABLE IF NOT EXISTS budget_usage_ledger (
+				id TEXT PRIMARY KEY,
+				timestamp DATETIME NOT NULL,
+				source TEXT NOT NULL,
+				connector TEXT,
+				agent_id TEXT NOT NULL,
+				agent_name TEXT,
+				session_id TEXT,
+				model TEXT,
+				prompt_tokens INTEGER,
+				completion_tokens INTEGER,
+				total_tokens INTEGER,
+				cost_usd REAL
+			);
+			CREATE INDEX IF NOT EXISTS idx_budget_usage_agent_timestamp ON budget_usage_ledger(agent_id, timestamp);
+			CREATE INDEX IF NOT EXISTS idx_budget_usage_session_timestamp ON budget_usage_ledger(session_id, timestamp);
+
+			CREATE TABLE IF NOT EXISTS budget_control_alerts (
+				alert_key TEXT PRIMARY KEY,
+				policy_id TEXT NOT NULL,
+				agent_id TEXT NOT NULL,
+				agent_name TEXT,
+				session_id TEXT,
+				window TEXT NOT NULL,
+				metric TEXT NOT NULL,
+				action TEXT NOT NULL,
+				status TEXT NOT NULL,
+				reason TEXT NOT NULL,
+				observed_value REAL NOT NULL,
+				budget_value REAL NOT NULL,
+				first_triggered_at DATETIME NOT NULL,
+				updated_at DATETIME NOT NULL,
+				released_at DATETIME
+			);
+			CREATE INDEX IF NOT EXISTS idx_budget_alerts_agent_status ON budget_control_alerts(agent_id, status);
+			CREATE INDEX IF NOT EXISTS idx_budget_alerts_session_status ON budget_control_alerts(session_id, status);
+			CREATE INDEX IF NOT EXISTS idx_budget_alerts_updated_at ON budget_control_alerts(updated_at);
+			`); err != nil {
+				return fmt.Errorf("create budget control tables: %w", err)
+			}
+			return nil
+		},
+	},
 }
 
 // tableExists reports whether the given SQLite table is present.
@@ -1487,9 +1594,12 @@ var knownTables = map[string]bool{
 	"judge_responses":       true,
 	"schema_version":        true,
 	// v7 additions
-	"scan_findings":   true,
-	"activity_events": true,
-	"sink_health":     true,
+	"scan_findings":           true,
+	"activity_events":         true,
+	"sink_health":             true,
+	"budget_control_policies": true,
+	"budget_usage_ledger":     true,
+	"budget_control_alerts":   true,
 }
 
 func (s *Store) hasColumn(table, column string) (bool, error) {
@@ -2426,17 +2536,28 @@ func (s *Store) GetAction(targetType, targetName string) (*ActionEntry, error) {
 	return s.GetActionForConnector(targetType, targetName, "")
 }
 
+// GetActionContext is the request-scoped form of GetAction.
+func (s *Store) GetActionContext(ctx context.Context, targetType, targetName string) (*ActionEntry, error) {
+	return s.GetActionForConnectorContext(ctx, targetType, targetName, "")
+}
+
 // GetActionForConnector returns the action entry scoped to connector
 // (connector="" = global), or nil if none exists. This is an exact-match
 // lookup: callers wanting most-specific-wins resolution (connector then global
 // fallback) compose two lookups. See ActionEntry.Connector (SK-4).
 func (s *Store) GetActionForConnector(targetType, targetName, connector string) (*ActionEntry, error) {
+	return s.GetActionForConnectorContext(context.Background(), targetType, targetName, connector)
+}
+
+// GetActionForConnectorContext performs an exact policy lookup through the
+// dedicated read pool and honors cancellation while waiting for a connection.
+func (s *Store) GetActionForConnectorContext(ctx context.Context, targetType, targetName, connector string) (*ActionEntry, error) {
 	var e ActionEntry
 	var sourcePath, reason, actionsJSON sql.NullString
-	err := s.scanRow(context.Background(), "get_action",
-		s.db.QueryRowContext(context.Background(),
+	err := s.scanRow(ctx, "get_action",
+		s.readDBForQuery().QueryRowContext(ctx,
 			`SELECT id, target_type, target_name, source_path, actions_json, reason, updated_at, connector
-		 FROM actions WHERE target_type = ? AND target_name = ? AND connector = ?`,
+			 FROM actions WHERE target_type = ? AND target_name = ? AND connector = ?`,
 			targetType, targetName, connector,
 		), &e.ID, &e.TargetType, &e.TargetName, &sourcePath, &actionsJSON, &reason, &e.UpdatedAt, &e.Connector)
 	if err == sql.ErrNoRows {
@@ -2459,11 +2580,21 @@ func (s *Store) HasAction(targetType, targetName, field, value string) (bool, er
 	return s.HasActionForConnector(targetType, targetName, "", field, value)
 }
 
+// HasActionContext is the request-scoped form of HasAction.
+func (s *Store) HasActionContext(ctx context.Context, targetType, targetName, field, value string) (bool, error) {
+	return s.HasActionForConnectorContext(ctx, targetType, targetName, "", field, value)
+}
+
 // HasActionForConnector checks if the entry scoped to connector (connector=""
 // = global) has a specific field set to a specific value. Exact-match: callers
 // wanting most-specific-wins resolution compose connector + global lookups.
 // See ActionEntry.Connector (SK-4).
 func (s *Store) HasActionForConnector(targetType, targetName, connector, field, value string) (bool, error) {
+	return s.HasActionForConnectorContext(context.Background(), targetType, targetName, connector, field, value)
+}
+
+// HasActionForConnectorContext performs a cancellable exact policy lookup.
+func (s *Store) HasActionForConnectorContext(ctx context.Context, targetType, targetName, connector, field, value string) (bool, error) {
 	if err := validateActionFieldAndValue(field, value); err != nil {
 		return false, err
 	}
@@ -2471,8 +2602,8 @@ func (s *Store) HasActionForConnector(targetType, targetName, connector, field, 
 	query := fmt.Sprintf(
 		`SELECT COUNT(*) FROM actions WHERE target_type = ? AND target_name = ? AND connector = ? AND json_extract(actions_json, '$.%s') = ?`,
 		field)
-	err := s.scanRow(context.Background(), "has_action",
-		s.db.QueryRowContext(context.Background(), query, targetType, targetName, connector, value), &count)
+	err := s.scanRow(ctx, "has_action",
+		s.readDBForQuery().QueryRowContext(ctx, query, targetType, targetName, connector, value), &count)
 	if err != nil {
 		return false, fmt.Errorf("audit: has action: %w", err)
 	}
@@ -3251,7 +3382,15 @@ func (s *Store) GetTargetSnapshot(targetType, targetPath string) (*SnapshotRow, 
 
 func (s *Store) Close() error {
 	telemetry.RegisterAuditDB(nil)
-	return s.db.Close()
+	var readErr error
+	if s.readDB != nil && s.readDB != s.db {
+		readErr = s.readDB.Close()
+	}
+	dbErr := s.db.Close()
+	if readErr != nil {
+		return readErr
+	}
+	return dbErr
 }
 
 // currentRunID resolves the per-process run id used to stamp audit

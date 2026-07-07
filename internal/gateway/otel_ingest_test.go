@@ -627,15 +627,15 @@ func TestOTLPIngest_Logs_PersistsUsageMetricsForSplunkDashboards(t *testing.T) {
 		if row.Action != string(audit.ActionOTelIngestMetrics) {
 			continue
 		}
+		metricName, _ := row.Structured["metric_name"].(string)
+		model, _ := row.Structured["model"].(string)
 		switch row.Target {
 		case "otlp:metrics:usage":
-			if strings.Contains(row.Details, "metric_name=openclaw.tokens") &&
-				strings.Contains(row.Details, "model=gpt-5-codex") {
+			if metricName == "openclaw.tokens" && model == "gpt-5-codex" {
 				tokenRows++
 			}
 		case "otlp:metrics:duration":
-			if strings.Contains(row.Details, "metric_name=openclaw.run.duration_ms") &&
-				strings.Contains(row.Details, "model=gpt-5-codex") {
+			if metricName == "openclaw.run.duration_ms" && model == "gpt-5-codex" {
 				durationRows++
 			}
 		}
@@ -831,20 +831,24 @@ func TestOTLPIngest_Metrics_PersistsOpenClawUsageMetricsForSplunkDashboards(t *t
 		if row.Action != string(audit.ActionOTelIngestMetrics) || row.Target != "otlp:metrics:openclaw" {
 			continue
 		}
+		metricName, _ := row.Structured["metric_name"].(string)
+		provider, _ := row.Structured["provider"].(string)
+		model, _ := row.Structured["model"].(string)
+		tokenType, _ := row.Structured["token_type"].(string)
 		switch {
-		case strings.Contains(row.Details, "metric_name=openclaw.tokens ") &&
-			strings.Contains(row.Details, "provider=openai") &&
-			strings.Contains(row.Details, "model=gpt-5.4") &&
-			strings.Contains(row.Details, "token_type=total"):
+		case metricName == "openclaw.tokens" &&
+			provider == "openai" &&
+			model == "gpt-5.4" &&
+			tokenType == "total":
 			tokenTotalRows++
-		case strings.Contains(row.Details, "metric_name=openclaw.tokens.input ") &&
-			strings.Contains(row.Details, "token_type=input"):
+		case metricName == "openclaw.tokens.input" &&
+			tokenType == "input":
 			tokenInputRows++
-		case strings.Contains(row.Details, "metric_name=openclaw.cost.usd ") &&
-			strings.Contains(row.Details, "provider=openai") &&
-			strings.Contains(row.Details, "model=gpt-5.4"):
+		case metricName == "openclaw.cost.usd" &&
+			provider == "openai" &&
+			model == "gpt-5.4":
 			costRows++
-		case strings.Contains(row.Details, "metric_name=openclaw.run.duration_ms "):
+		case metricName == "openclaw.run.duration_ms":
 			durationRows++
 		}
 	}
@@ -1070,6 +1074,142 @@ func TestOTLPIngest_Traces_AcceptsValidPayload(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Errorf("status = %d, want 200; body=%q", w.Code, w.Body.String())
+	}
+}
+
+func TestExtractOTLPTraceTokenUsage_UsesSpanAttrs(t *testing.T) {
+	body := []byte(`{
+		"resourceSpans": [{
+			"resource": {
+				"attributes": [
+					{"key": "service.name", "value": {"stringValue": "defenseclaw"}},
+					{"key": "gen_ai.agent.id", "value": {"stringValue": "incident-triage-agent"}}
+				]
+			},
+			"scopeSpans": [{
+				"spans": [{
+					"name": "chat.completions",
+					"attributes": [
+						{"key": "gen_ai.agent.name", "value": {"stringValue": "incident-triage-agent"}},
+						{"key": "gen_ai.provider.name", "value": {"stringValue": "openai"}},
+						{"key": "gen_ai.request.model", "value": {"stringValue": "gpt-4o-mini"}},
+						{"key": "gen_ai.conversation.id", "value": {"stringValue": "sess-trace-1"}},
+						{"key": "gen_ai.usage.input_tokens", "value": {"intValue": 144}},
+						{"key": "gen_ai.usage.output_tokens", "value": {"intValue": 55}}
+					]
+				}]
+			}]
+		}]
+	}`)
+
+	got := extractOTLPTraceTokenUsage(body, "openclaw")
+	if len(got) != 2 {
+		t.Fatalf("trace token usage rows = %d, want 2; rows=%+v", len(got), got)
+	}
+	if got[0].agentID != "incident-triage-agent" || got[1].agentID != "incident-triage-agent" {
+		t.Fatalf("agent ids = %+v, want incident-triage-agent", got)
+	}
+	if got[0].sessionID != "sess-trace-1" || got[1].sessionID != "sess-trace-1" {
+		t.Fatalf("session ids = %+v, want sess-trace-1", got)
+	}
+	if got[0].model != "gpt-4o-mini" || got[1].model != "gpt-4o-mini" {
+		t.Fatalf("models = %+v, want gpt-4o-mini", got)
+	}
+	if got[0].tokenType != "input" || got[0].tokens != 144 {
+		t.Fatalf("first row = %+v, want input=144", got[0])
+	}
+	if got[1].tokenType != "output" || got[1].tokens != 55 {
+		t.Fatalf("second row = %+v, want output=55", got[1])
+	}
+}
+
+func TestOTLPIngest_Traces_PromotesTokenUsageIntoBudgetLedger(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	otelProvider, err := telemetry.NewProviderForTest(reader)
+	if err != nil {
+		t.Fatalf("NewProviderForTest: %v", err)
+	}
+	defer otelProvider.Shutdown(context.Background())
+
+	store, logger := newOTLPIngestTestStore(t)
+	api := &APIServer{
+		store:         store,
+		logger:        logger,
+		budgetControl: newBudgetControlManager(store, logger),
+	}
+	api.SetOTelProvider(otelProvider)
+
+	body := `{
+		"resourceSpans": [{
+			"resource": {
+				"attributes": [
+					{"key": "service.name", "value": {"stringValue": "defenseclaw"}},
+					{"key": "gen_ai.agent.id", "value": {"stringValue": "incident-triage-agent"}}
+				]
+			},
+			"scopeSpans": [{
+				"spans": [{
+					"name": "chat.completions",
+					"startTimeUnixNano": "1700000000000000000",
+					"endTimeUnixNano": "1700000001000000000",
+					"attributes": [
+						{"key": "gen_ai.agent.name", "value": {"stringValue": "incident-triage-agent"}},
+						{"key": "gen_ai.provider.name", "value": {"stringValue": "openai"}},
+						{"key": "gen_ai.request.model", "value": {"stringValue": "gpt-4o-mini"}},
+						{"key": "gen_ai.conversation.id", "value": {"stringValue": "sess-trace-1"}},
+						{"key": "gen_ai.usage.input_tokens", "value": {"intValue": 144}},
+						{"key": "gen_ai.usage.output_tokens", "value": {"intValue": 55}}
+					]
+				}]
+			}]
+		}]
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/traces", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	// OpenClaw OTLP is intentionally observability-only because its
+	// authoritative sessions.list snapshot feeds the budget ledger. Use a
+	// connector whose OTLP stream is the accounting source for this promotion
+	// contract.
+	req.Header.Set("x-defenseclaw-source", "codex")
+	w := httptest.NewRecorder()
+
+	api.handleOTLPTraces(w, req)
+	logger.Close()
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%q", w.Code, w.Body.String())
+	}
+
+	rows, err := store.ListBudgetUsageObservationsSince(time.Now().Add(-1*time.Hour), 10)
+	if err != nil {
+		t.Fatalf("ListBudgetUsageObservationsSince: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("budget usage rows = %d, want 1; rows=%+v", len(rows), rows)
+	}
+	if rows[0].AgentID != "incident-triage-agent" {
+		t.Fatalf("agent_id = %q, want incident-triage-agent", rows[0].AgentID)
+	}
+	if rows[0].AgentName != "incident-triage-agent" {
+		t.Fatalf("agent_name = %q, want incident-triage-agent", rows[0].AgentName)
+	}
+	if rows[0].SessionID != "sess-trace-1" {
+		t.Fatalf("session_id = %q, want sess-trace-1", rows[0].SessionID)
+	}
+	if rows[0].Model != "gpt-4o-mini" {
+		t.Fatalf("model = %q, want gpt-4o-mini", rows[0].Model)
+	}
+	if rows[0].PromptTokens != 144 || rows[0].CompletionTokens != 55 || rows[0].TotalTokens != 199 {
+		t.Fatalf("token totals = %+v, want prompt=144 completion=55 total=199", rows[0])
+	}
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	tokenMetric := findMetric(rm, "gen_ai.client.token.usage")
+	if tokenMetric == nil {
+		t.Fatal("expected gen_ai.client.token.usage metric")
 	}
 }
 

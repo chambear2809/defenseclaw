@@ -1352,7 +1352,7 @@ spec:
               subPath: openclaw-client
       containers:
         - name: defenseclaw
-          image: 637423309390.dkr.ecr.us-east-1.amazonaws.com/defenseclaw:0.7.2-web-tui
+          image: 637423309390.dkr.ecr.us-east-1.amazonaws.com/defenseclaw:0.8.3-web-tui-20260707-162000-tokenomics-e2e-2352a4bb
           imagePullPolicy: IfNotPresent
           env:
             - name: HOME
@@ -1372,6 +1372,8 @@ spec:
                 secretKeyRef:
                   name: thousandeyes-demo-secrets
                   key: THOUSANDEYES_TOKEN
+            - name: DEFENSECLAW_OPENCLAW_USAGE_EXPORT_INTERVAL
+              value: 10s
           envFrom:
             - secretRef:
                 name: defenseclaw-secrets
@@ -1439,7 +1441,7 @@ spec:
             - mountPath: /tmp
               name: tmp
         - name: defenseclaw-web-tui
-          image: 637423309390.dkr.ecr.us-east-1.amazonaws.com/defenseclaw:0.7.2-web-tui
+          image: 637423309390.dkr.ecr.us-east-1.amazonaws.com/defenseclaw:0.8.3-web-tui-20260707-162000-tokenomics-e2e-2352a4bb
           imagePullPolicy: IfNotPresent
           command:
             - defenseclaw-gateway
@@ -1740,7 +1742,7 @@ spec:
         fsGroupChangePolicy: OnRootMismatch
       initContainers:
         - name: defenseclaw-plugin-bootstrap
-          image: 637423309390.dkr.ecr.us-east-1.amazonaws.com/defenseclaw:0.7.2-web-tui
+          image: 637423309390.dkr.ecr.us-east-1.amazonaws.com/defenseclaw:0.8.3-web-tui-20260707-162000-tokenomics-e2e-2352a4bb
           imagePullPolicy: IfNotPresent
           command:
             - sh

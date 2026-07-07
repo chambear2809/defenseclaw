@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -250,11 +251,21 @@ func (c *CiscoInspectClient) inspectAPIKey(ctx context.Context) (string, error) 
 	return c.tokenSource.apiKey(ctx)
 }
 
-// Inspect sends messages to Cisco AI Defense and returns a normalized verdict.
+// Inspect sends messages to Cisco AI Defense with a background context.
 // Returns nil on any error so the caller can fall back to local-only scanning.
 func (c *CiscoInspectClient) Inspect(messages []ChatMessage) *ScanVerdict {
+	return c.InspectWithContext(context.Background(), messages)
+}
+
+// InspectWithContext sends messages to Cisco AI Defense and returns a
+// normalized verdict. Returns nil on any error so the caller can fall
+// back to local-only scanning.
+func (c *CiscoInspectClient) InspectWithContext(ctx context.Context, messages []ChatMessage) *ScanVerdict {
 	if c == nil {
 		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 
 	chatMsgs := make([]map[string]string, len(messages))
@@ -268,7 +279,6 @@ func (c *CiscoInspectClient) Inspect(messages []ChatMessage) *ScanVerdict {
 	}
 
 	url := c.endpoint + "/api/v1/inspect/chat"
-	ctx := context.Background()
 	var span trace.Span
 	if c.tel != nil && c.tel.TracesEnabled() {
 		ctx, span = c.tel.Tracer().Start(ctx, "cisco.inspect.chat")
@@ -285,6 +295,9 @@ func (c *CiscoInspectClient) Inspect(messages []ChatMessage) *ScanVerdict {
 
 	apiKey, err := c.inspectAPIKey(ctx)
 	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
+			return nil
+		}
 		fmt.Fprintf(defaultLogWriter, "  [cisco-ai-defense] oauth error: %v\n", err)
 		EmitCiscoError(ctx, c.tel, gatewaylog.ErrCodeUpstreamError, err.Error())
 		return nil
@@ -301,7 +314,7 @@ func (c *CiscoInspectClient) Inspect(messages []ChatMessage) *ScanVerdict {
 			return nil
 		}
 
-		req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 		if err != nil {
 			return nil
 		}
@@ -312,6 +325,12 @@ func (c *CiscoInspectClient) Inspect(messages []ChatMessage) *ScanVerdict {
 		start := time.Now()
 		resp, err := c.client.Do(req)
 		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
+				if c.tel != nil {
+					c.tel.RecordCiscoInspectLatency(ctx, float64(time.Since(start).Milliseconds()), "context-timeout")
+				}
+				return nil
+			}
 			fmt.Fprintf(defaultLogWriter, "  [cisco-ai-defense] error: %v\n", err)
 			if c.tel != nil {
 				c.tel.RecordCiscoInspectLatency(ctx, float64(time.Since(start).Milliseconds()), "upstream-error")

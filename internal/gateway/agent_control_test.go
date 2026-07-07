@@ -20,7 +20,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/defenseclaw/defenseclaw/internal/config"
 )
@@ -138,5 +140,221 @@ func TestMergeAgentControlIntoToolVerdict(t *testing.T) {
 	}
 	if verdict.AgentControl == nil || verdict.AgentControl.ControlID != 2 {
 		t.Fatalf("agent control decision missing from verdict: %+v", verdict)
+	}
+}
+
+func TestInspectTool_LazilyRebuildsAgentControlClient(t *testing.T) {
+	t.Setenv("AGENT_CONTROL_API_KEY", "test-key")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case agentControlEvaluationPath:
+			if r.Header.Get("X-API-Key") != "test-key" {
+				t.Fatalf("X-API-Key = %q, want test-key", r.Header.Get("X-API-Key"))
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+				"is_safe": false,
+				"confidence": 1.0,
+				"matches": [{
+					"control_execution_id": "exec-4",
+					"control_id": 4,
+					"control_name": "require-approval-thousandeyes-test-change",
+					"action": "steer",
+					"result": {"matched": true, "confidence": 1.0, "message": "approval required"},
+					"steering_context": {"message": "Pause for operator approval."}
+				}],
+				"errors": [],
+				"non_matches": []
+			}`))
+		case agentControlEventsPath:
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"received":1,"processed":1,"dropped":0}`))
+		default:
+			t.Fatalf("path = %q, want %q or %q", r.URL.Path, agentControlEvaluationPath, agentControlEventsPath)
+		}
+	}))
+	defer server.Close()
+
+	store, logger := testStoreAndLogger(t)
+	cfg := &config.Config{}
+	cfg.Guardrail.Mode = "action"
+	cfg.AgentControl = config.AgentControlConfig{
+		Enabled:   true,
+		URL:       server.URL,
+		APIKeyEnv: "AGENT_CONTROL_API_KEY",
+		TimeoutMS: 1000,
+		AgentName: "defenseclaw-openclaw",
+		FailMode:  "open",
+	}
+	api := NewAPIServer("127.0.0.1:0", NewSidecarHealth(), nil, store, logger, cfg)
+	api.agentControl = nil
+	if client := api.agentControlClient(); client == nil {
+		t.Fatalf("agentControlClient() = nil with cfg=%+v", api.scannerCfg.AgentControl)
+	}
+	api.agentControl = nil
+
+	_, verdict := postInspect(t, api, `{"tool":"mcp__thousandeyes-mcp__create_synthetic_test","args":{"mcp_server":"thousandeyes-mcp","mcp_tool":"create_synthetic_test","arguments":{"testName":"defenseclaw-demo-teastore-k8s"}}}`)
+	if verdict.RawAction != "alert" || verdict.Action != "alert" {
+		t.Fatalf("verdict = %+v, want action=alert raw_action=alert", verdict)
+	}
+	if verdict.AgentControl == nil {
+		t.Fatalf("agent control decision missing from verdict: %+v", verdict)
+	}
+	if verdict.AgentControl.ControlName != "require-approval-thousandeyes-test-change" {
+		t.Fatalf("control = %+v, want require-approval-thousandeyes-test-change", verdict.AgentControl)
+	}
+	if api.agentControl == nil {
+		t.Fatal("agentControl client was not rebuilt")
+	}
+}
+
+func TestAgentControlClient_ConcurrentLazyRebuild(t *testing.T) {
+	t.Setenv("AGENT_CONTROL_API_KEY", "test-key")
+	cfg := &config.Config{
+		AgentControl: config.AgentControlConfig{
+			Enabled:   true,
+			URL:       "http://agent-control.test",
+			APIKeyEnv: "AGENT_CONTROL_API_KEY",
+			TimeoutMS: 1000,
+		},
+	}
+	api := &APIServer{scannerCfg: cfg}
+
+	const callers = 64
+	clients := make(chan *agentControlClient, callers)
+	var wg sync.WaitGroup
+	for range callers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			clients <- api.agentControlClient()
+		}()
+	}
+	wg.Wait()
+	close(clients)
+
+	var first *agentControlClient
+	for client := range clients {
+		if client == nil {
+			t.Fatal("agentControlClient returned nil")
+		}
+		if first == nil {
+			first = client
+			continue
+		}
+		if client != first {
+			t.Fatal("concurrent lazy rebuild returned multiple clients")
+		}
+	}
+}
+
+func TestInspectTool_SlowAIDStillReturnsAgentControlVerdict(t *testing.T) {
+	t.Setenv("AGENT_CONTROL_API_KEY", "test-key")
+
+	aidServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(inspectScanTimeout + 200*time.Millisecond)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"is_safe": true,
+			"action": "Allow",
+			"rules": [],
+			"processed_rules": []
+		}`))
+	}))
+	defer aidServer.Close()
+
+	agentControlServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case agentControlEvaluationPath:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+				"is_safe": false,
+				"confidence": 1.0,
+				"matches": [{
+					"control_execution_id": "exec-4",
+					"control_id": 4,
+					"control_name": "require-approval-thousandeyes-test-change",
+					"action": "steer",
+					"result": {"matched": true, "confidence": 1.0, "message": "approval required"},
+					"steering_context": {"message": "Pause for operator approval."}
+				}],
+				"errors": [],
+				"non_matches": []
+			}`))
+		case agentControlEventsPath:
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"received":1,"processed":1,"dropped":0}`))
+		default:
+			t.Fatalf("path = %q, want %q or %q", r.URL.Path, agentControlEvaluationPath, agentControlEventsPath)
+		}
+	}))
+	defer agentControlServer.Close()
+
+	store, logger := testStoreAndLogger(t)
+	cfg := &config.Config{}
+	cfg.Guardrail.Mode = "action"
+	cfg.AgentControl = config.AgentControlConfig{
+		Enabled:   true,
+		URL:       agentControlServer.URL,
+		APIKeyEnv: "AGENT_CONTROL_API_KEY",
+		TimeoutMS: 1000,
+		AgentName: "defenseclaw-openclaw",
+		FailMode:  "open",
+	}
+	api := NewAPIServer("127.0.0.1:0", NewSidecarHealth(), nil, store, logger, cfg)
+	api.ciscoInspector = &CiscoInspectClient{
+		apiKey:   "aid-key",
+		endpoint: aidServer.URL,
+		client:   aidServer.Client(),
+		timeout:  5 * time.Second,
+	}
+
+	rec, verdict := postInspect(t, api, `{"tool":"mcp__thousandeyes-mcp__create_synthetic_test","args":{"mcp_server":"thousandeyes-mcp","mcp_tool":"create_synthetic_test","arguments":{"testName":"defenseclaw-demo-teastore-k8s"}}}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if verdict.RawAction != "alert" || verdict.Action != "alert" {
+		t.Fatalf("verdict = %+v, want action=alert raw_action=alert", verdict)
+	}
+	if verdict.AgentControl == nil || verdict.AgentControl.ControlName != "require-approval-thousandeyes-test-change" {
+		t.Fatalf("agent control = %+v, want require-approval-thousandeyes-test-change", verdict.AgentControl)
+	}
+}
+
+func TestInspectTool_BoundsSlowAIDOnBenignShell(t *testing.T) {
+	called := make(chan struct{}, 1)
+	aidServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called <- struct{}{}
+		time.Sleep(inspectToolTimeout + 500*time.Millisecond)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"is_safe": true,
+			"action": "Allow",
+			"rules": [],
+			"processed_rules": []
+		}`))
+	}))
+	defer aidServer.Close()
+
+	api := testAPIServerWithConfig(t, "observe")
+	api.ciscoInspector = &CiscoInspectClient{
+		apiKey:   "aid-key",
+		endpoint: aidServer.URL,
+		client:   aidServer.Client(),
+		timeout:  5 * time.Second,
+	}
+
+	rec, verdict := postInspect(t, api, `{"tool":"shell","args":{"command":"kubectl -n teastore get pods"}}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if verdict.RawAction != "allow" || verdict.Action != "allow" {
+		t.Fatalf("verdict = %+v, want action=allow raw_action=allow", verdict)
+	}
+	select {
+	case <-called:
+	default:
+		t.Fatal("generic OpenClaw inspect path skipped Cisco AI Defense")
 	}
 }

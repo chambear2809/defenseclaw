@@ -38,8 +38,10 @@ KNOWN_TOKEN_TYPES = ("input", "output", "cached", "reasoning", "tool")
 
 @dataclass(frozen=True)
 class MetricPoint:
+    request_id: str
     timestamp: str
     tokens: float
+    cost_usd: float
     token_type: str
     agent_name: str
     model: str
@@ -80,6 +82,25 @@ def normalize_token_type(value: Any) -> str:
     return TOKEN_TYPE_ALIASES.get(token_type, token_type)
 
 
+def infer_provider_from_model(value: Any) -> str:
+    model = str(value or "").strip().lower()
+    if not model:
+        return "unknown"
+    if model.startswith(("gpt", "o1", "o3", "o4", "text-embedding", "openai/")):
+        return "openai"
+    if model.startswith(("claude", "anthropic/")):
+        return "anthropic"
+    if model.startswith(("gemini", "google/")):
+        return "google"
+    if model.startswith(("llama", "meta/")):
+        return "meta"
+    if model.startswith(("command", "cohere/")):
+        return "cohere"
+    if model.startswith(("mistral", "mixtral")):
+        return "mistral"
+    return "unknown"
+
+
 def metric_point_from_row(row: Mapping[str, Any]) -> MetricPoint:
     """Normalize SignalFlow/O11y rows into a stable Cisco Cloud Control DTO input.
 
@@ -100,14 +121,17 @@ def metric_point_from_row(row: Mapping[str, Any]) -> MetricPoint:
     )
     tokens = _coalesce(row, "tokens", "value", "sum", "metric_value", default=0)
 
+    model = str(_coalesce(row, "model", "gen_ai.request.model", "gen_ai_request_model", default="unknown"))
     return MetricPoint(
+        request_id=str(_coalesce(row, "request_id", "observation_id", "id", default="")),
         timestamp=str(_coalesce(row, "timestamp", "ts", default="")),
         tokens=_to_float(tokens),
+        cost_usd=_to_float(_coalesce(row, "cost_usd", "estimated_cost_usd", default=0)),
         token_type=token_type,
         agent_name=str(_coalesce(row, "agent_name", "gen_ai.agent.name", "gen_ai_agent_name", default="unknown")),
-        model=str(_coalesce(row, "model", "gen_ai.request.model", "gen_ai_request_model", default="unknown")),
+        model=model,
         service_name=str(_coalesce(row, "service_name", "service.name", default="unknown")),
-        provider=str(_coalesce(row, "provider", "gen_ai.provider.name", default="unknown")),
+        provider=str(_coalesce(row, "provider", "gen_ai.provider.name", default=infer_provider_from_model(model))),
         connector=str(_coalesce(row, "connector", "source_system", "discovery_source", default="unknown")),
         environment=str(
             _coalesce(row, "environment", "deployment.environment", "deployment_environment", default="unknown")
@@ -121,6 +145,8 @@ def metric_point_from_row(row: Mapping[str, Any]) -> MetricPoint:
 
 
 def _request_key(point: MetricPoint) -> str:
+    if point.request_id:
+        return f"request:{point.request_id}"
     if point.session_id:
         return f"session:{point.session_id}:{point.agent_name}"
     if point.trace_id:
@@ -135,11 +161,13 @@ def _sum_by(points: Iterable[MetricPoint], keys: tuple[str, ...]) -> list[dict[s
         if key not in totals:
             totals[key] = {k: getattr(point, k) for k in keys}
             totals[key]["tokens"] = 0.0
+            totals[key]["estimated_spend"] = 0.0
             totals[key]["_requests_by_key"] = {}
             totals[key]["_session_ids"] = set()
             totals[key]["_trace_ids"] = set()
         bucket = totals[key]
         bucket["tokens"] += point.tokens
+        bucket["estimated_spend"] += point.cost_usd
         reqs = bucket["_requests_by_key"]
         req_key = _request_key(point)
         reqs[req_key] = max(reqs.get(req_key, 0), point.request_count)
@@ -157,6 +185,7 @@ def _sum_by(points: Iterable[MetricPoint], keys: tuple[str, ...]) -> list[dict[s
         value["sessions"] = len(session_ids)
         value["session_ids"] = sorted(session_ids)
         value["trace_ids"] = sorted(trace_ids)
+        value["estimated_spend"] = round(value["estimated_spend"], 4)
         value["tokens"] = round(value["tokens"], 2)
         rows.append(value)
     return sorted(rows, key=lambda r: r["tokens"], reverse=True)
@@ -173,15 +202,20 @@ def _sum_agents(points: Iterable[MetricPoint]) -> list[dict[str, Any]]:
                 "agent_name": point.agent_name,
                 "service_name": point.service_name,
                 "_connectors": set(),
+                "_models": {},
                 "tokens": 0.0,
+                "estimated_spend": 0.0,
                 "_requests_by_key": {},
                 "_session_ids": set(),
                 "_trace_ids": set(),
             }
         bucket = totals[key]
         bucket["tokens"] += point.tokens
+        bucket["estimated_spend"] += point.cost_usd
         if point.connector:
             bucket["_connectors"].add(point.connector)
+        if point.model:
+            bucket["_models"][point.model] = bucket["_models"].get(point.model, 0.0) + point.tokens
         reqs = bucket["_requests_by_key"]
         req_key = _request_key(point)
         reqs[req_key] = max(reqs.get(req_key, 0), point.request_count)
@@ -193,16 +227,27 @@ def _sum_agents(points: Iterable[MetricPoint]) -> list[dict[str, Any]]:
     rows = []
     for value in totals.values():
         connectors = sorted(value.pop("_connectors"))
+        models = value.pop("_models")
         requests_by_key = value.pop("_requests_by_key")
         session_ids = value.pop("_session_ids")
         trace_ids = value.pop("_trace_ids")
         value["connector"] = (
             connectors[0] if len(connectors) == 1 else ",".join(connectors) if connectors else "unknown"
         )
+        if models:
+            value["primary_model"] = max(models.items(), key=lambda item: item[1])[0]
+            value["models"] = [
+                {"model": model, "tokens": round(tokens, 2)}
+                for model, tokens in sorted(models.items(), key=lambda item: item[1], reverse=True)
+            ]
+        else:
+            value["primary_model"] = "unknown"
+            value["models"] = []
         value["requests"] = sum(requests_by_key.values())
         value["sessions"] = len(session_ids)
         value["session_ids"] = sorted(session_ids)
         value["trace_ids"] = sorted(trace_ids)
+        value["estimated_spend"] = round(value["estimated_spend"], 4)
         value["tokens"] = round(value["tokens"], 2)
         rows.append(value)
     return sorted(rows, key=lambda r: r["tokens"], reverse=True)
@@ -281,11 +326,13 @@ def build_summary(
         points = [p for p in points if p.workspace_id in (workspace_id, "unknown")]
 
     token_totals = {token_type: 0.0 for token_type in KNOWN_TOKEN_TYPES}
+    cost_totals = {token_type: 0.0 for token_type in KNOWN_TOKEN_TYPES}
     request_counts_by_key: MutableMapping[str, int] = {}
     sessions = set()
     trace_ids = set()
     for point in points:
         token_totals[point.token_type] = token_totals.get(point.token_type, 0.0) + point.tokens
+        cost_totals[point.token_type] = cost_totals.get(point.token_type, 0.0) + point.cost_usd
         req_key = _request_key(point)
         request_counts_by_key[req_key] = max(request_counts_by_key.get(req_key, 0), point.request_count)
         if point.session_id:
@@ -306,6 +353,13 @@ def build_summary(
         "session_count": len(sessions),
         "trace_count": len(trace_ids),
         "active_agents": len({p.agent_name for p in points if p.agent_name != "unknown"}),
+        "cost": {
+            "total": round(sum(cost_totals.values()), 4),
+            "input": round(cost_totals.get("input", 0.0), 4),
+            "output": round(cost_totals.get("output", 0.0), 4),
+            "currency": "USD",
+            "pricing_status": "priced" if any(cost_totals.values()) else "unpriced",
+        },
     }
 
     top_agents = _sum_agents(points)[:10]
@@ -332,6 +386,13 @@ def build_summary(
         "top_agents": top_agents,
         "top_models": top_models,
         "token_mix": token_mix,
+        "tokenomics_detail": {
+            "active_agents": summary["active_agents"],
+            "top_models": len(top_models),
+            "estimated_spend": summary["cost"]["total"],
+            "token_mix_segments": len(token_mix),
+            "trace_count": summary["trace_count"],
+        },
         "recommendations": _recommendations(summary, top_agents, top_models),
         "deep_links": _deep_links(realm),
     }
@@ -339,3 +400,116 @@ def build_summary(
 
 def points_as_dicts(points: Iterable[MetricPoint]) -> list[dict[str, Any]]:
     return [asdict(point) for point in points]
+
+
+def gateway_observations_to_metric_rows(observations: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for obs in observations:
+        appended = False
+        request_id = str(_coalesce(obs, "id", default=""))
+        timestamp = str(_coalesce(obs, "timestamp", default=""))
+        connector = str(_coalesce(obs, "connector", default="defenseclaw"))
+        agent_name = str(_coalesce(obs, "agent_name", "agent_id", default="unknown"))
+        model = str(_coalesce(obs, "model", default="unknown"))
+        provider = str(_coalesce(obs, "provider", default=infer_provider_from_model(model)))
+        session_id = _coalesce(obs, "session_id", default=None)
+        prompt_tokens = _to_float(_coalesce(obs, "prompt_tokens", default=0))
+        completion_tokens = _to_float(_coalesce(obs, "completion_tokens", default=0))
+        total_tokens = _to_float(_coalesce(obs, "total_tokens", default=prompt_tokens + completion_tokens))
+        cost_usd = _to_float(_coalesce(obs, "cost_usd", default=0))
+        service_name = str(_coalesce(obs, "source", default="defenseclaw"))
+
+        accounted_tokens = prompt_tokens + completion_tokens
+        allocation_tokens = max(total_tokens, accounted_tokens)
+        residual_tokens = max(total_tokens - accounted_tokens, 0.0)
+        allocated_input_cost = 0.0
+        allocated_output_cost = 0.0
+        if allocation_tokens > 0 and cost_usd > 0:
+            allocated_input_cost = cost_usd * (prompt_tokens / allocation_tokens)
+            allocated_output_cost = cost_usd * (completion_tokens / allocation_tokens)
+        residual_cost = max(cost_usd - allocated_input_cost - allocated_output_cost, 0.0)
+
+        if prompt_tokens > 0:
+            rows.append(
+                {
+                    "request_id": request_id,
+                    "timestamp": timestamp,
+                    "token_type": "input",
+                    "tokens": prompt_tokens,
+                    "cost_usd": allocated_input_cost,
+                    "agent_name": agent_name,
+                    "model": model,
+                    "service_name": service_name,
+                    "provider": provider,
+                    "connector": connector,
+                    "environment": "production",
+                    "tenant_id": "unknown",
+                    "workspace_id": "unknown",
+                    "session_id": session_id,
+                    "request_count": 1,
+                }
+            )
+            appended = True
+        if completion_tokens > 0:
+            rows.append(
+                {
+                    "request_id": request_id,
+                    "timestamp": timestamp,
+                    "token_type": "output",
+                    "tokens": completion_tokens,
+                    "cost_usd": allocated_output_cost,
+                    "agent_name": agent_name,
+                    "model": model,
+                    "service_name": service_name,
+                    "provider": provider,
+                    "connector": connector,
+                    "environment": "production",
+                    "tenant_id": "unknown",
+                    "workspace_id": "unknown",
+                    "session_id": session_id,
+                    "request_count": 1,
+                }
+            )
+            appended = True
+        if residual_tokens > 0 or residual_cost > 0:
+            rows.append(
+                {
+                    "request_id": request_id,
+                    "timestamp": timestamp,
+                    "token_type": "other",
+                    "tokens": residual_tokens,
+                    "cost_usd": residual_cost,
+                    "agent_name": agent_name,
+                    "model": model,
+                    "service_name": service_name,
+                    "provider": provider,
+                    "connector": connector,
+                    "environment": "production",
+                    "tenant_id": "unknown",
+                    "workspace_id": "unknown",
+                    "session_id": session_id,
+                    "request_count": 1,
+                }
+            )
+            appended = True
+        if not appended and total_tokens > 0:
+            rows.append(
+                {
+                    "request_id": request_id,
+                    "timestamp": timestamp,
+                    "token_type": "input",
+                    "tokens": total_tokens,
+                    "cost_usd": cost_usd,
+                    "agent_name": agent_name,
+                    "model": model,
+                    "service_name": service_name,
+                    "provider": provider,
+                    "connector": connector,
+                    "environment": "production",
+                    "tenant_id": "unknown",
+                    "workspace_id": "unknown",
+                    "session_id": session_id,
+                    "request_count": 1,
+                }
+            )
+    return rows

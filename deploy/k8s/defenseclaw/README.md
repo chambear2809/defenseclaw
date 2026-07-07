@@ -97,6 +97,10 @@ kubectl -n defenseclaw create secret generic agent-control-secrets \
 
 kubectl create namespace defenseclaw-tokenomics --dry-run=client -o yaml | kubectl apply -f -
 
+kubectl -n defenseclaw-tokenomics create secret generic defenseclaw-gateway-access \
+  --from-literal=DEFENSECLAW_GATEWAY_TOKEN="$OPENCLAW_GATEWAY_TOKEN" \
+  --dry-run=client -o yaml | kubectl apply -f -
+
 kubectl -n defenseclaw-tokenomics create secret generic c3-agent-tokenomics-galileo \
   --from-literal=GALILEO_API_KEY="${GALILEO_DEMO_V2_API_KEY:-$GALILEO_API_KEY}" \
   --dry-run=client -o yaml | kubectl apply -f -
@@ -106,6 +110,10 @@ The Splunk OTel Collector values expect:
 
 - `otel-splunk/splunk-otel-collector` with keys `splunk_observability_access_token` and `splunk_observability_access_token_secondary`
 - `otel-splunk/streaming-postgres-dbmon` with keys `username`, `password`, and `access-token`
+
+The demo sets `DEFENSECLAW_OPENCLAW_USAGE_EXPORT_INTERVAL=10s`, the supported
+minimum, so a completed OpenClaw turn reaches the local budget ledger and C3
+alert feed quickly. The product default remains `5m` outside this manifest.
 
 ## Apply
 
@@ -181,7 +189,7 @@ Agent Watch flow.
 | Agent Control | Controls page for active runtime policy; Monitor page for live matched decisions | `kubectl -n defenseclaw get svc agent-control-ui` |
 | Splunk Local | Searchable audit, verdict, gateway, and OTel evidence | `kubectl -n defenseclaw get svc splunk-local-ui` |
 | Galileo | Prompt, datasets, saved Playground, and completed experiment evidence | `https://console.demo-v2.galileocloud.io/project/ef0960e1-8744-4019-9faa-103b13f94e0d` |
-| Cisco Cloud Control tokenomics MFE | Prebuilt executive tokenomics UI and fixture API | `kubectl -n defenseclaw-tokenomics get svc c3-agent-tokenomics-mfe` |
+| Cisco Cloud Control tokenomics MFE | Live DefenseClaw usage, budget alerts, and local deny/steer controls | `kubectl -n defenseclaw-tokenomics get svc c3-agent-tokenomics-mfe` |
 
 ### Galileo Object Inventory
 

@@ -95,14 +95,77 @@ Run:
 npm test
 ```
 
-This currently verifies:
+This verifies:
 
-- O11y backend request construction for the inherited O11y POC path.
-- Sandbox build generation.
-- `remoteEntry.js` exposes the expected Module Federation container and modules.
+- live BFF proxy request paths, query strings, and control request bodies
+- structured `502` responses when the configured BFF is unreachable and `504`
+  responses when it exceeds the configured proxy deadline
+- fixture-mode summary and usage-row responses
+- read-only control behavior and static-path traversal protection in fixture mode
+- required prebuilt assets and the expected Module Federation modules
 
-The sandbox build test writes to `.tmp/sandbox-dist` and leaves `dist/`
-untouched.
+## Live OpenClaw And Tokenomics Playwright E2E
+
+The live Playwright suite automates the presenter flow across OpenClaw Chat and
+the Tokenomics GUI. It:
+
+- runs the read-only TeaStore prompt in a unique OpenClaw session
+- waits for the completed turn to increase the live DefenseClaw ledger
+- applies a one-token deny policy through the Tokenomics form
+- verifies the next OpenClaw response is blocked by DefenseClaw
+- checks the embedded Cost, Budget, Controls, and Settings views
+- releases the test policy through the GUI
+- restores any `main` policy that existed before the test in a `finally` block
+
+Install the isolated test dependency and Chromium once:
+
+```bash
+cd e2e
+npm install
+npx playwright install chromium
+cd ..
+```
+
+Discover the current Tokenomics service and run headless:
+
+```bash
+export TOKENOMICS_MFE_HOST="$(kubectl -n defenseclaw-tokenomics get svc c3-agent-tokenomics-mfe -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')"
+export TOKENOMICS_UI_URL="http://${TOKENOMICS_MFE_HOST}/?view=tokenomics"
+export OPENCLAW_GATEWAY_TOKEN="$(kubectl -n defenseclaw get secret defenseclaw-secrets -o jsonpath='{.data.OPENCLAW_GATEWAY_TOKEN}' | base64 --decode)"
+npm run test:e2e:live
+```
+
+Set `PW_HEADFUL=1` to watch the browser workflow:
+
+```bash
+PW_HEADFUL=1 npm run test:e2e:live
+```
+
+Optional overrides:
+
+| Variable | Purpose |
+| --- | --- |
+| `OPENCLAW_CHAT_URL` | OpenClaw Chat base URL |
+| `OPENCLAW_GATEWAY_TOKEN` | Gateway token used in the masked OpenClaw login form |
+| `OPENCLAW_E2E_PROMPT` | Replace the default TeaStore prompt |
+| `OPENCLAW_E2E_PROMPT_TIMEOUT_MS` | Baseline chat timeout; defaults to four minutes |
+| `TOKENOMICS_API_URL` | Override the derived `/v1/c3/agent-tokenomics` API base |
+| `TOKENOMICS_HEALTH_URL` | Override the derived MFE proxy `/healthz` URL |
+| `TOKENOMICS_E2E_AGENT_ID` | Agent policy target; defaults to `main` |
+| `TOKENOMICS_EXPORT_TIMEOUT_MS` | Maximum wait for the ledger update |
+| `TOKENOMICS_E2E_TIMEOUT_MS` | Whole-test timeout |
+
+Failure traces, screenshots, video, and the HTML report are retained under
+`output/playwright/tokenomics-openclaw/`.
+
+Trace capture is automatically disabled when `OPENCLAW_GATEWAY_TOKEN` is
+provided directly so the secret cannot be retained in trace action metadata.
+Screenshots and video only see the masked password input.
+
+Run this test only against the shared demo environment or an isolated staging
+environment where temporary changes to the target agent's budget policy are
+acceptable. The `finally` cleanup protects normal failures and assertions, but
+it cannot run if the test process is forcibly killed.
 
 ## Prebuilt Handoff E2E
 

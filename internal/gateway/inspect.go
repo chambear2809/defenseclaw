@@ -183,6 +183,10 @@ func clampPromptDirectionToolVerdict(verdict *ToolInspectVerdict, direction stri
 // who set scanner_mode=remote AND configure cisco_ai_defense.api_key
 // would double-scan chat traffic (proxy lane + hook lane).
 func (a *APIServer) hookAIDInspect(toolName string, content string) *ScanVerdict {
+	return a.hookAIDInspectCtx(context.Background(), toolName, content)
+}
+
+func (a *APIServer) hookAIDInspectCtx(ctx context.Context, toolName string, content string) *ScanVerdict {
 	if a == nil || a.ciscoInspector == nil {
 		return nil
 	}
@@ -201,7 +205,7 @@ func (a *APIServer) hookAIDInspect(toolName string, content string) *ScanVerdict
 	if toolName != "" && toolName != "message" {
 		body = fmt.Sprintf("Tool call: %s\n%s", toolName, content)
 	}
-	return a.ciscoInspector.Inspect([]ChatMessage{{Role: "user", Content: body}})
+	return a.ciscoInspector.InspectWithContext(ctx, []ChatMessage{{Role: "user", Content: body}})
 }
 
 // mergeWithAIDVerdict folds an AID ScanVerdict into an existing
@@ -291,17 +295,58 @@ func mergeWithLaneVerdict(local *ToolInspectVerdict, aid *ScanVerdict, findingTa
 // under a deadline-free context.Background() so it is bounded only by
 // its own HookTimeout, never the 200ms rule-scan cap; see
 // inspectToolPolicyCtx for the variant the generic /inspect/tool
-// endpoint uses to short-circuit the judge under its 200ms deadline.
+// endpoint uses to short-circuit the judge under its sub-second deadline.
 func (a *APIServer) inspectToolPolicy(req *ToolInspectRequest) *ToolInspectVerdict {
 	return a.inspectToolPolicyCtx(context.Background(), req)
 }
 
 // inspectToolPolicyCtx is inspectToolPolicy with an explicit context for
-// the judge lane's deadline guard. The generic /inspect/tool endpoint
-// (handleInspectTool) passes its 200ms-capped ctx so the judge
-// short-circuits there exactly as the message lane does; native hook
-// callers reach this through inspectToolPolicy with context.Background().
+// the overall evaluation path. Native hook callers use the same context
+// for both the full evaluation and the optional judge lane.
 func (a *APIServer) inspectToolPolicyCtx(ctx context.Context, req *ToolInspectRequest) *ToolInspectVerdict {
+	return a.inspectToolPolicyWithJudgeAndAIDCtx(ctx, ctx, ctx, req)
+}
+
+// inspectToolPolicyWithJudgeCtx lets the generic /inspect/tool endpoint
+// keep a sub-second remote-lane budget (Cisco AI Defense + judge) while
+// giving the overall request more time to finish Agent Control.
+func (a *APIServer) inspectToolPolicyWithJudgeCtx(ctx, judgeCtx context.Context, req *ToolInspectRequest) *ToolInspectVerdict {
+	return a.inspectToolPolicyWithJudgeAndAIDCtx(ctx, judgeCtx, judgeCtx, req)
+}
+
+// inspectToolPolicyWithJudgeAndAIDCtx splits the tool-call evaluation budget
+// into:
+//   - ctx: the full request budget
+//   - judgeCtx: the optional LLM-judge budget
+//   - aidCtx: the optional Cisco AI Defense budget
+//
+// Passing a nil aidCtx disables the AID lane. Real connector paths, including
+// OpenClaw's /inspect/tool hook, supply a bounded AID context so a slow cloud
+// inspection cannot consume the Agent Control budget.
+func (a *APIServer) inspectToolPolicyWithJudgeAndAIDCtx(ctx, judgeCtx, aidCtx context.Context, req *ToolInspectRequest) *ToolInspectVerdict {
+	var agentControlCh <-chan *agentControlDecision
+	if client := a.agentControlClient(); client != nil {
+		resultCh := make(chan *agentControlDecision, 1)
+		stage, step := agentControlStepForInspect(req)
+		go func() {
+			resultCh <- client.evaluate(ctx, stage, step)
+		}()
+		agentControlCh = resultCh
+	}
+	applyAgentControl := func(verdict *ToolInspectVerdict) *ToolInspectVerdict {
+		if verdict == nil {
+			verdict = &ToolInspectVerdict{Action: "allow", Severity: "NONE", Findings: []string{}}
+		}
+		if agentControlCh != nil {
+			decision := <-agentControlCh
+			agentControlCh = nil
+			mergeAgentControlIntoToolVerdict(verdict, decision)
+			annotateAgentControlSpan(ctx, decision)
+			emitAgentControlPolicyDecision(a.otel, decision)
+		}
+		return verdict
+	}
+
 	// Static block/allow list takes priority — checked before any rule
 	// scanning. Connector-scoped (@C/T) entries resolve before the bare
 	// global entry, mirroring the sidecar lane and the PolicyEngine helpers:
@@ -314,7 +359,7 @@ func (a *APIServer) inspectToolPolicyCtx(ctx context.Context, req *ToolInspectRe
 		// --connector scoped); it is checked before the per-tool block/allow so
 		// a server-level block wins over a tool-level allow, and it fails closed
 		// + loud on a store lookup error.
-		if deny, server, reason := mcpServerRuntimeBlock(pe, req.Tool, req.Connector, req.MCPServerName); deny {
+		if deny, server, reason := mcpServerRuntimeBlockCtx(ctx, pe, req.Tool, req.Connector, req.MCPServerName); deny {
 			if a.otel != nil {
 				a.otel.EmitPolicyDecision("admission", "blocked", req.Tool, "mcp", reason, map[string]string{
 					"mcp_server_name": server,
@@ -322,42 +367,42 @@ func (a *APIServer) inspectToolPolicyCtx(ctx context.Context, req *ToolInspectRe
 					"runtime_surface": "inspect-tool",
 				})
 			}
-			return &ToolInspectVerdict{
+			return applyAgentControl(&ToolInspectVerdict{
 				Action:     "block",
 				Severity:   "HIGH",
 				Confidence: 1.0,
 				Reason:     reason,
 				Findings:   []string{"MCP-BLOCK"},
-			}
+			})
 		}
-		blocked, err := pe.IsToolBlockedForConnector(req.Tool, req.Connector)
+		blocked, err := pe.IsToolBlockedForConnectorContext(ctx, req.Tool, req.Connector)
 		if err != nil {
-			return toolPolicyLookupErrorVerdict("inspect", "block-list", req.Tool, req.Connector, err)
+			return applyAgentControl(toolPolicyLookupErrorVerdict("inspect", "block-list", req.Tool, req.Connector, err))
 		}
 		if blocked {
-			return &ToolInspectVerdict{
+			return applyAgentControl(&ToolInspectVerdict{
 				Action:     "block",
 				Severity:   "HIGH",
 				Confidence: 1.0,
 				Reason:     fmt.Sprintf("tool %q is on the static block list", req.Tool),
 				Findings:   []string{"STATIC-BLOCK"},
-			}
+			})
 		}
 		// An explicit allow skips rule/pattern/AID/judge scanning. Write tools
 		// still run CodeGuard on their content (D2): the allow bypasses the
 		// scan gate, not code-content inspection.
-		allowed, err := pe.IsToolAllowedForConnector(req.Tool, req.Connector)
+		allowed, err := pe.IsToolAllowedForConnectorContext(ctx, req.Tool, req.Connector)
 		if err != nil {
-			return toolPolicyLookupErrorVerdict("inspect", "allow-list", req.Tool, req.Connector, err)
+			return applyAgentControl(toolPolicyLookupErrorVerdict("inspect", "allow-list", req.Tool, req.Connector, err))
 		}
 		if allowed {
 			if !isWriteToolName(strings.ToLower(req.Tool)) {
-				return &ToolInspectVerdict{Action: "allow", Severity: "NONE", Findings: []string{"STATIC-ALLOW"}}
+				return applyAgentControl(&ToolInspectVerdict{Action: "allow", Severity: "NONE", Findings: []string{"STATIC-ALLOW"}})
 			}
 			if cg := a.runCodeGuardOnArgs(req); len(cg) > 0 {
-				return a.codeGuardOnlyVerdict(req, cg)
+				return applyAgentControl(a.codeGuardOnlyVerdict(req, cg))
 			}
-			return &ToolInspectVerdict{Action: "allow", Severity: "NONE", Findings: []string{"STATIC-ALLOW"}}
+			return applyAgentControl(&ToolInspectVerdict{Action: "allow", Severity: "NONE", Findings: []string{"STATIC-ALLOW"}})
 		}
 	}
 
@@ -390,8 +435,10 @@ func (a *APIServer) inspectToolPolicyCtx(ctx context.Context, req *ToolInspectRe
 		// turn — operators with custom AID policies (e.g. block
 		// `createJiraIssue`, throttle `addComment`) want their rules to
 		// fire even when no DefenseClaw built-in pattern matched.
-		if aid := a.hookAIDInspect(toolName, argsStr); aid != nil && aid.Action != "allow" && aid.Action != "" {
-			verdict = mergeWithAIDVerdict(nil, aid)
+		if aidCtx != nil {
+			if aid := a.hookAIDInspectCtx(aidCtx, toolName, argsStr); aid != nil && aid.Action != "allow" && aid.Action != "" {
+				verdict = mergeWithAIDVerdict(nil, aid)
+			}
 		}
 	} else {
 		severity := HighestSeverity(ruleFindings)
@@ -437,8 +484,10 @@ func (a *APIServer) inspectToolPolicyCtx(ctx context.Context, req *ToolInspectRe
 		// AID's classifier reads free-text content; the rule names give it
 		// useful context. The lane is silent when no AID client is wired
 		// or when ScanHookSurface=false.
-		if aid := a.hookAIDInspect(toolName, argsStr); aid != nil {
-			verdict = mergeWithAIDVerdict(verdict, aid)
+		if aidCtx != nil {
+			if aid := a.hookAIDInspectCtx(aidCtx, toolName, argsStr); aid != nil {
+				verdict = mergeWithAIDVerdict(verdict, aid)
+			}
 		}
 	}
 
@@ -450,10 +499,10 @@ func (a *APIServer) inspectToolPolicyCtx(ctx context.Context, req *ToolInspectRe
 	// (regex_only) returns nil and no LLM round-trip happens. Runs after
 	// the regex/AID lanes so regex_judge can skip the round-trip when the
 	// local lanes already condemned the call.
-	if jv := a.runHookJudge(ctx, "tool_call", "prompt", req.Connector, argsStr, toolName, verdict); jv != nil {
+	if jv := a.runHookJudge(judgeCtx, "tool_call", "prompt", req.Connector, argsStr, toolName, verdict); jv != nil {
 		verdict = mergeWithJudgeVerdict(verdict, jv)
 	}
-	return verdict
+	return applyAgentControl(verdict)
 }
 
 // unmarshalArgsObject decodes a tool-call args payload that may
@@ -579,6 +628,10 @@ func (a *APIServer) codeGuardOnlyVerdict(req *ToolInspectRequest, cgFindings []s
 // inspectMessageContent scans outbound message content for secrets, PII,
 // and data exfiltration patterns. Uses the same rule engine.
 func (a *APIServer) inspectMessageContent(ctx context.Context, req *ToolInspectRequest) *ToolInspectVerdict {
+	return a.inspectMessageContentWithAIDCtx(ctx, ctx, req)
+}
+
+func (a *APIServer) inspectMessageContentWithAIDCtx(ctx, aidCtx context.Context, req *ToolInspectRequest) *ToolInspectVerdict {
 	content := req.Content
 	if content == "" {
 		var parsed map[string]interface{}
@@ -606,8 +659,10 @@ func (a *APIServer) inspectMessageContent(ctx context.Context, req *ToolInspectR
 		// Regex found nothing locally. Give the AID lane a turn —
 		// custom AID policies (e.g. organisation-specific PII rules)
 		// may match where the bundled regex pack didn't.
-		if aid := a.hookAIDInspect("message", content); aid != nil && aid.Action != "allow" && aid.Action != "" {
-			verdict = mergeWithAIDVerdict(nil, aid)
+		if aidCtx != nil {
+			if aid := a.hookAIDInspectCtx(aidCtx, "message", content); aid != nil && aid.Action != "allow" && aid.Action != "" {
+				verdict = mergeWithAIDVerdict(nil, aid)
+			}
 		}
 	} else {
 		severity := HighestSeverity(ruleFindings)
@@ -636,8 +691,10 @@ func (a *APIServer) inspectMessageContent(ctx context.Context, req *ToolInspectR
 		// configured. mergeWithAIDVerdict escalates strictness — AID block
 		// trumps regex alert, AID HIGH trumps regex MEDIUM, etc. Lane is a
 		// no-op when no client is wired.
-		if aid := a.hookAIDInspect("message", content); aid != nil {
-			verdict = mergeWithAIDVerdict(verdict, aid)
+		if aidCtx != nil {
+			if aid := a.hookAIDInspectCtx(aidCtx, "message", content); aid != nil {
+				verdict = mergeWithAIDVerdict(verdict, aid)
+			}
 		}
 	}
 
@@ -682,7 +739,7 @@ func (a *APIServer) hookJudgeInspect(ctx context.Context, req *ToolInspectReques
 		direction = "prompt"
 	}
 	// Message content threads the caller ctx so the generic /inspect/tool
-	// endpoint's 200ms deadline still short-circuits the judge below.
+	// endpoint's sub-second deadline still short-circuits the judge below.
 	return a.runHookJudge(ctx, direction, direction, req.Connector, content, req.Tool, current)
 }
 
@@ -739,7 +796,7 @@ func (a *APIServer) runHookJudge(ctx context.Context, strategyDirection, judgeDi
 		return nil
 	}
 
-	// The generic /inspect handlers run under a 200ms deadline
+	// The generic /inspect handlers run under a sub-second deadline
 	// (inspectScanTimeout) — no judge round-trip fits, and blowing
 	// that deadline would 504 the whole verdict. Skip unless the
 	// caller's remaining budget can plausibly carry an LLM call. The
@@ -801,8 +858,12 @@ func (a *APIServer) handleInspectTool(w http.ResponseWriter, r *http.Request) {
 		a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "tool is required"})
 		return
 	}
+	if decision := a.activeBudgetDecision(a.budgetSubjectFromSession(req.SessionID)); decision != nil {
+		budgetControlResponseForInspect(a, w, r, "tool_call", req.Tool, decision)
+		return
+	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), inspectScanTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), inspectToolTimeout)
 	defer cancel()
 
 	fmt.Fprintf(os.Stderr, "[inspect] >>> tool=%q args=%s content_len=%d direction=%s\n",
@@ -816,14 +877,18 @@ func (a *APIServer) handleInspectTool(w http.ResponseWriter, r *http.Request) {
 	ch := make(chan verdictResult, 1)
 	go func() {
 		var v *ToolInspectVerdict
+		aidCtx, cancelAID := context.WithTimeout(ctx, inspectAIDTimeout)
+		defer cancelAID()
 		if strings.ToLower(req.Tool) == "message" && (req.Content != "" || req.Direction == "outbound") {
-			v = a.inspectMessageContent(ctx, &req)
+			v = a.inspectMessageContentWithAIDCtx(ctx, aidCtx, &req)
 		} else {
-			// Pass the 200ms-capped ctx so the tool-call judge lane's
-			// deadline guard short-circuits on this generic endpoint
-			// (mirroring the message lane); native hook callers go
-			// through inspectToolPolicy with a deadline-free context.
-			v = a.inspectToolPolicyCtx(ctx, &req)
+			// Keep the generic endpoint's judge budget under the
+			// sub-second scan cap while giving the overall request enough
+			// time to finish Agent Control. AID has its own bounded context;
+			// Agent Control starts concurrently inside the policy evaluator.
+			judgeCtx, cancelJudge := context.WithTimeout(ctx, inspectScanTimeout)
+			defer cancelJudge()
+			v = a.inspectToolPolicyWithJudgeAndAIDCtx(ctx, judgeCtx, aidCtx, &req)
 		}
 		ch <- verdictResult{v}
 	}()

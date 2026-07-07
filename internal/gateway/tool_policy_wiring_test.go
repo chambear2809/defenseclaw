@@ -88,6 +88,9 @@ func TestInspectTool_GlobalBlock_HitsAllConnectors(t *testing.T) {
 
 func TestInspectTool_ToolPolicyLookupErrorFailsClosed(t *testing.T) {
 	api, store := toolPolicyAPI(t, "action")
+	// Isolate the static tool-policy lookup. Budget-store failures have their
+	// own fail-closed regression and otherwise correctly preempt this lane.
+	api.budgetControl = nil
 	if err := store.Close(); err != nil {
 		t.Fatalf("close store: %v", err)
 	}

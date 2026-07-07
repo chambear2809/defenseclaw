@@ -54,11 +54,21 @@ const (
 	// inspectScanTimeout caps every synchronous rule scan executed under
 	// /api/v1/inspect/*. The hook callers (claude-code, codex, inspect-tool)
 	// are in the agent's critical path: a timeout here directly stalls the
-	// user-visible LLM call. Plan F19 sets this to 200ms — fast enough that
-	// a stuck regex / pathological scanner can never wedge the agent, while
-	// still covering >P99 of well-behaved scans (median is well under 5ms
-	// for the rule set shipped in internal/gateway/scan_rules*.go).
-	inspectScanTimeout = 200 * time.Millisecond
+	// user-visible LLM call. The live enterprise-ops demo's current rule-pack
+	// and rescan load can legitimately exceed 200ms, which made the
+	// inspect-only demo path return 504 instead of a verdict. Keep the cap
+	// comfortably below the 1s hook-judge gate in inspect.go so generic
+	// /inspect/* calls still skip judge round-trips.
+	inspectScanTimeout = 750 * time.Millisecond
+	// inspectAIDTimeout gives the real OpenClaw /inspect/tool path a bounded
+	// Cisco AI Defense lane. Agent Control runs concurrently, so this does not
+	// add its timeout to the cloud-inspection timeout.
+	inspectAIDTimeout = 1500 * time.Millisecond
+	// inspectToolTimeout bounds the end-to-end generic /inspect/tool
+	// handler. Unlike inspectScanTimeout, this budget must also cover
+	// Agent Control evaluation so steer/deny policies can return a
+	// verdict instead of tripping the outer 504 watchdog.
+	inspectToolTimeout = 2500 * time.Millisecond
 )
 
 // scanWithTimeout runs ScanAllRules under a context deadline. Returns partial
@@ -125,6 +135,10 @@ func (a *APIServer) handleInspectRequest(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	req.Content = truncateInspectContent(req.Content, maxInspectContentLen)
+	if decision := a.activeBudgetDecision(a.budgetSubjectFromSession(req.SessionID)); decision != nil {
+		budgetControlResponseForInspect(a, w, r, "prompt", "pre-request", decision)
+		return
+	}
 	if req.Content == "" {
 		a.writeJSON(w, http.StatusOK, &ToolInspectVerdict{Action: "allow", Severity: "NONE", Findings: []string{}})
 		return
@@ -142,8 +156,8 @@ func (a *APIServer) handleInspectRequest(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	verdict := a.buildVerdict(ruleFindings, "prompt", false)
-	if a.agentControl != nil {
-		decision := a.agentControl.evaluate(r.Context(), "pre", agentControlStepForLLM("pre", req.Model, req.Content, "", map[string]string{
+	if client := a.agentControlClient(); client != nil {
+		decision := client.evaluate(r.Context(), "pre", agentControlStepForLLM("pre", req.Model, req.Content, "", map[string]string{
 			"session_id": req.SessionID,
 			"request_id": RequestIDFromContext(r.Context()),
 			"direction":  "prompt",
@@ -209,6 +223,10 @@ func (a *APIServer) handleInspectResponse(w http.ResponseWriter, r *http.Request
 		return
 	}
 	req.Content = truncateInspectContent(req.Content, maxInspectContentLen)
+	if decision := a.activeBudgetDecision(a.budgetSubjectFromSession(req.SessionID)); decision != nil {
+		budgetControlResponseForInspect(a, w, r, "completion", "post-response", decision)
+		return
+	}
 	if req.Content == "" {
 		a.writeJSON(w, http.StatusOK, &ToolInspectVerdict{Action: "allow", Severity: "NONE", Findings: []string{}})
 		return
@@ -226,8 +244,8 @@ func (a *APIServer) handleInspectResponse(w http.ResponseWriter, r *http.Request
 		return
 	}
 	verdict := a.buildVerdict(ruleFindings, "completion", false)
-	if a.agentControl != nil {
-		decision := a.agentControl.evaluate(r.Context(), "post", agentControlStepForLLM("post", req.Model, "", req.Content, map[string]string{
+	if client := a.agentControlClient(); client != nil {
+		decision := client.evaluate(r.Context(), "post", agentControlStepForLLM("post", req.Model, "", req.Content, map[string]string{
 			"session_id": req.SessionID,
 			"request_id": RequestIDFromContext(r.Context()),
 			"direction":  "completion",
@@ -292,6 +310,10 @@ func (a *APIServer) handleInspectToolResponse(w http.ResponseWriter, r *http.Req
 		a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "tool is required"})
 		return
 	}
+	if decision := a.activeBudgetDecision(a.budgetSubjectFromSession(req.SessionID)); decision != nil {
+		a.writeJSON(w, http.StatusOK, budgetDecisionVerdict(decision))
+		return
+	}
 
 	protection := protectToolResponseForAgent(r.Context(), &req)
 	outputStr := truncateInspectContent(string(req.Output), maxInspectContentLen)
@@ -308,8 +330,8 @@ func (a *APIServer) handleInspectToolResponse(w http.ResponseWriter, r *http.Req
 		return
 	}
 	verdict := a.buildVerdict(ruleFindings, "tool_response", false)
-	if a.agentControl != nil {
-		decision := a.agentControl.evaluate(r.Context(), "post", agentControlStep{
+	if client := a.agentControlClient(); client != nil {
+		decision := client.evaluate(r.Context(), "post", agentControlStep{
 			Type:   "tool",
 			Name:   req.Tool,
 			Input:  map[string]interface{}{"exit_code": req.ExitCode},

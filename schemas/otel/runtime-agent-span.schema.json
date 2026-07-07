@@ -42,6 +42,10 @@
     "defenseclaw.session.resumed",
     "defenseclaw.telemetry.input.reported",
     "defenseclaw.telemetry.output.reported",
+    "input.value",
+    "input.mime_type",
+    "output.value",
+    "output.mime_type",
     "user.id",
     "defenseclaw.user.name"
   ],
@@ -69,7 +73,7 @@
     },
     "kind": {
       "type": "integer",
-      "const": 1
+      "const": 3
     },
     "startTimeUnixNano": {
       "type": "string"
@@ -141,6 +145,12 @@
           "type": "string",
           "const": "invoke_agent"
         },
+        "gen_ai.system": {
+          "type": "string"
+        },
+        "gen_ai.framework": {
+          "type": "string"
+        },
         "gen_ai.provider.name": {
           "type": "string"
         },
@@ -185,6 +195,9 @@
         "gen_ai.conversation.id": {
           "type": "string"
         },
+        "gen_ai.conversation_root": {
+          "type": "boolean"
+        },
         "openinference.span.kind": {
           "type": "string",
           "const": "AGENT"
@@ -214,6 +227,9 @@
         },
         "defenseclaw.agent.instance_id": {
           "type": "string"
+        },
+        "defenseclaw.content.redacted": {
+          "type": "boolean"
         },
         "defenseclaw.telemetry.canary": {
           "type": "boolean",

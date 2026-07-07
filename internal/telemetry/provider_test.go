@@ -360,14 +360,20 @@ func TestStartLLMSpan_MirrorsResourceJoinKeysOntoSpan(t *testing.T) {
 		if !ok {
 			t.Fatalf("%s missing", key)
 		}
-		var messages []map[string]string
+		var messages []struct {
+			Role  string `json:"role"`
+			Parts []struct {
+				Type    string `json:"type"`
+				Content string `json:"content"`
+			} `json:"parts"`
+		}
 		if err := json.Unmarshal([]byte(got.AsString()), &messages); err != nil || len(messages) != 1 {
 			t.Fatalf("%s=%q invalid GenAI messages: %v", key, got.AsString(), err)
 		}
-		if !strings.Contains(messages[0]["content"], "<redacted") {
-			t.Fatalf("%s content=%q, want redacted value", key, messages[0]["content"])
+		if len(messages[0].Parts) != 1 || !strings.Contains(messages[0].Parts[0].Content, "<redacted") {
+			t.Fatalf("%s parts=%+v, want redacted value", key, messages[0].Parts)
 		}
-		if strings.Contains(messages[0]["content"], "private") {
+		if strings.Contains(messages[0].Parts[0].Content, "private") {
 			t.Fatalf("%s leaked raw content: %q", key, got.AsString())
 		}
 	}
@@ -466,7 +472,7 @@ func TestRuntimeSpansIncludeRedactedGalileoInputsAndOutputs(t *testing.T) {
 
 	t.Run("agent", func(t *testing.T) {
 		p, exp := newTracingProvider(t)
-		_, span := p.StartAgentSpan(context.Background(), "session-123", "codex", "codex", "openai_codex", "openai")
+		_, span := p.StartAgentSpan(context.Background(), "session-123", "codex", "codex", "openai_codex", "openai", "codex")
 		p.EndAgentSpan(span, "")
 
 		spans := exp.GetSpans()
@@ -593,7 +599,7 @@ func TestRuntimeSpansExposeGalileoContentWhenRedactionDisabled(t *testing.T) {
 
 	t.Run("agent rollup", func(t *testing.T) {
 		p, exp := newTracingProvider(t)
-		_, span := p.StartAgentSpan(context.Background(), "session-123", "codex", "codex", "openai_codex", "openai")
+		_, span := p.StartAgentSpan(context.Background(), "session-123", "codex", "codex", "openai_codex", "openai", "codex")
 		p.EndAgentSpan(span, "", AgentSpanSummary{
 			Input:        "investigate errors",
 			Output:       "found no errors",
@@ -878,19 +884,15 @@ func TestNewProvider_MultipleTraceDestinationsFanOut(t *testing.T) {
 	assertRequest("galileo", galileoC, "/otel/traces", "test-key")
 	assertRequest("local operational", localC, "/v1/traces", "")
 	assertRequest("local upstream-error GenAI", localC, "/v1/traces", "")
-	select {
-	case got := <-galileoC:
-		t.Errorf("Galileo received non-GenAI operational span request: %+v", got)
-	case <-time.After(100 * time.Millisecond):
-	}
+	assertRequest("galileo upstream-error GenAI", galileoC, "/otel/traces", "test-key")
 	stats := p.DestinationRoutingStats("galileo")
-	if stats.Accepted != 1 || stats.Dropped != 2 {
-		t.Fatalf("DestinationRoutingStats=%+v want accepted=1 dropped=2", stats)
+	if stats.Accepted != 2 || stats.Dropped != 1 {
+		t.Fatalf("DestinationRoutingStats=%+v want accepted=2 dropped=1", stats)
 	}
 	delivery := p.DestinationDeliveryStats("galileo")
-	if delivery.Attempted != 1 || delivery.Delivered != 1 ||
+	if delivery.Attempted != 2 || delivery.Delivered != 2 ||
 		delivery.Rejected != 0 || delivery.Failed != 0 {
-		t.Fatalf("DestinationDeliveryStats=%+v want attempted=delivered=1", delivery)
+		t.Fatalf("DestinationDeliveryStats=%+v want attempted=delivered=2", delivery)
 	}
 }
 

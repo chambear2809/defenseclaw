@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>C3 Tokenomics Live</title>
+    <link rel="stylesheet" href="/embedded-live/app.css" />
+  </head>
+  <body>
+    <div class="page-shell"></div>
+    <main class="page">
+      <header class="masthead">
+        <div>
+          <p class="eyebrow">AI Usage</p>
+          <h1>C3 Tokenomics</h1>
+          <p class="subhead">
+            Live DefenseClaw token spend, budget breaches, and local runtime control presented in the cost-first C3
+            operator surface.
+          </p>
+        </div>
+        <div class="masthead-meta">
+          <span id="data-mode" class="status-pill">Loading</span>
+          <span id="updated-at" class="status-pill muted">Waiting for data</span>
+        </div>
+      </header>
+
+      <nav class="product-tabs" aria-label="Tokenomics modes">
+        <button class="view-tab is-active" data-view="cost" type="button">Cost</button>
+        <button class="view-tab" data-view="budget" type="button">Budget</button>
+        <button class="view-tab" data-view="controls" type="button">Controls</button>
+        <button class="view-tab" data-view="settings" type="button">Settings</button>
+      </nav>
+
+      <section class="toolbar">
+        <div class="chip-set">
+          <span id="window-chip" class="chip chip-primary">Window: -24h</span>
+          <span id="surface-chip" class="chip">Surface: Cost</span>
+          <span id="provider-chip" class="chip">Providers: loading</span>
+          <span id="agent-chip" class="chip">Active agents: 0</span>
+        </div>
+      </section>
+
+      <section id="status-banner" class="status-banner hidden"></section>
+
+      <section id="cost-view" class="view-stack">
+        <section id="summary-grid" class="summary-grid"></section>
+
+        <section class="analytics-grid">
+          <article class="surface">
+            <div class="surface-head">
+              <div>
+                <p class="section-kicker">Cost Breakdown</p>
+                <h2>Current Window Spend</h2>
+              </div>
+              <div id="breakdown-meta" class="inline-chips"></div>
+            </div>
+            <div id="breakdown-bars" class="breakdown-bars"></div>
+            <div id="token-mix" class="token-mix-grid"></div>
+          </article>
+
+          <article class="surface">
+            <div class="surface-head">
+              <div>
+                <p class="section-kicker">Budget Breach Feed</p>
+                <h2>Live Runtime Evidence</h2>
+              </div>
+            </div>
+            <div id="breach-feed" class="feed-list"></div>
+          </article>
+        </section>
+
+        <article class="table-surface">
+          <div class="surface-head table-head">
+            <div>
+              <p class="section-kicker">Usage Detail</p>
+              <h2>Cost in USD</h2>
+            </div>
+            <label class="search-wrap">
+              <span class="search-icon" aria-hidden="true"></span>
+              <input id="table-search" type="search" placeholder="Search..." autocomplete="off" />
+            </label>
+          </div>
+
+          <div class="dimension-row">
+            <div class="dimension-tabs" aria-label="Cost dimensions">
+              <button class="dimension-tab is-active" data-dimension="model" type="button">Model</button>
+              <button class="dimension-tab" data-dimension="agent" type="button">Agent</button>
+              <button class="dimension-tab" data-dimension="provider" type="button">Provider</button>
+              <button class="dimension-tab" data-dimension="connector" type="button">Connector</button>
+            </div>
+            <div id="table-context" class="table-context"></div>
+          </div>
+
+          <div id="table-panel" class="table-wrap"></div>
+        </article>
+      </section>
+
+      <section id="budget-view" class="view-stack hidden">
+        <section class="runtime-grid">
+          <article class="surface">
+            <div class="surface-head">
+              <div>
+                <p class="section-kicker">Runtime Governance</p>
+                <h2>Policy State</h2>
+              </div>
+            </div>
+            <div id="budget-cards" class="metric-grid"></div>
+          </article>
+
+          <article class="surface">
+            <div class="surface-head">
+              <div>
+                <p class="section-kicker">Operator Guidance</p>
+                <h2>Recommendations</h2>
+              </div>
+            </div>
+            <div id="budget-recommendations" class="stack-list"></div>
+          </article>
+        </section>
+
+        <article class="table-surface">
+          <div class="surface-head">
+            <div>
+              <p class="section-kicker">Enforcement</p>
+              <h2>Effective Policies</h2>
+            </div>
+          </div>
+          <div id="policies-panel" class="table-wrap"></div>
+        </article>
+      </section>
+
+      <section id="controls-view" class="view-stack hidden">
+        <section class="runtime-grid">
+          <article class="surface">
+            <div class="surface-head">
+              <div>
+                <p class="section-kicker">Agent Watch</p>
+                <h2>Top Consumers Under Watch</h2>
+              </div>
+            </div>
+            <div id="consumers-panel" class="stack-list"></div>
+          </article>
+
+          <article class="surface">
+            <div class="surface-head">
+              <div>
+                <p class="section-kicker">Control Evidence</p>
+                <h2>Open Budget Signals</h2>
+              </div>
+            </div>
+            <div id="controls-evidence" class="stack-list"></div>
+          </article>
+        </section>
+
+        <article class="table-surface">
+          <div class="surface-head">
+            <div>
+              <p class="section-kicker">Operator Playbook</p>
+              <h2>Recommended Actions</h2>
+            </div>
+          </div>
+          <div id="controls-recommendations" class="stack-list"></div>
+        </article>
+      </section>
+
+      <section id="settings-view" class="view-stack hidden">
+        <section id="settings-cards" class="settings-grid"></section>
+
+        <section class="runtime-grid">
+          <article class="surface">
+            <div class="surface-head">
+              <div>
+                <p class="section-kicker">Deployment Posture</p>
+                <h2>Source Details</h2>
+              </div>
+            </div>
+            <div id="source-details" class="stack-list"></div>
+          </article>
+
+          <article class="surface">
+            <div class="surface-head">
+              <div>
+                <p class="section-kicker">Deep Links</p>
+                <h2>Operator Jump Points</h2>
+              </div>
+            </div>
+            <div id="deep-links" class="stack-list"></div>
+          </article>
+        </section>
+      </section>
+    </main>
+    <script src="/embedded-live/app.js"></script>
+  </body>
+</html>

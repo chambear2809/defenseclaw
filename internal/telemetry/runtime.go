@@ -112,6 +112,17 @@ func genAITextMessageSpanValue(role, content, finishReason string) string {
 	return string(b)
 }
 
+func redactedMessageForRole(role string) string {
+	switch role {
+	case "assistant":
+		return redactedAssistantMessage
+	case "tool":
+		return redactedToolMessage
+	default:
+		return redactedUserMessage
+	}
+}
+
 func genAIInputMessage(content string) string {
 	if redaction.DisableAll() && content != "" {
 		return genAITextMessageSpanValue("user", content, "")
@@ -145,6 +156,9 @@ func genAIContentAttrs(input, output string, finishReasons []string) []attribute
 }
 
 func genAITokenUsageAttrs(inputTokens, outputTokens int) []attribute.KeyValue {
+	if inputTokens <= 0 && outputTokens <= 0 {
+		return nil
+	}
 	totalTokens := inputTokens + outputTokens
 	return []attribute.KeyValue{
 		attribute.Int("gen_ai.usage.input_tokens", inputTokens),
@@ -708,16 +722,21 @@ func (p *Provider) SetGenAIToolArguments(span trace.Span, content string) {
 	if span == nil || strings.TrimSpace(content) == "" {
 		return
 	}
-	safe := redaction.ForSinkString(content)
-	messages, err := json.Marshal([]map[string]string{{"role": "user", "content": safe}})
-	if err != nil {
+	if redaction.DisableAll() {
+		span.SetAttributes(
+			attribute.String("gen_ai.tool.call.arguments", content),
+			attribute.String("gen_ai.input.messages", genAITextMessageSpanValue("user", content, "")),
+			attribute.String("input.value", content),
+			attribute.String("input.mime_type", "application/json"),
+			attribute.String("defenseclaw.tool.args", content),
+			attribute.Bool("defenseclaw.content.redacted", false),
+		)
 		return
 	}
 	span.SetAttributes(
-		attribute.String("gen_ai.tool.call.arguments", safe),
-		attribute.String("gen_ai.input.messages", string(messages)),
-		attribute.String("input.value", safe),
-		attribute.String("input.mime_type", "application/json"),
+		attribute.String("gen_ai.tool.call.arguments", redactedToolArguments(len(content))),
+		attribute.String("gen_ai.input.messages", redactedMessageForRole("user")),
+		attribute.Bool("defenseclaw.content.redacted", true),
 	)
 }
 
@@ -725,16 +744,21 @@ func (p *Provider) SetGenAIToolResult(span trace.Span, content string) {
 	if span == nil {
 		return
 	}
-	safe := redaction.ForSinkString(content)
-	messages, err := json.Marshal([]map[string]string{{"role": "tool", "content": safe}})
-	if err != nil {
+	if redaction.DisableAll() {
+		span.SetAttributes(
+			attribute.String("gen_ai.tool.call.result", rawToolResult(0, content)),
+			attribute.String("gen_ai.output.messages", genAITextMessageSpanValue("tool", content, "")),
+			attribute.String("output.value", content),
+			attribute.String("output.mime_type", "text/plain"),
+			attribute.String("defenseclaw.tool.output", content),
+			attribute.Bool("defenseclaw.content.redacted", false),
+		)
 		return
 	}
 	span.SetAttributes(
-		attribute.String("gen_ai.tool.call.result", safe),
-		attribute.String("gen_ai.output.messages", string(messages)),
-		attribute.String("output.value", safe),
-		attribute.String("output.mime_type", "text/plain"),
+		attribute.String("gen_ai.tool.call.result", redactedToolResult(0, len(content))),
+		attribute.String("gen_ai.output.messages", redactedMessageForRole("tool")),
+		attribute.Bool("defenseclaw.content.redacted", true),
 	)
 }
 
@@ -742,15 +766,18 @@ func (p *Provider) setGenAIContent(span trace.Span, direction, role, content str
 	if span == nil || strings.TrimSpace(content) == "" {
 		return
 	}
-	safe := redaction.ForSinkString(content)
-	messages, err := json.Marshal([]map[string]string{{"role": role, "content": safe}})
-	if err != nil {
+	if redaction.DisableAll() {
+		span.SetAttributes(
+			attribute.String("gen_ai."+direction+".messages", genAITextMessageSpanValue(role, content, "")),
+			attribute.String(direction+".value", content),
+			attribute.String(direction+".mime_type", "text/plain"),
+			attribute.Bool("defenseclaw.content.redacted", false),
+		)
 		return
 	}
 	span.SetAttributes(
-		attribute.String("gen_ai."+direction+".messages", string(messages)),
-		attribute.String(direction+".value", safe),
-		attribute.String(direction+".mime_type", "text/plain"),
+		attribute.String("gen_ai."+direction+".messages", redactedMessageForRole(role)),
+		attribute.Bool("defenseclaw.content.redacted", true),
 	)
 }
 
@@ -946,8 +973,6 @@ func (p *Provider) StartLLMSpanAt(
 		attribute.String("gen_ai.request.model", model),
 		attribute.Int("gen_ai.request.max_tokens", maxTokens),
 		attribute.Float64("gen_ai.request.temperature", temperature),
-		attribute.String("gen_ai.input.messages", redactedUserMessage),
-		attribute.Bool("defenseclaw.content.redacted", true),
 		attribute.String("openinference.span.kind", "LLM"),
 	)
 	if runID := gatewaylog.ProcessRunID(); runID != "" {

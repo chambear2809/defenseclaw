@@ -367,6 +367,7 @@ func (a *APIServer) finalizeAgentHook(
 		a.otel.RecordHookOutcome(ctx, connectorName, eventLabel, decisionLabel, resp.Severity, resp.WouldBlock)
 		usage := extractHookPayloadTokenUsage(req.Payload)
 		a.otel.RecordHookTokenUsage(ctx, connectorName, usage.Model, usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens)
+		a.observeBudgetHookUsage(ctx, connectorName, req)
 		a.otel.EmitConnectorTelemetryLog(ctx, "hook", connectorName, result, 1, int64(len(rawBody)),
 			fmt.Sprintf("source=hook connector=%s event=%s tool=%s decision=%s raw_action=%s would_block=%v mode=%s duration_ms=%d step_idx=%d enforced=%v rule_pack_dir=%s result=%s",
 				hookLogLabel(connectorName), eventLabel, hookLogLabel(req.ToolName), decisionLabel, rawActionLabel, resp.WouldBlock, hookLogLabel(resp.Mode), elapsed.Milliseconds(), env.StepIdx, env.Enforced, env.RulePackDir, result))
@@ -708,6 +709,7 @@ func (a *APIServer) handleAgentHookSynthetic(ctx context.Context, connectorName 
 		a.otel.RecordHookOutcome(ctx, connectorName, eventLabel, decisionLabel, resp.Severity, resp.WouldBlock)
 		usage := extractHookPayloadTokenUsage(req.Payload)
 		a.otel.RecordHookTokenUsage(ctx, connectorName, usage.Model, usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens)
+		a.observeBudgetHookUsage(ctx, connectorName, req)
 		a.otel.EmitConnectorTelemetryLog(ctx, "hook", connectorName, result, 1, int64(len(rawBody)),
 			fmt.Sprintf("source=hook connector=%s event=%s tool=%s decision=%s raw_action=%s would_block=%v mode=%s duration_ms=%d synthetic=true result=%s",
 				hookLogLabel(connectorName), eventLabel, hookLogLabel(req.ToolName), decisionLabel, rawActionLabel, resp.WouldBlock, hookLogLabel(resp.Mode), elapsed.Milliseconds(), result))
@@ -1575,6 +1577,9 @@ var hookEvaluatorPanicHook func()
 func (a *APIServer) evaluateAgentHook(ctx context.Context, req agentHookRequest) agentHookResponse {
 	if hookEvaluatorPanicHook != nil {
 		hookEvaluatorPanicHook()
+	}
+	if decision := a.activeBudgetDecision(a.budgetSubjectFromHook(ctx, req)); decision != nil {
+		return a.budgetDecisionHookResponse(req, decision)
 	}
 	mode := a.agentHookMode(req.ConnectorName)
 	if a.scannerCfg != nil && !a.agentHookEnabled(req.ConnectorName) {

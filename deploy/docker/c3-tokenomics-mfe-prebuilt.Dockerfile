@@ -8,6 +8,7 @@ ENV API_PORT=8787 \
     NODE_ENV=production
 
 COPY bundles/c3_agent_tokenomics/mfe_prebuilt/ ./
+COPY bundles/c3_agent_tokenomics/samples/ ./samples/
 
 USER node
 

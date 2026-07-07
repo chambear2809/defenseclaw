@@ -17,11 +17,76 @@
 package audit
 
 import (
+	"context"
 	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 )
+
+func TestStore_PolicyReadsBypassBusyWriterPool(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "audit.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if err := store.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := store.SetActionField("tool", "shell", "install", "block", "test"); err != nil {
+		t.Fatalf("seed action: %v", err)
+	}
+	if err := store.UpsertBudgetPolicy(BudgetPolicyRow{AgentID: "main", DailyTokenBudget: 10, Action: "deny"}); err != nil {
+		t.Fatalf("seed budget policy: %v", err)
+	}
+	if err := store.InsertBudgetUsageObservation(BudgetUsageObservation{
+		AgentID: "main", Source: "test", TotalTokens: 11,
+	}); err != nil {
+		t.Fatalf("seed budget usage: %v", err)
+	}
+
+	// Hold the primary pool's only connection. Before the dedicated read pool,
+	// this made every inspect-time action lookup wait behind audit persistence.
+	writerConn, err := store.db.Conn(context.Background())
+	if err != nil {
+		t.Fatalf("reserve writer connection: %v", err)
+	}
+	defer writerConn.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cancel()
+	blocked, err := store.HasActionContext(ctx, "tool", "shell", "install", "block")
+	if err != nil {
+		t.Fatalf("policy read queued behind writer pool: %v", err)
+	}
+	if !blocked {
+		t.Fatal("policy read did not observe committed block action")
+	}
+
+	// Avoid deadlocking the test if a future regression routes either budget
+	// query back through the occupied writer pool.
+	releaseWriter := time.AfterFunc(500*time.Millisecond, func() { _ = writerConn.Close() })
+	started := time.Now()
+	policy, err := store.ResolveBudgetPolicy("main")
+	if err != nil {
+		t.Fatalf("resolve budget policy: %v", err)
+	}
+	if policy == nil || policy.DailyTokenBudget != 10 {
+		t.Fatalf("unexpected budget policy: %+v", policy)
+	}
+	totals, err := store.BudgetUsageTotals("main", "", time.Now().UTC())
+	if err != nil {
+		t.Fatalf("budget usage totals: %v", err)
+	}
+	if totals.DailyTokens != 11 {
+		t.Fatalf("daily tokens = %d, want 11", totals.DailyTokens)
+	}
+	if elapsed := time.Since(started); elapsed >= 250*time.Millisecond {
+		t.Fatalf("budget reads queued behind writer pool for %s", elapsed)
+	}
+	releaseWriter.Stop()
+}
 
 // TestStore_ConcurrentWritersSerialize asserts that the audit store
 // can absorb a burst of concurrent writers without returning any

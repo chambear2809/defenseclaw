@@ -32,6 +32,8 @@
     "defenseclaw.telemetry.input.reported",
     "defenseclaw.telemetry.output.reported",
     "defenseclaw.telemetry.tokens.reported",
+    "defenseclaw.usage.estimated",
+    "defenseclaw.llm.provider",
     "user.id",
     "defenseclaw.user.name"
   ],
@@ -86,6 +88,7 @@
         "defenseclaw.device.id": { "type": "string" },
         "gen_ai.operation.name": { "type": "string", "const": "chat" },
         "gen_ai.system": { "type": "string" },
+        "gen_ai.framework": { "type": "string" },
         "gen_ai.provider.name": { "type": "string" },
         "gen_ai.request.model": { "type": "string" },
         "gen_ai.request.max_tokens": { "type": "integer", "minimum": 0 },

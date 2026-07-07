@@ -114,6 +114,10 @@ function failClosedVerdict(reason: string): InspectVerdict {
   };
 }
 
+function isEnforcedVerdict(verdict: InspectVerdict): boolean {
+  return verdict.mode === "action" || verdict.mode === "budget-control";
+}
+
 function approvalSeverity(severity: string): "info" | "warning" | "critical" {
   return severity.toUpperCase() === "CRITICAL" ? "critical" : severity.toUpperCase() === "NONE" ? "info" : "warning";
 }
@@ -217,7 +221,7 @@ export default function (api: DefenseClawPluginHost) {
   const SIDECAR_TOKEN = sidecarConfig.token;
   const INSPECT_TIMEOUT_MS = sidecarConfig.hiltEnabled
     ? Math.max(2_000, (sidecarConfig.approvalTimeoutS + 5) * 1_000)
-    : 2_000;
+    : 10_000;
 
   let identityCache: BootstrapPluginIdentityResult | undefined;
   let pluginAgentExtras: { name?: string; policyId?: string } = {};
@@ -444,7 +448,7 @@ export default function (api: DefenseClawPluginHost) {
         `[defenseclaw] message-tool verdict:${verdict.action} severity:${verdict.severity}`,
       );
 
-      if (verdict.action === "block" && verdict.mode === "action") {
+      if (verdict.action === "block" && isEnforcedVerdict(verdict)) {
         return { block: true, blockReason: `DefenseClaw: outbound blocked — ${verdict.reason}` };
       }
       if (verdict.action === "confirm" && verdict.mode === "action") {
@@ -465,7 +469,7 @@ export default function (api: DefenseClawPluginHost) {
       `[defenseclaw] tool:${event.toolName} verdict:${verdict.action} severity:${verdict.severity}`,
     );
 
-    if (verdict.action === "block" && verdict.mode === "action") {
+    if (verdict.action === "block" && isEnforcedVerdict(verdict)) {
       return { block: true, blockReason: `DefenseClaw: ${verdict.reason}` };
     }
     if (verdict.action === "confirm" && verdict.mode === "action") {

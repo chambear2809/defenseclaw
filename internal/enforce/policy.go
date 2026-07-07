@@ -201,11 +201,17 @@ func (e *PolicyEngine) RemoveAction(targetType, name string) error {
 // IsBlockedForConnector reports whether name is blocked for connector, checking
 // the connector-scoped entry first and then the bare global entry.
 func (e *PolicyEngine) IsBlockedForConnector(targetType, name, connector string) (bool, error) {
+	return e.IsBlockedForConnectorContext(context.Background(), targetType, name, connector)
+}
+
+// IsBlockedForConnectorContext is the cancellable runtime-policy lookup used
+// by latency-bounded gateway inspection.
+func (e *PolicyEngine) IsBlockedForConnectorContext(ctx context.Context, targetType, name, connector string) (bool, error) {
 	if e.store == nil {
 		return false, nil
 	}
 	if connector != "" {
-		action, ok, err := e.actionFieldForConnector(targetType, name, connector, "install")
+		action, ok, err := e.actionFieldForConnectorContext(ctx, targetType, name, connector, "install")
 		if err != nil {
 			return false, err
 		}
@@ -213,7 +219,7 @@ func (e *PolicyEngine) IsBlockedForConnector(targetType, name, connector string)
 			return action == "block", nil
 		}
 	}
-	return e.store.HasAction(targetType, name, "install", "block")
+	return e.store.HasActionContext(ctx, targetType, name, "install", "block")
 }
 
 // IsAllowedForConnector reports whether name is allowed for connector, checking
@@ -221,11 +227,17 @@ func (e *PolicyEngine) IsBlockedForConnector(targetType, name, connector string)
 // connector-scoped block is authoritative for that connector, so callers that
 // check IsBlockedForConnector first will still block it before consulting allow.
 func (e *PolicyEngine) IsAllowedForConnector(targetType, name, connector string) (bool, error) {
+	return e.IsAllowedForConnectorContext(context.Background(), targetType, name, connector)
+}
+
+// IsAllowedForConnectorContext is the cancellable counterpart to
+// IsAllowedForConnector.
+func (e *PolicyEngine) IsAllowedForConnectorContext(ctx context.Context, targetType, name, connector string) (bool, error) {
 	if e.store == nil {
 		return false, nil
 	}
 	if connector != "" {
-		action, ok, err := e.actionFieldForConnector(targetType, name, connector, "install")
+		action, ok, err := e.actionFieldForConnectorContext(ctx, targetType, name, connector, "install")
 		if err != nil {
 			return false, err
 		}
@@ -233,7 +245,7 @@ func (e *PolicyEngine) IsAllowedForConnector(targetType, name, connector string)
 			return action == "allow", nil
 		}
 	}
-	return e.store.HasAction(targetType, name, "install", "allow")
+	return e.store.HasActionContext(ctx, targetType, name, "install", "allow")
 }
 
 // IsQuarantinedForConnector reports whether name is quarantined for connector,
@@ -274,7 +286,11 @@ func (e *PolicyEngine) IsDisabledForConnector(targetType, name, connector string
 }
 
 func (e *PolicyEngine) actionFieldForConnector(targetType, name, connector, field string) (string, bool, error) {
-	entry, err := e.store.GetActionForConnector(targetType, name, connector)
+	return e.actionFieldForConnectorContext(context.Background(), targetType, name, connector, field)
+}
+
+func (e *PolicyEngine) actionFieldForConnectorContext(ctx context.Context, targetType, name, connector, field string) (string, bool, error) {
+	entry, err := e.store.GetActionForConnectorContext(ctx, targetType, name, connector)
 	if err != nil {
 		return "", false, err
 	}
@@ -372,12 +388,18 @@ func toolConnectorTarget(toolName, connector string) string {
 // IsToolBlockedForConnector reports whether toolName is blocked for connector,
 // checking the connector-scoped entry first and then the bare global entry.
 func (e *PolicyEngine) IsToolBlockedForConnector(toolName, connector string) (bool, error) {
+	return e.IsToolBlockedForConnectorContext(context.Background(), toolName, connector)
+}
+
+// IsToolBlockedForConnectorContext is the cancellable inspect-time tool block
+// lookup. It preserves the same connector-first resolution order.
+func (e *PolicyEngine) IsToolBlockedForConnectorContext(ctx context.Context, toolName, connector string) (bool, error) {
 	if e.store == nil {
 		return false, nil
 	}
 	if connector != "" {
 		scoped := toolConnectorTarget(toolName, connector)
-		action, ok, err := e.actionField("tool", scoped, "install")
+		action, ok, err := e.actionFieldContext(ctx, "tool", scoped, "install")
 		if err != nil {
 			return false, err
 		}
@@ -385,7 +407,7 @@ func (e *PolicyEngine) IsToolBlockedForConnector(toolName, connector string) (bo
 			return action == "block", nil
 		}
 	}
-	return e.store.HasAction("tool", toolName, "install", "block")
+	return e.store.HasActionContext(ctx, "tool", toolName, "install", "block")
 }
 
 // IsToolAllowedForConnector reports whether toolName is allowed for connector,
@@ -394,12 +416,18 @@ func (e *PolicyEngine) IsToolBlockedForConnector(toolName, connector string) (bo
 // check IsToolBlockedForConnector first will still block it before consulting
 // allow.
 func (e *PolicyEngine) IsToolAllowedForConnector(toolName, connector string) (bool, error) {
+	return e.IsToolAllowedForConnectorContext(context.Background(), toolName, connector)
+}
+
+// IsToolAllowedForConnectorContext is the cancellable inspect-time tool allow
+// lookup. It preserves the same connector-first resolution order.
+func (e *PolicyEngine) IsToolAllowedForConnectorContext(ctx context.Context, toolName, connector string) (bool, error) {
 	if e.store == nil {
 		return false, nil
 	}
 	if connector != "" {
 		scoped := toolConnectorTarget(toolName, connector)
-		action, ok, err := e.actionField("tool", scoped, "install")
+		action, ok, err := e.actionFieldContext(ctx, "tool", scoped, "install")
 		if err != nil {
 			return false, err
 		}
@@ -407,11 +435,15 @@ func (e *PolicyEngine) IsToolAllowedForConnector(toolName, connector string) (bo
 			return action == "allow", nil
 		}
 	}
-	return e.store.HasAction("tool", toolName, "install", "allow")
+	return e.store.HasActionContext(ctx, "tool", toolName, "install", "allow")
 }
 
 func (e *PolicyEngine) actionField(targetType, name, field string) (string, bool, error) {
-	entry, err := e.store.GetAction(targetType, name)
+	return e.actionFieldContext(context.Background(), targetType, name, field)
+}
+
+func (e *PolicyEngine) actionFieldContext(ctx context.Context, targetType, name, field string) (string, bool, error) {
+	entry, err := e.store.GetActionContext(ctx, targetType, name)
 	if err != nil {
 		return "", false, err
 	}

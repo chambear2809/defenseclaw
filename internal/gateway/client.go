@@ -491,6 +491,13 @@ func (c *Client) Disconnected() <-chan struct{} {
 	return c.disconnCh
 }
 
+// Connected reports whether the websocket transport is currently available.
+func (c *Client) Connected() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.conn != nil
+}
+
 func (c *Client) signalDisconnect() {
 	c.disconnOnce.Do(func() {
 		if c.disconnCh != nil {

@@ -168,6 +168,9 @@
           "type": "string",
           "const": "execute_tool"
         },
+        "gen_ai.system": {
+          "type": "string"
+        },
         "gen_ai.tool.name": {
           "type": "string"
         },
@@ -270,6 +273,10 @@
           "type": "integer",
           "minimum": 0
         },
+        "defenseclaw.tool.output": {
+          "type": "string",
+          "description": "Raw tool output; emitted only when persistent-sink redaction is explicitly disabled."
+        },
         "defenseclaw.tool.dangerous": {
           "type": "boolean"
         },
@@ -278,6 +285,9 @@
         },
         "defenseclaw.tool.provider": {
           "type": "string"
+        },
+        "defenseclaw.content.redacted": {
+          "type": "boolean"
         },
         "defenseclaw.tool.skill_key": {
           "type": "string"
