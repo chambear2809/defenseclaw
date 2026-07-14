@@ -2662,7 +2662,7 @@ func (s *Store) ListAllActions() ([]ActionEntry, error) {
 }
 
 func (s *Store) queryActions(query string, args ...any) ([]ActionEntry, error) {
-	rows, err := s.queryDB(context.Background(), "audit", query, args...)
+	rows, err := s.queryReadDB(context.Background(), "audit", query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("audit: query actions: %w", err)
 	}

@@ -1,0 +1,152 @@
+{
+  "schema_version": "c3.agent_tokenomics.fleet_infrastructure.v1",
+  "generated_at": "2026-07-09T16:00:00Z",
+  "source": "splunk_o11y_synthetic_demo",
+  "debug": {
+    "fixture_backed": true,
+    "synthetic": true
+  },
+  "disclosure": {
+    "status": "synthetic",
+    "label": "Synthetic Splunk Observability demo",
+    "message": "Deterministic demo values shaped like infrastructure telemetry aggregated by Splunk Observability; no live organization telemetry is represented."
+  },
+  "scope": {
+    "fleet_id": "amd-deskside-enterprise-pilot",
+    "fleet_name": "AMD Deskside Enterprise Pilot",
+    "window": "-24h",
+    "resolution": "1h",
+    "device_id": null,
+    "timezone": "UTC"
+  },
+  "fleet_summary": {
+    "avg_cpu_utilization": {"value": 39.75, "unit": "%", "quality": "derived", "source": "splunk_o11y_synthetic_demo_aggregation", "method": "mean of fresh reporting devices", "coverage": "4 of 5 devices"},
+    "avg_memory_utilization": {"value": 66.5, "unit": "%", "quality": "derived", "source": "splunk_o11y_synthetic_demo_aggregation", "method": "mean of fresh reporting devices", "coverage": "4 of 5 devices"},
+    "avg_gpu_utilization": {"value": 40.5, "unit": "%", "quality": "derived", "source": "splunk_o11y_synthetic_demo_aggregation", "method": "mean of fresh reporting devices", "coverage": "4 of 5 devices"},
+    "avg_network_link_utilization": {"value": 9.16, "unit": "%", "quality": "derived", "source": "splunk_o11y_synthetic_demo_aggregation", "method": "mean of fresh reporting devices", "coverage": "4 of 5 devices"},
+    "total_network_receive": {"value": 366.4, "unit": "Mbps", "quality": "derived", "source": "splunk_o11y_synthetic_demo_aggregation", "method": "sum of fresh reporting devices", "coverage": "4 of 5 devices"},
+    "total_network_transmit": {"value": 93.1, "unit": "Mbps", "quality": "derived", "source": "splunk_o11y_synthetic_demo_aggregation", "method": "sum of fresh reporting devices", "coverage": "4 of 5 devices"},
+    "current_power": {"value": 375, "unit": "W", "quality": "derived", "source": "splunk_o11y_synthetic_demo_aggregation", "method": "sum of fresh reporting devices", "coverage": "4 of 5 devices"},
+    "energy_24h": {"value": 8.99, "unit": "kWh", "quality": "derived", "source": "splunk_o11y_synthetic_demo_aggregation", "method": "sum including partial historical coverage", "coverage": "5 of 5 devices; 1 partial"},
+    "energy_7d": {"value": 62.3, "unit": "kWh", "quality": "derived", "source": "splunk_o11y_synthetic_demo_aggregation", "method": "sum including partial historical coverage", "coverage": "5 of 5 devices; 1 partial"},
+    "reporting_devices": 4,
+    "stale_devices": 1
+  },
+  "devices": [
+    {
+      "device_id": "DSK-NYC-014",
+      "observed_at": "2026-07-09T15:59:42Z",
+      "freshness_seconds": 18,
+      "stale": false,
+      "context": {"tokens_7d": 1280000},
+      "metrics": {
+        "cpu_utilization": {"value": 48, "unit": "%", "quality": "synthetic", "source": "splunk_o11y_hostmetrics.synthetic", "method": "5 minute gauge average", "coverage": "complete"},
+        "memory_utilization": {"value": 72, "unit": "%", "quality": "synthetic", "source": "splunk_o11y_hostmetrics.synthetic", "method": "5 minute gauge average", "coverage": "complete"},
+        "gpu_utilization": {"value": 61, "unit": "%", "quality": "synthetic", "source": "splunk_o11y_amd_smi.synthetic", "method": "5 minute gauge average", "coverage": "complete"},
+        "network_receive": {"value": 186, "unit": "Mbps", "quality": "synthetic", "source": "splunk_o11y_hostmetrics.synthetic", "method": "5 minute counter rate", "coverage": "complete"},
+        "network_transmit": {"value": 42, "unit": "Mbps", "quality": "synthetic", "source": "splunk_o11y_hostmetrics.synthetic", "method": "5 minute counter rate", "coverage": "complete"},
+        "network_link_utilization": {"value": 18.6, "unit": "%", "quality": "synthetic", "source": "splunk_o11y_cisco_network_identity.synthetic", "method": "endpoint throughput divided by C9350 access-port capacity", "coverage": "complete"},
+        "network_link_speed": {"value": 1000, "unit": "Mbps", "quality": "synthetic", "source": "splunk_o11y_cisco_network_identity.synthetic", "method": "latest negotiated C9350 access-port speed", "coverage": "complete"},
+        "power": {"value": 112, "unit": "W", "quality": "synthetic", "source": "splunk_o11y_amd_smi.synthetic", "method": "latest socket power sample", "coverage": "complete"},
+        "energy_24h": {"value": 2.34, "unit": "kWh", "quality": "synthetic", "source": "splunk_o11y_amd_smi.synthetic", "method": "integrated power over 24 hours", "coverage": "complete"},
+        "energy_7d": {"value": 15.8, "unit": "kWh", "quality": "synthetic", "source": "splunk_o11y_amd_smi.synthetic", "method": "integrated power over 7 days", "coverage": "complete"}
+      }
+    },
+    {
+      "device_id": "DSK-AUS-017",
+      "observed_at": "2026-07-09T15:59:35Z",
+      "freshness_seconds": 25,
+      "stale": false,
+      "context": {"tokens_7d": 1200000},
+      "metrics": {
+        "cpu_utilization": {"value": 34, "unit": "%", "quality": "synthetic", "source": "splunk_o11y_hostmetrics.synthetic", "method": "5 minute gauge average", "coverage": "complete"},
+        "memory_utilization": {"value": 62, "unit": "%", "quality": "synthetic", "source": "splunk_o11y_hostmetrics.synthetic", "method": "5 minute gauge average", "coverage": "complete"},
+        "gpu_utilization": {"value": 18, "unit": "%", "quality": "synthetic", "source": "splunk_o11y_amd_smi.synthetic", "method": "5 minute gauge average", "coverage": "complete"},
+        "network_receive": {"value": 48, "unit": "Mbps", "quality": "synthetic", "source": "splunk_o11y_hostmetrics.synthetic", "method": "5 minute counter rate", "coverage": "complete"},
+        "network_transmit": {"value": 15, "unit": "Mbps", "quality": "synthetic", "source": "splunk_o11y_hostmetrics.synthetic", "method": "5 minute counter rate", "coverage": "complete"},
+        "network_link_utilization": {"value": 4.8, "unit": "%", "quality": "synthetic", "source": "splunk_o11y_cisco_network_identity.synthetic", "method": "endpoint throughput divided by C9350 access-port capacity", "coverage": "complete"},
+        "network_link_speed": {"value": 1000, "unit": "Mbps", "quality": "synthetic", "source": "splunk_o11y_cisco_network_identity.synthetic", "method": "latest negotiated C9350 access-port speed", "coverage": "complete"},
+        "power": {"value": 73, "unit": "W", "quality": "synthetic", "source": "splunk_o11y_amd_smi.synthetic", "method": "latest socket power sample", "coverage": "complete"},
+        "energy_24h": {"value": 1.73, "unit": "kWh", "quality": "synthetic", "source": "splunk_o11y_amd_smi.synthetic", "method": "integrated power over 24 hours", "coverage": "complete"},
+        "energy_7d": {"value": 11.9, "unit": "kWh", "quality": "synthetic", "source": "splunk_o11y_amd_smi.synthetic", "method": "integrated power over 7 days", "coverage": "complete"}
+      }
+    },
+    {
+      "device_id": "DSK-LON-008",
+      "observed_at": "2026-07-09T15:59:49Z",
+      "freshness_seconds": 11,
+      "stale": false,
+      "context": {"tokens_7d": 530000},
+      "metrics": {
+        "cpu_utilization": {"value": 56, "unit": "%", "quality": "synthetic", "source": "splunk_o11y_hostmetrics.synthetic", "method": "5 minute gauge average", "coverage": "complete"},
+        "memory_utilization": {"value": 78, "unit": "%", "quality": "synthetic", "source": "splunk_o11y_hostmetrics.synthetic", "method": "5 minute gauge average", "coverage": "complete"},
+        "gpu_utilization": {"value": 74, "unit": "%", "quality": "synthetic", "source": "splunk_o11y_amd_smi.synthetic", "method": "5 minute gauge average", "coverage": "complete"},
+        "network_receive": {"value": 132, "unit": "Mbps", "quality": "synthetic", "source": "splunk_o11y_hostmetrics.synthetic", "method": "5 minute counter rate", "coverage": "complete"},
+        "network_transmit": {"value": 36, "unit": "Mbps", "quality": "synthetic", "source": "splunk_o11y_hostmetrics.synthetic", "method": "5 minute counter rate", "coverage": "complete"},
+        "network_link_utilization": {"value": 13.2, "unit": "%", "quality": "synthetic", "source": "splunk_o11y_cisco_network_identity.synthetic", "method": "endpoint throughput divided by C9350 access-port capacity", "coverage": "complete"},
+        "network_link_speed": {"value": 1000, "unit": "Mbps", "quality": "synthetic", "source": "splunk_o11y_cisco_network_identity.synthetic", "method": "latest negotiated C9350 access-port speed", "coverage": "complete"},
+        "power": {"value": 139, "unit": "W", "quality": "synthetic", "source": "splunk_o11y_amd_smi.synthetic", "method": "latest socket power sample", "coverage": "complete"},
+        "energy_24h": {"value": 2.86, "unit": "kWh", "quality": "synthetic", "source": "splunk_o11y_amd_smi.synthetic", "method": "integrated power over 24 hours", "coverage": "complete"},
+        "energy_7d": {"value": 19.6, "unit": "kWh", "quality": "synthetic", "source": "splunk_o11y_amd_smi.synthetic", "method": "integrated power over 7 days", "coverage": "complete"}
+      }
+    },
+    {
+      "device_id": "DSK-SJC-022",
+      "observed_at": "2026-07-09T15:59:37Z",
+      "freshness_seconds": 23,
+      "stale": false,
+      "context": {"tokens_7d": 440000},
+      "metrics": {
+        "cpu_utilization": {"value": 21, "unit": "%", "quality": "synthetic", "source": "splunk_o11y_hostmetrics.synthetic", "method": "5 minute gauge average", "coverage": "complete"},
+        "memory_utilization": {"value": 54, "unit": "%", "quality": "synthetic", "source": "splunk_o11y_hostmetrics.synthetic", "method": "5 minute gauge average", "coverage": "complete"},
+        "gpu_utilization": {"value": 9, "unit": "%", "quality": "synthetic", "source": "splunk_o11y_amd_smi.synthetic", "method": "5 minute gauge average", "coverage": "complete"},
+        "network_receive": {"value": 0.4, "unit": "Mbps", "quality": "synthetic", "source": "splunk_o11y_hostmetrics.synthetic", "method": "5 minute counter rate", "coverage": "complete"},
+        "network_transmit": {"value": 0.1, "unit": "Mbps", "quality": "synthetic", "source": "splunk_o11y_hostmetrics.synthetic", "method": "5 minute counter rate", "coverage": "complete"},
+        "network_link_utilization": {"value": 0.04, "unit": "%", "quality": "synthetic", "source": "splunk_o11y_cisco_network_identity.synthetic", "method": "endpoint throughput divided by C9350 access-port capacity", "coverage": "complete"},
+        "network_link_speed": {"value": 1000, "unit": "Mbps", "quality": "synthetic", "source": "splunk_o11y_cisco_network_identity.synthetic", "method": "latest negotiated C9350 access-port speed", "coverage": "complete"},
+        "power": {"value": 51, "unit": "W", "quality": "synthetic", "source": "splunk_o11y_amd_smi.synthetic", "method": "latest socket power sample", "coverage": "complete"},
+        "energy_24h": {"value": 1.28, "unit": "kWh", "quality": "synthetic", "source": "splunk_o11y_amd_smi.synthetic", "method": "integrated power over 24 hours", "coverage": "complete"},
+        "energy_7d": {"value": 9.4, "unit": "kWh", "quality": "synthetic", "source": "splunk_o11y_amd_smi.synthetic", "method": "integrated power over 7 days", "coverage": "complete"}
+      }
+    },
+    {
+      "device_id": "DSK-RTP-006",
+      "observed_at": "2026-07-08T15:58:00Z",
+      "freshness_seconds": 86520,
+      "stale": true,
+      "context": {"tokens_7d": 310000},
+      "metrics": {
+        "cpu_utilization": {"value": null, "unit": "%", "quality": "unavailable", "source": "splunk_o11y_hostmetrics.synthetic", "method": "5 minute gauge average", "coverage": "stale"},
+        "memory_utilization": {"value": null, "unit": "%", "quality": "unavailable", "source": "splunk_o11y_hostmetrics.synthetic", "method": "5 minute gauge average", "coverage": "stale"},
+        "gpu_utilization": {"value": null, "unit": "%", "quality": "unavailable", "source": "splunk_o11y_amd_smi.synthetic", "method": "5 minute gauge average", "coverage": "stale"},
+        "network_receive": {"value": null, "unit": "Mbps", "quality": "unavailable", "source": "splunk_o11y_hostmetrics.synthetic", "method": "5 minute counter rate", "coverage": "stale"},
+        "network_transmit": {"value": null, "unit": "Mbps", "quality": "unavailable", "source": "splunk_o11y_hostmetrics.synthetic", "method": "5 minute counter rate", "coverage": "stale"},
+        "network_link_utilization": {"value": null, "unit": "%", "quality": "unavailable", "source": "splunk_o11y_cisco_network_identity.synthetic", "method": "endpoint throughput divided by C9350 access-port capacity", "coverage": "stale"},
+        "network_link_speed": {"value": 1000, "unit": "Mbps", "quality": "synthetic", "source": "splunk_o11y_cisco_network_identity.synthetic", "method": "last known negotiated C9350 access-port speed", "coverage": "stale"},
+        "power": {"value": null, "unit": "W", "quality": "unavailable", "source": "splunk_o11y_amd_smi.synthetic", "method": "latest socket power sample", "coverage": "stale"},
+        "energy_24h": {"value": 0.78, "unit": "kWh", "quality": "synthetic", "source": "splunk_o11y_amd_smi.synthetic", "method": "integrated power over available 24 hour samples", "coverage": "partial"},
+        "energy_7d": {"value": 5.6, "unit": "kWh", "quality": "synthetic", "source": "splunk_o11y_amd_smi.synthetic", "method": "integrated power over available 7 day samples", "coverage": "partial"}
+      }
+    }
+  ],
+  "series": {
+    "cpu_utilization": [
+      {"timestamp": "2026-07-08T16:00:00Z", "value": 27.5}, {"timestamp": "2026-07-08T17:00:00Z", "value": 26.5}, {"timestamp": "2026-07-08T18:00:00Z", "value": 25.25}, {"timestamp": "2026-07-08T19:00:00Z", "value": 24}, {"timestamp": "2026-07-08T20:00:00Z", "value": 23.5}, {"timestamp": "2026-07-08T21:00:00Z", "value": 25.25}, {"timestamp": "2026-07-08T22:00:00Z", "value": 29.5}, {"timestamp": "2026-07-08T23:00:00Z", "value": 34.25}, {"timestamp": "2026-07-09T00:00:00Z", "value": 38}, {"timestamp": "2026-07-09T01:00:00Z", "value": 41.5}, {"timestamp": "2026-07-09T02:00:00Z", "value": 44}, {"timestamp": "2026-07-09T03:00:00Z", "value": 46}, {"timestamp": "2026-07-09T04:00:00Z", "value": 47.25}, {"timestamp": "2026-07-09T05:00:00Z", "value": 48}, {"timestamp": "2026-07-09T06:00:00Z", "value": 47}, {"timestamp": "2026-07-09T07:00:00Z", "value": 45}, {"timestamp": "2026-07-09T08:00:00Z", "value": 42.5}, {"timestamp": "2026-07-09T09:00:00Z", "value": 40.25}, {"timestamp": "2026-07-09T10:00:00Z", "value": 38.5}, {"timestamp": "2026-07-09T11:00:00Z", "value": 40.5}, {"timestamp": "2026-07-09T12:00:00Z", "value": 43}, {"timestamp": "2026-07-09T13:00:00Z", "value": 42}, {"timestamp": "2026-07-09T14:00:00Z", "value": 41}, {"timestamp": "2026-07-09T15:00:00Z", "value": 40.5}, {"timestamp": "2026-07-09T16:00:00Z", "value": 39.75}
+    ],
+    "memory_utilization": [
+      {"timestamp": "2026-07-08T16:00:00Z", "value": 57}, {"timestamp": "2026-07-08T17:00:00Z", "value": 56.5}, {"timestamp": "2026-07-08T18:00:00Z", "value": 56}, {"timestamp": "2026-07-08T19:00:00Z", "value": 55.5}, {"timestamp": "2026-07-08T20:00:00Z", "value": 55}, {"timestamp": "2026-07-08T21:00:00Z", "value": 56}, {"timestamp": "2026-07-08T22:00:00Z", "value": 58}, {"timestamp": "2026-07-08T23:00:00Z", "value": 60}, {"timestamp": "2026-07-09T00:00:00Z", "value": 62}, {"timestamp": "2026-07-09T01:00:00Z", "value": 64}, {"timestamp": "2026-07-09T02:00:00Z", "value": 66}, {"timestamp": "2026-07-09T03:00:00Z", "value": 68}, {"timestamp": "2026-07-09T04:00:00Z", "value": 69}, {"timestamp": "2026-07-09T05:00:00Z", "value": 70}, {"timestamp": "2026-07-09T06:00:00Z", "value": 70.5}, {"timestamp": "2026-07-09T07:00:00Z", "value": 69.5}, {"timestamp": "2026-07-09T08:00:00Z", "value": 68.5}, {"timestamp": "2026-07-09T09:00:00Z", "value": 67.5}, {"timestamp": "2026-07-09T10:00:00Z", "value": 66.5}, {"timestamp": "2026-07-09T11:00:00Z", "value": 67}, {"timestamp": "2026-07-09T12:00:00Z", "value": 68}, {"timestamp": "2026-07-09T13:00:00Z", "value": 67.5}, {"timestamp": "2026-07-09T14:00:00Z", "value": 67}, {"timestamp": "2026-07-09T15:00:00Z", "value": 66.75}, {"timestamp": "2026-07-09T16:00:00Z", "value": 66.5}
+    ],
+    "gpu_utilization": [
+      {"timestamp": "2026-07-08T16:00:00Z", "value": 16}, {"timestamp": "2026-07-08T17:00:00Z", "value": 14}, {"timestamp": "2026-07-08T18:00:00Z", "value": 11}, {"timestamp": "2026-07-08T19:00:00Z", "value": 8}, {"timestamp": "2026-07-08T20:00:00Z", "value": 6}, {"timestamp": "2026-07-08T21:00:00Z", "value": 9}, {"timestamp": "2026-07-08T22:00:00Z", "value": 17}, {"timestamp": "2026-07-08T23:00:00Z", "value": 28}, {"timestamp": "2026-07-09T00:00:00Z", "value": 36}, {"timestamp": "2026-07-09T01:00:00Z", "value": 43}, {"timestamp": "2026-07-09T02:00:00Z", "value": 51}, {"timestamp": "2026-07-09T03:00:00Z", "value": 58}, {"timestamp": "2026-07-09T04:00:00Z", "value": 62}, {"timestamp": "2026-07-09T05:00:00Z", "value": 66}, {"timestamp": "2026-07-09T06:00:00Z", "value": 63}, {"timestamp": "2026-07-09T07:00:00Z", "value": 55}, {"timestamp": "2026-07-09T08:00:00Z", "value": 48}, {"timestamp": "2026-07-09T09:00:00Z", "value": 40}, {"timestamp": "2026-07-09T10:00:00Z", "value": 36}, {"timestamp": "2026-07-09T11:00:00Z", "value": 42}, {"timestamp": "2026-07-09T12:00:00Z", "value": 49}, {"timestamp": "2026-07-09T13:00:00Z", "value": 46}, {"timestamp": "2026-07-09T14:00:00Z", "value": 43}, {"timestamp": "2026-07-09T15:00:00Z", "value": 41}, {"timestamp": "2026-07-09T16:00:00Z", "value": 40.5}
+    ],
+    "network_receive": [
+      {"timestamp": "2026-07-08T16:00:00Z", "value": 174}, {"timestamp": "2026-07-08T17:00:00Z", "value": 158}, {"timestamp": "2026-07-08T18:00:00Z", "value": 146}, {"timestamp": "2026-07-08T19:00:00Z", "value": 132}, {"timestamp": "2026-07-08T20:00:00Z", "value": 124}, {"timestamp": "2026-07-08T21:00:00Z", "value": 139}, {"timestamp": "2026-07-08T22:00:00Z", "value": 181}, {"timestamp": "2026-07-08T23:00:00Z", "value": 227}, {"timestamp": "2026-07-09T00:00:00Z", "value": 274}, {"timestamp": "2026-07-09T01:00:00Z", "value": 312}, {"timestamp": "2026-07-09T02:00:00Z", "value": 345}, {"timestamp": "2026-07-09T03:00:00Z", "value": 371}, {"timestamp": "2026-07-09T04:00:00Z", "value": 396}, {"timestamp": "2026-07-09T05:00:00Z", "value": 414}, {"timestamp": "2026-07-09T06:00:00Z", "value": 401}, {"timestamp": "2026-07-09T07:00:00Z", "value": 382}, {"timestamp": "2026-07-09T08:00:00Z", "value": 356}, {"timestamp": "2026-07-09T09:00:00Z", "value": 332}, {"timestamp": "2026-07-09T10:00:00Z", "value": 314}, {"timestamp": "2026-07-09T11:00:00Z", "value": 338}, {"timestamp": "2026-07-09T12:00:00Z", "value": 377}, {"timestamp": "2026-07-09T13:00:00Z", "value": 371}, {"timestamp": "2026-07-09T14:00:00Z", "value": 362}, {"timestamp": "2026-07-09T15:00:00Z", "value": 364}, {"timestamp": "2026-07-09T16:00:00Z", "value": 366.4}
+    ],
+    "network_transmit": [
+      {"timestamp": "2026-07-08T16:00:00Z", "value": 51}, {"timestamp": "2026-07-08T17:00:00Z", "value": 47}, {"timestamp": "2026-07-08T18:00:00Z", "value": 43}, {"timestamp": "2026-07-08T19:00:00Z", "value": 39}, {"timestamp": "2026-07-08T20:00:00Z", "value": 36}, {"timestamp": "2026-07-08T21:00:00Z", "value": 40}, {"timestamp": "2026-07-08T22:00:00Z", "value": 49}, {"timestamp": "2026-07-08T23:00:00Z", "value": 58}, {"timestamp": "2026-07-09T00:00:00Z", "value": 68}, {"timestamp": "2026-07-09T01:00:00Z", "value": 76}, {"timestamp": "2026-07-09T02:00:00Z", "value": 84}, {"timestamp": "2026-07-09T03:00:00Z", "value": 91}, {"timestamp": "2026-07-09T04:00:00Z", "value": 98}, {"timestamp": "2026-07-09T05:00:00Z", "value": 103}, {"timestamp": "2026-07-09T06:00:00Z", "value": 99}, {"timestamp": "2026-07-09T07:00:00Z", "value": 94}, {"timestamp": "2026-07-09T08:00:00Z", "value": 88}, {"timestamp": "2026-07-09T09:00:00Z", "value": 82}, {"timestamp": "2026-07-09T10:00:00Z", "value": 78}, {"timestamp": "2026-07-09T11:00:00Z", "value": 84}, {"timestamp": "2026-07-09T12:00:00Z", "value": 95}, {"timestamp": "2026-07-09T13:00:00Z", "value": 93}, {"timestamp": "2026-07-09T14:00:00Z", "value": 91}, {"timestamp": "2026-07-09T15:00:00Z", "value": 92}, {"timestamp": "2026-07-09T16:00:00Z", "value": 93.1}
+    ],
+    "power": [
+      {"timestamp": "2026-07-08T16:00:00Z", "value": 221}, {"timestamp": "2026-07-08T17:00:00Z", "value": 205}, {"timestamp": "2026-07-08T18:00:00Z", "value": 192}, {"timestamp": "2026-07-08T19:00:00Z", "value": 181}, {"timestamp": "2026-07-08T20:00:00Z", "value": 174}, {"timestamp": "2026-07-08T21:00:00Z", "value": 187}, {"timestamp": "2026-07-08T22:00:00Z", "value": 226}, {"timestamp": "2026-07-08T23:00:00Z", "value": 271}, {"timestamp": "2026-07-09T00:00:00Z", "value": 309}, {"timestamp": "2026-07-09T01:00:00Z", "value": 341}, {"timestamp": "2026-07-09T02:00:00Z", "value": 368}, {"timestamp": "2026-07-09T03:00:00Z", "value": 391}, {"timestamp": "2026-07-09T04:00:00Z", "value": 407}, {"timestamp": "2026-07-09T05:00:00Z", "value": 421}, {"timestamp": "2026-07-09T06:00:00Z", "value": 413}, {"timestamp": "2026-07-09T07:00:00Z", "value": 397}, {"timestamp": "2026-07-09T08:00:00Z", "value": 377}, {"timestamp": "2026-07-09T09:00:00Z", "value": 359}, {"timestamp": "2026-07-09T10:00:00Z", "value": 347}, {"timestamp": "2026-07-09T11:00:00Z", "value": 363}, {"timestamp": "2026-07-09T12:00:00Z", "value": 389}, {"timestamp": "2026-07-09T13:00:00Z", "value": 383}, {"timestamp": "2026-07-09T14:00:00Z", "value": 374}, {"timestamp": "2026-07-09T15:00:00Z", "value": 372}, {"timestamp": "2026-07-09T16:00:00Z", "value": 375}
+    ]
+  }
+}

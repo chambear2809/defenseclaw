@@ -26,6 +26,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -34,6 +35,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/defenseclaw/defenseclaw/internal/config"
+	"github.com/defenseclaw/defenseclaw/internal/enforce"
 	"github.com/defenseclaw/defenseclaw/internal/watcher"
 )
 
@@ -898,6 +900,136 @@ func TestRouteApprovalNoAutoApprove(t *testing.T) {
 		t.Errorf("no RPC expected for safe command without auto-approve, got %s", rpc.Method)
 	case <-time.After(200 * time.Millisecond):
 		// expected: no RPC sent
+	}
+}
+
+func TestRouteApprovalExactCommandPolicy(t *testing.T) {
+	received := make(chan receivedRequest, 5)
+	srv := startMockGW(t, rpcRecordingLoop(received))
+	client := connectToMockGW(t, srv)
+	store, logger := testStoreAndLogger(t)
+	if err := enforce.NewPolicyEngine(store).Allow("command", "git status", "approved in agent controls"); err != nil {
+		t.Fatalf("allow exact command: %v", err)
+	}
+
+	r := NewEventRouter(client, store, logger, false, nil)
+	payload, _ := json.Marshal(ApprovalRequestPayload{
+		ID: "approval-exact-command",
+		SystemRunPlan: &SystemRunPlan{
+			RawCommand: "git",
+			Argv:       []string{"git", "status"},
+		},
+	})
+	r.Route(EventFrame{Type: "event", Event: "exec.approval.requested", Payload: payload})
+
+	rpc := drainRPC(t, received)
+	var params ApprovalResolveParams
+	if err := json.Unmarshal(rpc.Params, &params); err != nil {
+		t.Fatalf("decode approval resolution: %v", err)
+	}
+	if params.Decision != "allow-once" {
+		t.Fatalf("Decision = %q, want allow-once", params.Decision)
+	}
+}
+
+func TestRouteApprovalExactCommandPolicyDoesNotAllowSiblingCommand(t *testing.T) {
+	received := make(chan receivedRequest, 5)
+	srv := startMockGW(t, rpcRecordingLoop(received))
+	client := connectToMockGW(t, srv)
+	store, logger := testStoreAndLogger(t)
+	if err := enforce.NewPolicyEngine(store).Allow("command", "git status", "approved in agent controls"); err != nil {
+		t.Fatalf("allow exact command: %v", err)
+	}
+
+	r := NewEventRouter(client, store, logger, false, nil)
+	payload, _ := json.Marshal(ApprovalRequestPayload{
+		ID: "approval-sibling-command",
+		SystemRunPlan: &SystemRunPlan{
+			RawCommand: "git push",
+		},
+	})
+	r.Route(EventFrame{Type: "event", Event: "exec.approval.requested", Payload: payload})
+
+	select {
+	case rpc := <-received:
+		t.Fatalf("no RPC expected for an unapproved sibling command, got %s", rpc.Method)
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+func TestApprovalCommandCandidatesPreserveArgvSemantics(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		argv []string
+		want []string
+	}{
+		{
+			name: "full argv",
+			raw:  "git",
+			argv: []string{"git", "status"},
+			want: []string{"git status"},
+		},
+		{
+			name: "arguments-only argv",
+			raw:  "git",
+			argv: []string{"status"},
+			want: []string{"git status"},
+		},
+		{
+			name: "empty argument",
+			raw:  "printf",
+			argv: []string{"printf", ""},
+			want: []string{`printf ""`},
+		},
+		{
+			name: "argument boundary",
+			raw:  "tool",
+			argv: []string{"tool", "a b"},
+			want: []string{`tool "a b"`},
+		},
+		{
+			name: "argv authoritative over conflicting raw command",
+			raw:  "git status",
+			argv: []string{"git", "push"},
+			want: []string{"git push"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := approvalCommandCandidates(tt.raw, tt.argv); !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("approvalCommandCandidates(%q, %#v) = %#v, want %#v", tt.raw, tt.argv, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRouteApprovalDangerousCommandStillDeniedWhenExplicitlyAllowed(t *testing.T) {
+	received := make(chan receivedRequest, 5)
+	srv := startMockGW(t, rpcRecordingLoop(received))
+	client := connectToMockGW(t, srv)
+	store, logger := testStoreAndLogger(t)
+	if err := enforce.NewPolicyEngine(store).Allow("command", "rm -rf /", "should not override safety rules"); err != nil {
+		t.Fatalf("allow exact command: %v", err)
+	}
+
+	r := NewEventRouter(client, store, logger, false, nil)
+	payload, _ := json.Marshal(ApprovalRequestPayload{
+		ID: "approval-dangerous-command",
+		SystemRunPlan: &SystemRunPlan{
+			RawCommand: "rm -rf /",
+		},
+	})
+	r.Route(EventFrame{Type: "event", Event: "exec.approval.requested", Payload: payload})
+
+	rpc := drainRPC(t, received)
+	var params ApprovalResolveParams
+	if err := json.Unmarshal(rpc.Params, &params); err != nil {
+		t.Fatalf("decode approval resolution: %v", err)
+	}
+	if params.Decision != "deny" {
+		t.Fatalf("Decision = %q, want deny", params.Decision)
 	}
 }
 

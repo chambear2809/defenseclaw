@@ -22,7 +22,7 @@ the evidence in Splunk, Galileo Agent Control, and Galileo experiments.
 | Policy decisions should be visible and explainable. | Galileo Agent Control shows which control matched and why. |
 | Security teams need durable operational evidence. | Splunk shows audit rows, verdicts, and dashboard pivots for the same event. |
 | Governance scenarios should be repeatable. | Galileo stores prompt, dataset, and experiment evidence for the same scenarios. |
-| Executives need a summarized view, not raw telemetry. | The optional Cisco Cloud Control tokenomics BFF packages token and governance signals without exposing credentials. |
+| Executives need a summarized view, not raw telemetry. | The optional Deskside AI Resilience BFF packages token and governance signals without exposing credentials. |
 
 ## Enhanced Demo Tracks
 
@@ -53,7 +53,7 @@ For a crisp executive flow, use this sequence:
 3. DefenseClaw returns the matched control and decision evidence.
 4. Splunk shows durable operational evidence for the same event.
 5. Galileo shows the trace or experiment context for repeatability.
-6. The Cisco Cloud Control tokenomics view summarizes usage, cost, and risk.
+6. The Deskside AI Resilience view summarizes usage, cost, and risk.
 
 Avoid making the demo about raw telemetry fields first. Start with the business
 problem: agents can act faster than humans can review, so runtime controls need
@@ -89,7 +89,7 @@ underlying tools.
 | Galileo | AI evaluation and observability SaaS. | It stores prompt, dataset, and experiment evidence for Galileo Agent Watch review. |
 | Dataset | A structured set of test cases. | The six Galileo datasets represent the governance scenarios. |
 | Experiment | A run of a prompt/function against a dataset with metrics. | Completed Galileo experiments prove the scenarios are repeatable. |
-| Cisco Cloud Control tokenomics | Optional executive API/BFF surface for token usage and governance summaries. | It packages O11y and Galileo signals for a Cisco Cloud Control-style executive app. |
+| Deskside AI Resilience | Optional executive API/BFF surface for token usage and governance summaries. | It packages O11y and Galileo signals for a Cisco Cloud Control-style executive app. |
 | Observe mode | Log and report would-block decisions without stopping the agent. | The live demo uses `would_block=true` as evidence. |
 | Action mode | Enforce blocking decisions. | Discuss as production enforcement mode after policy tuning. |
 
@@ -116,7 +116,7 @@ When explaining this to new audiences, keep the split simple:
 | Which policy matched? | Galileo Agent Control |
 | Where is the operational evidence? | Splunk |
 | Can we repeat and review this scenario later? | Galileo |
-| Can leadership see a summarized rollup? | Cisco Cloud Control tokenomics |
+| Can leadership see a summarized rollup? | Deskside AI Resilience |
 
 ## Demo Surfaces
 
@@ -126,7 +126,7 @@ When explaining this to new audiences, keep the split simple:
 | Galileo Agent Control | Controls for active policy and Monitor for matched runtime decisions | [K8 demo deployment](../deploy/k8s/defenseclaw/README.md#live-agent-control-and-splunk-flow) |
 | Splunk Local | Operational evidence, audit rows, verdicts, and dashboards | [Splunk app](SPLUNK_APP.md) |
 | Galileo Agent Watch | Prompt, datasets, Playground recipe, and completed experiments | [Galileo datasets](GALILEO_DEFENSECLAW_DATASETS.md) |
-| Cisco Cloud Control tokenomics | Optional executive tokenomics BFF and governance rollup | [Cisco Cloud Control tokenomics](C3_AGENT_TOKENOMICS_GALILEO.md) |
+| Deskside AI Resilience | Optional executive tokenomics BFF and governance rollup | [Deskside AI Resilience](C3_AGENT_TOKENOMICS_GALILEO.md) |
 
 ## Environment Facts
 
@@ -359,9 +359,9 @@ The Playground path uses the Galileo custom model alias
 `BridgeIT GPT-4o Mini (custom)` and pins LLM scorers to the same custom model, so
 the demo does not depend on Galileo's OpenAI integration quota.
 
-## Cisco Cloud Control Tokenomics Path
+## Deskside AI Resilience Path
 
-Cisco Cloud Control tokenomics is optional. Use it only if the audience cares
+Deskside AI Resilience is optional. Use it only if the audience cares
 about executive packaging or agent cost / usage views.
 
 Plain-English framing:
@@ -370,9 +370,9 @@ Plain-English framing:
 Splunk Observability is the source of truth for token and model usage.
 Galileo Agent Control is the source of truth for runtime policy decisions.
 Galileo datasets and experiments are the source of truth for repeatability.
-Cisco Cloud Control is the management-plane experience that can consume a
-server-side summary of those signals without sending O11y, Galileo, or Galileo
-Agent Control credentials to the browser.
+Deskside AI Resilience is the management-plane app in Cisco Cloud Control that
+can consume a server-side summary of those signals without sending O11y,
+Galileo, or Galileo Agent Control credentials to the browser.
 ```
 
 Official Cisco context:
@@ -390,9 +390,9 @@ Official Cisco context:
   real-time mitigation of prompt injection, harmful responses, and data leakage.
 
 How this demo fits: the current repo does not call Cisco Cloud Control APIs
-directly. It provides the BFF payload shape that a Cisco Cloud Control-native
-experience could consume: token usage from Splunk Observability plus runtime
-governance evidence from Galileo and Galileo Agent Control.
+directly. It provides the BFF payload shape that Deskside AI Resilience could
+consume: token usage from Splunk Observability plus runtime governance evidence
+from Galileo and Galileo Agent Control.
 
 Local fixture-backed command:
 
@@ -479,7 +479,7 @@ Use this for a customer or partner field demo.
 | 11:00-14:00 | Open Galileo Agent Control. | Start on Controls to show the named policy, then Monitor to show the decision emitted by the live request. |
 | 14:00-19:00 | Open Galileo Agent Watch assets. | Show the saved enterprise Playground, prompt `defenseclaw-runtime-governance`, and the DefenseClaw datasets. |
 | 19:00-22:00 | Review completed Galileo experiment evidence. | Anchor on `defenseclaw-dangerous-tool-pre-tool`. |
-| 22:00-24:00 | Optional Cisco Cloud Control tokenomics summary. | Position it as executive packaging, not the primary evidence source. |
+| 22:00-24:00 | Optional Deskside AI Resilience summary. | Position it as executive packaging, not the primary evidence source. |
 | 24:00-25:00 | Recap ownership split. | Galileo Agent Control decides, Splunk investigates, Galileo validates, Cisco Cloud Control summarizes. |
 
 Required commands:
@@ -525,7 +525,7 @@ Use this when the audience wants architecture, controls, and repeatability.
 | 23:00-28:00 | PII steering scenario. | Use `defenseclaw-pii-post-llm`; explain post-LLM steering/redaction. Use completed evidence unless response protection is enabled in the live environment. |
 | 28:00-33:00 | Ambiguous admin intent. | Explain approval-seeking behavior and human review patterns. |
 | 33:00-39:00 | Galileo experiment handling. | Compare Playground/model-backed path with deterministic runtime-evidence path. |
-| 39:00-43:00 | Cisco Cloud Control tokenomics BFF. | Explain O11y token source, Galileo governance enrichment, server-side credential boundary. |
+| 39:00-43:00 | Deskside AI Resilience BFF. | Explain O11y token source, Galileo governance enrichment, server-side credential boundary. |
 | 43:00-45:00 | Failure modes. | Observe versus action mode, quota fallback, fail-open behavior, credential boundaries. |
 
 Technical details worth explaining:
@@ -552,7 +552,7 @@ Use this for a hands-on or deeply technical session.
 | 28:00-36:00 | Galileo object model. | Explain project, prompt, variables, datasets, metrics, experiments. |
 | 36:00-44:00 | Run deterministic Galileo dry-run and discuss execute path. | Use `scripts/run_galileo_runtime_evidence_experiment.py --all`. |
 | 44:00-50:00 | Cover all six governance datasets. | Safe ops, prompt injection, dangerous tool, PII, ambiguous admin, grounded cluster review. |
-| 50:00-55:00 | Optional Cisco Cloud Control tokenomics packaging. | Server-side BFF, O11y tokens, Galileo governance cards, no browser-side credentials. |
+| 50:00-55:00 | Optional Deskside AI Resilience packaging. | Server-side BFF, O11y tokens, Galileo governance cards, no browser-side credentials. |
 | 55:00-60:00 | Operational close. | Who owns each surface, what to monitor, what changes in action mode. |
 
 Workshop exercise options:
@@ -593,7 +593,7 @@ Workshop exercise options:
 | --- | --- |
 | Is DefenseClaw replacing Splunk? | No. DefenseClaw emits governance evidence; Splunk is the operational investigation surface. |
 | Is Galileo Agent Control replacing Splunk? | No. Galileo Agent Control is the active runtime policy service; Splunk remains the operational investigation surface, and Galileo stores repeatable prompt/dataset/experiment evidence. |
-| Why are there two namespaces? | `defenseclaw` contains the live DefenseClaw/OpenClaw runtime. `defenseclaw-tokenomics` contains the optional Cisco Cloud Control tokenomics demo. |
+| Why are there two namespaces? | `defenseclaw` contains the live DefenseClaw/OpenClaw runtime. `defenseclaw-tokenomics` contains the optional Deskside AI Resilience demo. |
 | Why did the namespace change? | The live runtime moved from the misspelled legacy namespace to the correctly spelled `defenseclaw` namespace. |
 | Why use observe mode? | It lets teams tune policy and collect would-block evidence without disrupting the running demo. |
 | What changes in action mode? | The same raw policy decision can block the tool or request instead of just logging `would_block=true`. |
@@ -618,4 +618,4 @@ the audience needs implementation detail:
 - [K8 demo deployment](../deploy/k8s/defenseclaw/README.md)
 - [Galileo datasets and experiments](GALILEO_DEFENSECLAW_DATASETS.md)
 - [Splunk app dashboards](SPLUNK_APP.md)
-- [Cisco Cloud Control tokenomics and Galileo runtime governance](C3_AGENT_TOKENOMICS_GALILEO.md)
+- [Deskside AI Resilience and Galileo runtime governance](C3_AGENT_TOKENOMICS_GALILEO.md)

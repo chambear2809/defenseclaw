@@ -1,8 +1,9 @@
-# DefenseClaw Agent Tokenomics MFE
+# Deskside AI Resilience MFE
 
-A Cisco Cloud Control micro-frontend (MFE) for the DefenseClaw / Agent Watch
-tokenomics demo. The dashboard shows which agents, models, tools, and sessions
-are driving token consumption, then connects that cost-pressure view to spend, trend, and top-consumer details.
+A Cisco Cloud Control micro-frontend (MFE) named Deskside AI Resilience for AMD
+Deskside fleet tokenomics and Agent Control. Each Deskside can run multiple
+employee or task agents; DefenseClaw is modeled separately as the resident
+enforcement and telemetry agent on the box.
 
 This repo was forked from the C3 MFE POC, so it still includes the original
 Splunk Observability impact dashboard and backend proxy. The DefenseClaw
@@ -22,6 +23,13 @@ The EKS demo BFF reads DefenseClaw's live budget ledger and reports
 `fixture_backed: false`. Local rehearsal remains fixture-backed unless the
 prebuilt runner is given `TOKENOMICS_BFF_URL`.
 
+The prebuilt shell exposes `/fleet`, `/agent-behavior`, `/budgets`,
+`/infrastructure`, `/agent-controls`, `/policy-studio`, and `/network-security`. The fleet
+inventory and Cisco ISE/Catalyst acknowledgement
+chain are explicitly simulated; the Tokenomics ledger and the current pilot
+Deskside controls can be backed by live DefenseClaw data. Local mutable rehearsal
+state resets when the runner restarts.
+
 ## What It Shows
 
 - Total tokens, agent sessions, tool tokens, and optimization candidates.
@@ -30,6 +38,24 @@ prebuilt runner is given `TOKENOMICS_BFF_URL`.
 - Top models by token usage.
 - Top tools or targets by token usage.
 - Optimization recommendations.
+- Adoption, Cost, and Budget tabs modeled after an enterprise AI Usage workspace.
+- Clearly labeled modeled provider adoption, department heatmap, model-level
+  daily cost trend, cost breakdown, and searchable usage detail data.
+- An API-sourced organization projection whose seven-day modeled non-Halo
+  tokens/cost and annualization factor are auditable in
+  `cost.organization_projection`; agent filters exclude this unattributed overlay.
+- An in-page budget workspace for per-agent token and cost thresholds plus the
+  budget breach feed.
+- An AMD Ryzen AI Halo + Cisco C9550 core / C9350 access reference topology.
+- A clearly labeled demo Lemonade semantic-routing comparison.
+- Agent Controls for the 100K chat hard stop, exact command approvals, and a
+  capability-level baseline preview with advanced exact-name scan exceptions.
+- Policy Studio for translating natural-language security and trust intent into
+  a constrained, non-executable guardrail draft with explicit operator inspection.
+- Agent-level Tokenomics filtering and economics detail across department,
+  model, agent, people/devices, execution route, tasks, requests, tokens, and spend.
+- A repeatable malicious-skill vignette across AMD AXIS, tool policy, simulated
+  ISE ANC/RADIUS CoA, and Catalyst containment.
 - Simple tokenomics detail tables for top agents, models, spend, and token mix.
 - An **Agent Details** tab inspired by the O11y agent Figma, including an
   agent map, simple detail cards, quality metrics, and performance /
@@ -60,7 +86,7 @@ DefenseClaw usage ledger (OpenClaw snapshots and supported OTLP sources)
 C3 tokenomics summary API
         |
         v
-DefenseClaw Agent Tokenomics MFE in Cloud Control
+Deskside AI Resilience MFE in Cloud Control
 ```
 
 ## Project Structure
@@ -206,10 +232,84 @@ DefenseClaw ledger; OTLP traces and audit evidence independently continue to
 Galileo and Splunk. This keeps sink credentials out of the browser and prevents
 sink query latency from weakening local enforcement.
 
-For the current demo endpoint, the health check should return `{"status":"ok"}`:
+### Agent Controls API
+
+The Cloud Control-facing BFF exposes these focused routes below
+`/v1/c3/agent-tokenomics`:
+
+- `GET /agent-controls/allowed` lists only `command` and `tool` allow entries.
+- `POST /agent-controls/allow` approves one exact command or tool name.
+- `POST /agent-controls/remove` removes the matching approval. The BFF
+  translates this to DefenseClaw's authenticated DELETE operation.
+
+Command approvals match the complete command policy key, so approving
+`git status` does not approve `git push`. Dangerous-command scanning runs before
+the approval lookup and cannot be bypassed by an explicit allow. A tool approval
+is an exact-name scan bypass: the hook lane retains CodeGuard only for recognized
+write tools with inspectable path and content arguments, while the sidecar lane
+treats the entry as a full scan bypass. It does not add an operating-system mount
+or filesystem permission; workspace, path, network, and identity boundaries must
+be enforced independently.
+
+The quick 100K switch uses the existing catch-all budget policy with
+`session_token_budget: 100000` and `action: deny`. A chat at exactly 100,000
+tokens is within budget; at 100,001 tokens DefenseClaw denies the next inspected
+model or tool action.
+
+### Policy Studio API
+
+Policy Studio uses a two-step, server-held draft contract below
+`/v1/c3/agent-tokenomics`:
+
+- `POST /policy-studio/drafts` generates and validates a typed guardrail draft.
+- `POST /policy-studio/drafts/{draft_id}/apply` records a versioned demo
+  acknowledgment and stages the held draft. The result is explicitly `not_enforced` and
+  `ephemeral`; it does not call the live Agent Control endpoints.
+
+The BFF can use an approved OpenAI-compatible provider with
+`POLICY_STUDIO_LLM_BASE_URL`, `POLICY_STUDIO_LLM_API_KEY`,
+`POLICY_STUDIO_LLM_MODEL`, and `POLICY_STUDIO_LLM_PROVIDER`. The API key stays
+server-side. When the provider is absent, unreachable, or returns an invalid
+shape, the BFF uses a deterministic fallback and discloses that mode in the UI.
+Model output is normalized into fixed categories, decisions, severities, and a
+server-owned JSON preview; executable Rego/YAML is never accepted from the model
+or browser.
+
+The demo acknowledgment is not authenticated identity evidence. Live generation
+is concurrency- and rate-limited. The demo load balancer must remain restricted
+to an operator CIDR; production use requires Cloud Control HTTPS and SSO before
+any sensitive policy intent is entered.
+
+### AMD Deskside fleet demo API
+
+The demo-safe fleet contract adds:
+
+- `GET /fleet/overview` for fixture inventory, resident DefenseClaw status,
+  model routes, device posture, and simulated enforcement evidence.
+- `GET /fleet/analytics` for the explicitly modeled seven-day adoption and
+  modeled-cost scenario; these figures are never merged with the live ledger.
+- `POST /security/policy` to arm or disarm future automatic containment with
+  optimistic policy-version checks.
+- `POST /fleet/desksides/{device_id}/network-action` to simulate idempotent
+  quarantine or restore operations.
+- `POST /fleet/demo/reset` to restore the pristine policy, inventory, device,
+  action-count, and evidence baseline between rehearsals.
+
+These routes never call a production ISE or switch. The browser labels their
+state as simulated and keeps ordinary budget breaches separate from critical
+security isolation.
+
+Run the repeatable three-vignette browser test with:
 
 ```bash
-curl "http://<tokenomics-host>:8787/healthz"
+npm run test:e2e:demo
+```
+
+For the current demo endpoint, the same-origin health check should return
+`{"status":"ok"}`:
+
+```bash
+curl "http://<tokenomics-host>/healthz"
 ```
 
 The summary API should return fields like:
@@ -288,7 +388,7 @@ exposes the expected Developer Sandbox container, `./App`, and
 build is not replaced by a test build.
 
 For the full local, prebuilt handoff, live API, and staging walkthrough, see
-the [Agent Tokenomics MFE End-to-End Test Guide](docs/tokenomics-e2e-testing.md).
+the [Deskside AI Resilience MFE End-to-End Test Guide](docs/tokenomics-e2e-testing.md).
 
 To build the staging sandbox remote into `.tmp/sandbox-dist` without verifying:
 
@@ -305,7 +405,7 @@ SURFACE_ID=<surface-id> node scripts/verify-remote-entry.js
 The Module Federation container exposes both:
 
 - `./App` for the original O11y impact dashboard.
-- `./DefenseClawTokenomics` for the DefenseClaw Agent Tokenomics dashboard.
+- `./DefenseClawTokenomics` for the Deskside AI Resilience dashboard.
 
 ## Packaging for Cisco Platform
 

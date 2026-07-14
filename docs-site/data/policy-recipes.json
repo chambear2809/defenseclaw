@@ -3350,7 +3350,7 @@
         "shell.write",
         "fs.unlink"
       ],
-      "source": "docs-site/scripts/build-policy-assets.ts (illustrative)",
+      "source": "docs-site/scripts/build-policy-assets.ts (example)",
       "tags": [
         "tool",
         "shell",

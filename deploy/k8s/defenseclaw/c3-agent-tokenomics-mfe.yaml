@@ -24,7 +24,7 @@ spec:
       automountServiceAccountToken: false
       containers:
         - name: mfe
-          image: 637423309390.dkr.ecr.us-east-1.amazonaws.com/defenseclaw-c3-tokenomics-mfe:c3-tokenomics-mfe-20260707-070430-budgetcontrol-2352a4bb
+          image: 637423309390.dkr.ecr.us-east-1.amazonaws.com/defenseclaw-c3-tokenomics-mfe@sha256:5146515675cc18b53c5b20bb03c3f3bdbe179cdf06b3203eb1272622b28fd5fa
           imagePullPolicy: IfNotPresent
           env:
             - name: HOST
@@ -35,6 +35,8 @@ spec:
               value: "8787"
             - name: TOKENOMICS_BFF_URL
               value: "http://c3-agent-tokenomics-demo.defenseclaw-tokenomics.svc.cluster.local:8787"
+            - name: POLICY_STUDIO_BFF_TIMEOUT_MS
+              value: "30000"
           ports:
             - name: web
               containerPort: 3001
@@ -85,6 +87,10 @@ metadata:
     app.kubernetes.io/part-of: defenseclaw
 spec:
   type: LoadBalancer
+  # The browser and API share port 80. API_PORT 8787 remains pod-internal for
+  # health checks and proxy handling and is not an external Service listener.
+  loadBalancerSourceRanges:
+    - 0.0.0.0/0
   selector:
     app.kubernetes.io/name: c3-agent-tokenomics-mfe
     app.kubernetes.io/component: mfe
@@ -92,6 +98,3 @@ spec:
     - name: http
       port: 80
       targetPort: web
-    - name: api
-      port: 8787
-      targetPort: api

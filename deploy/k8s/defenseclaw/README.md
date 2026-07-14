@@ -104,6 +104,17 @@ kubectl -n defenseclaw-tokenomics create secret generic defenseclaw-gateway-acce
 kubectl -n defenseclaw-tokenomics create secret generic c3-agent-tokenomics-galileo \
   --from-literal=GALILEO_API_KEY="${GALILEO_DEMO_V2_API_KEY:-$GALILEO_API_KEY}" \
   --dry-run=client -o yaml | kubectl apply -f -
+
+# Give the Tokenomics BFF access to the in-cluster BridgeIT OpenAI-compatible
+# proxy without printing or committing the shared bearer token. Policy Studio
+# falls back to a labeled deterministic draft when this optional secret is absent.
+kubectl -n defenseclaw get secret openclaw-secrets -o json | jq '{
+  apiVersion: "v1",
+  kind: "Secret",
+  metadata: {name: "policy-studio-llm", namespace: "defenseclaw-tokenomics"},
+  type: "Opaque",
+  data: {POLICY_STUDIO_LLM_API_KEY: .data.BRIDGEIT_PROXY_API_KEY}
+}' | kubectl apply -f -
 ```
 
 The Splunk OTel Collector values expect:
@@ -146,6 +157,16 @@ helm upgrade --install splunk-otel-collector \
   --values deploy/helm/splunk-otel-collector/isovalent-demo.values.yaml
 ```
 
+The Tokenomics BFF service is intentionally `ClusterIP`; the public MFE proxies
+it from inside the cluster. The MFE load balancer exposes only TCP/80 from
+`0.0.0.0/0`. Browser API calls use same-origin `/v1/c3/agent-tokenomics/*`
+paths on port 80; the MFE's API port 8787 remains pod-internal and is not an
+external Service listener. This remains a demo transport: production Policy
+Studio requires a Cloud Control HTTPS ingress, SSO-derived principal, tenant
+binding, and authenticated approval workflow. Until then, Policy Studio
+records only an unverified demo acknowledgment and operators must not enter
+credentials, secrets, or sensitive policy text.
+
 ## Validate
 
 ```bash
@@ -178,7 +199,7 @@ for Kubernetes health because this lab does not load a Kubernetes MCP server.
 The core demo is the live DefenseClaw/OpenClaw runtime in `defenseclaw`.
 Splunk shows operational evidence, Agent Control shows active runtime policy,
 and Galileo shows repeatable prompt, dataset, and experiment evidence for the
-same governance scenarios. The Cisco Cloud Control tokenomics demo in namespace
+same governance scenarios. The Deskside AI Resilience demo in namespace
 `defenseclaw-tokenomics` is a separate optional surface and is not part of this
 Agent Watch flow.
 
@@ -189,7 +210,7 @@ Agent Watch flow.
 | Agent Control | Controls page for active runtime policy; Monitor page for live matched decisions | `kubectl -n defenseclaw get svc agent-control-ui` |
 | Splunk Local | Searchable audit, verdict, gateway, and OTel evidence | `kubectl -n defenseclaw get svc splunk-local-ui` |
 | Galileo | Prompt, datasets, saved Playground, and completed experiment evidence | `https://console.demo-v2.galileocloud.io/project/ef0960e1-8744-4019-9faa-103b13f94e0d` |
-| Cisco Cloud Control tokenomics MFE | Live DefenseClaw usage, budget alerts, and local deny/steer controls | `kubectl -n defenseclaw-tokenomics get svc c3-agent-tokenomics-mfe` |
+| Deskside AI Resilience MFE | Live DefenseClaw usage, budget alerts, and local deny/steer controls | `kubectl -n defenseclaw-tokenomics get svc c3-agent-tokenomics-mfe` |
 
 ### Galileo Object Inventory
 

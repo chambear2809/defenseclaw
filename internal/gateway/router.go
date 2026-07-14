@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -1698,6 +1699,31 @@ func (r *EventRouter) handleApprovalRequest(evt EventFrame) {
 		return
 	}
 
+	_, approved, approvalErr := r.approvedCommand(rawCmd, argv)
+	if approvalErr != nil {
+		sessionID, _ := r.activeAgentCorrelation()
+		r.logStreamAction(sessionID, string(audit.ActionGatewayApprovalDenied), payload.ID,
+			fmt.Sprintf("reason=approved-command-lookup-failed command_name=%s", cmdName))
+		fmt.Fprintf(os.Stderr, "[sidecar] DENIED exec approval: %s (approved-command lookup failed: %v)\n",
+			cmdName, approvalErr)
+		if r.otel != nil {
+			r.otel.EndApprovalSpan(approvalSpan, "denied", "approved-command-lookup-failed", false, true)
+		}
+		r.resolveApprovalAsync(payload.ID, false, "defenseclaw: approved-command policy lookup failed")
+		return
+	}
+	if approved {
+		sessionID, _ := r.activeAgentCorrelation()
+		r.logStreamAction(sessionID, string(audit.ActionGatewayApprovalGranted), payload.ID,
+			fmt.Sprintf("reason=approved-command command_name=%s", cmdName))
+		fmt.Fprintf(os.Stderr, "[sidecar] APPROVED exec from exact command policy: %s\n", cmdName)
+		if r.otel != nil {
+			r.otel.EndApprovalSpan(approvalSpan, "approved", "approved-command", true, false)
+		}
+		r.resolveApprovalAsync(payload.ID, true, "defenseclaw: command is on the exact approval list")
+		return
+	}
+
 	if r.autoApprove {
 		r.logStreamAction(approvalSession, string(audit.ActionGatewayApprovalGranted), payload.ID,
 			fmt.Sprintf("reason=auto-approve command_name=%s", cmdName))
@@ -1754,6 +1780,83 @@ func baseCommand(cmd string) string {
 		base = base[idx+1:]
 	}
 	return base
+}
+
+// approvedCommand returns the exact command policy that matched an approval
+// request. It never falls back to a binary-only match when arguments are
+// present: allowing "git status" must not implicitly allow every git command.
+// Dangerous-command scanning runs before this lookup, so an explicit command
+// allow cannot override a HIGH+ built-in rule.
+func (r *EventRouter) approvedCommand(rawCmd string, argv []string) (string, bool, error) {
+	if r == nil || r.policy == nil {
+		return "", false, nil
+	}
+	candidates := approvalCommandCandidates(rawCmd, argv)
+	for _, candidate := range candidates {
+		allowed, err := r.policy.IsAllowed("command", candidate)
+		if err != nil {
+			return "", false, err
+		}
+		if allowed {
+			return candidate, true, nil
+		}
+	}
+	return "", false, nil
+}
+
+func approvalCommandCandidates(rawCmd string, argv []string) []string {
+	rawCmd = strings.TrimSpace(rawCmd)
+	if len(argv) == 0 {
+		if rawCmd == "" {
+			return nil
+		}
+		return []string{rawCmd}
+	}
+
+	// argv is the executable representation when it is present. Do not also
+	// accept rawCmd: a malformed or compromised peer could provide an approved
+	// raw command alongside a different argv and otherwise bypass the exact
+	// command policy. Some peers send rawCmd as the executable and argv as only
+	// its arguments, so prepend a simple executable token when argv[0] differs.
+	commandArgv := argv
+	if rawCmd != "" && isSimpleApprovalArg(rawCmd) && argv[0] != rawCmd {
+		commandArgv = make([]string, 0, len(argv)+1)
+		commandArgv = append(commandArgv, rawCmd)
+		commandArgv = append(commandArgv, argv...)
+	}
+
+	parts := make([]string, len(commandArgv))
+	for i, arg := range commandArgv {
+		parts[i] = canonicalApprovalArg(arg)
+	}
+	return []string{strings.Join(parts, " ")}
+}
+
+// canonicalApprovalArg keeps ordinary command lines human-readable while
+// preserving argv boundaries for empty, whitespace-containing, and shell-like
+// arguments. strconv.Quote provides an unambiguous representation; unlike a
+// plain strings.Join, ["tool", "a b"] cannot collide with
+// ["tool", "a", "b"].
+func canonicalApprovalArg(arg string) string {
+	if isSimpleApprovalArg(arg) {
+		return arg
+	}
+	return strconv.Quote(arg)
+}
+
+func isSimpleApprovalArg(arg string) bool {
+	if arg == "" {
+		return false
+	}
+	for i := 0; i < len(arg); i++ {
+		c := arg[i]
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+			strings.ContainsRune("_@%+=:,./-", rune(c)) {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // Legacy pattern helpers retained for backward-compat tests and fallback checks.

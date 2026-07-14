@@ -42,7 +42,7 @@ var webTUICmd = &cobra.Command{
 	Long: `Serve a browser-hosted DefenseClaw TUI.
 
 The HTTP server upgrades /ws to a PTY-backed terminal session that runs
-"defenseclaw-gateway tui --skip-first-run-prompt".`,
+"defenseclaw tui".`,
 	RunE:              runWebTUI,
 	PersistentPreRunE: runWebTUIPre,
 }

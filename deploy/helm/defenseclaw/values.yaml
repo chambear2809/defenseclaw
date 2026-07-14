@@ -47,12 +47,15 @@ webTui:
     type: ClusterIP
     port: 80
     annotations: {}
-    loadBalancerSourceRanges: []
+    loadBalancerSourceRanges:
+      - 0.0.0.0/0
 
 uiService:
   enabled: true
   type: LoadBalancer
   port: 80
+  loadBalancerSourceRanges:
+    - 0.0.0.0/0
   annotations:
     service.beta.kubernetes.io/aws-load-balancer-backend-protocol: http
     service.beta.kubernetes.io/aws-load-balancer-connection-idle-timeout: "3600"
@@ -87,6 +90,8 @@ agentControl:
     name: agent-control-ui
     type: LoadBalancer
     port: 443
+    loadBalancerSourceRanges:
+      - 0.0.0.0/0
     annotations:
       service.beta.kubernetes.io/aws-load-balancer-backend-protocol: http
       service.beta.kubernetes.io/aws-load-balancer-connection-idle-timeout: "3600"

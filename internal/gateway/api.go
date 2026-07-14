@@ -76,6 +76,12 @@ type APIServer struct {
 	// /v1/guardrail/config endpoint while other goroutines read them.
 	cfgMu sync.RWMutex
 
+	// enforcementMu serializes REST enforcement mutations. In particular,
+	// removing an allow or block is a read-check-write operation: without this
+	// lock a concurrent request could replace the action between the check and
+	// clear, causing the newer policy to be removed.
+	enforcementMu sync.Mutex
+
 	// otlpPathTokenMu guards otlpPathTokens — the in-memory map of
 	// per-source OTLP path tokens loaded from
 	// ${data_dir}/hooks/.otlp-<source>.token. Reads happen on every
@@ -1425,6 +1431,9 @@ func (a *APIServer) handleEnforceBlock(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	a.enforcementMu.Lock()
+	defer a.enforcementMu.Unlock()
+
 	pe := enforce.NewPolicyEngine(a.store)
 	switch r.Method {
 	case http.MethodPost:
@@ -1441,11 +1450,12 @@ func (a *APIServer) handleEnforceBlock(w http.ResponseWriter, r *http.Request) {
 		}
 		a.writeJSON(w, http.StatusOK, map[string]string{"status": "blocked"})
 	case http.MethodDelete:
-		if err := pe.Unblock(req.TargetType, req.TargetName); err != nil {
+		removed, err := clearMatchingInstallAction(pe, req.TargetType, req.TargetName, "block")
+		if err != nil {
 			a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
 		}
-		if a.logger != nil {
+		if removed && a.logger != nil {
 			_ = a.logger.LogActionCtx(r.Context(), string(audit.ActionAPIEnforceUnblock), req.TargetName, fmt.Sprintf("type=%s", req.TargetType))
 		}
 		a.writeJSON(w, http.StatusOK, map[string]string{"status": "unblocked"})
@@ -1453,7 +1463,7 @@ func (a *APIServer) handleEnforceBlock(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *APIServer) handleEnforceAllow(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
+	if r.Method != http.MethodPost && r.Method != http.MethodDelete {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
@@ -1472,6 +1482,9 @@ func (a *APIServer) handleEnforceAllow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	a.enforcementMu.Lock()
+	defer a.enforcementMu.Unlock()
+
 	reason := req.Reason
 	if reason == "" {
 		reason = "allowed via REST API"
@@ -1483,6 +1496,19 @@ func (a *APIServer) handleEnforceAllow(w http.ResponseWriter, r *http.Request) {
 	if req.TargetType == "plugin" {
 		policyName = normalizePluginPolicyName(req.TargetName)
 		runtimeName = resolvePluginRuntimeActionName(pe, req.TargetName, policyName)
+	}
+	if r.Method == http.MethodDelete {
+		removed, err := clearMatchingInstallAction(pe, req.TargetType, policyName, "allow")
+		if err != nil {
+			a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		if removed && a.logger != nil {
+			_ = a.logger.LogActionCtx(r.Context(), string(audit.ActionAPIEnforceUnblock), policyName,
+				fmt.Sprintf("type=%s removed_from_allow_list=true", req.TargetType))
+		}
+		a.writeJSON(w, http.StatusOK, map[string]string{"status": "removed"})
+		return
 	}
 
 	entry, err := pe.GetAction(req.TargetType, runtimeName)
@@ -1528,6 +1554,24 @@ func (a *APIServer) handleEnforceAllow(w http.ResponseWriter, r *http.Request) {
 		_ = a.logger.LogActionCtx(r.Context(), string(audit.ActionAPIEnforceAllow), policyName, fmt.Sprintf("type=%s reason=%s", req.TargetType, truncate(reason, 120)))
 	}
 	a.writeJSON(w, http.StatusOK, map[string]string{"status": "allowed"})
+}
+
+// clearMatchingInstallAction removes only the requested install state. The
+// install dimension represents both explicit allows and explicit blocks, so an
+// unconditional Unblock call from one endpoint could otherwise erase the
+// opposite policy.
+func clearMatchingInstallAction(pe *enforce.PolicyEngine, targetType, targetName, expected string) (bool, error) {
+	entry, err := pe.GetAction(targetType, targetName)
+	if err != nil {
+		return false, err
+	}
+	if entry == nil || entry.Actions.Install != expected {
+		return false, nil
+	}
+	if err := pe.Unblock(targetType, targetName); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func normalizePluginPolicyName(name string) string {

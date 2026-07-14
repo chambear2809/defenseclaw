@@ -1,19 +1,21 @@
-# Cisco Cloud Control Tokenomics + Galileo Runtime Governance Demo
+# Deskside AI Resilience + Galileo Runtime Governance Demo
 
-This demo adds a Cisco Cloud Control-facing bridge for the executive Agent
-Tokenomics view. In the live EKS path, DefenseClaw's durable budget ledger is
-the source of truth for token and reported-cost usage, and DefenseClaw enforces
-the local deny or steer policy. The same OTel stream continues to Galileo and
-Splunk; Galileo metadata remains optional server-side enrichment.
+This demo adds a Cisco Cloud Control-facing bridge for the Deskside AI
+Resilience executive tokenomics view. In the live EKS path, DefenseClaw's
+durable budget ledger is the source of truth for token and reported-cost usage,
+and DefenseClaw enforces the local deny or steer policy. The same OTel stream
+continues to Galileo and Splunk; Galileo metadata remains optional server-side
+enrichment.
 
 The repo still uses `c3` in some live identifiers, paths, modules, and demo
 endpoints, such as `/v1/c3/agent-tokenomics/summary` and
-`c3-agent-tokenomics-demo`. In demo narration, read `c3` as Cisco Cloud
-Control.
+`c3-agent-tokenomics-demo`. In demo narration, call the app Deskside AI
+Resilience; `c3` remains only in technical identifiers.
 
 ## Customer story
 
-> C3 shows which agents, models, services, and workflows are consuming tokens,
+> Deskside AI Resilience shows which agents, models, services, and workflows are
+> consuming tokens,
 > raises live budget alerts, and applies a DefenseClaw stop or steer policy.
 > Agent Control and Galileo provide the broader named runtime-governance plane,
 > while Splunk receives the operational evidence.
@@ -80,7 +82,7 @@ reachable.
 | Token counts, reported cost, models, agents, sessions | DefenseClaw budget ledger | KPI cards, top-agent/model tables, budget evaluation |
 | Operational token and policy evidence | Galileo and Splunk via OTel/audit sinks | Cross-system investigation and demo proof |
 | Named non-budget runtime controls | Agent Control | Existing deny, steer, observe, and approval policy evaluation |
-| Unified executive view | Cisco Cloud Control-native app | One page for agent cost, behavior, and runtime governance |
+| Unified executive view | Deskside AI Resilience app | One page for agent cost, behavior, and runtime governance |
 
 The Cisco Cloud Control browser experience must not receive O11y or Galileo API
 keys. This bridge is a server-side BFF shape only.
@@ -160,7 +162,7 @@ curl 'http://127.0.0.1:8787/v1/c3/agent-tokenomics/summary?include_galileo=true'
 The pragmatic-clarity prebuilt micro-frontend handoff is checked in under
 `bundles/c3_agent_tokenomics/mfe_prebuilt`. It includes a static `dist/`
 directory, fixture summary payload, and a local Node runner so reviewers can
-exercise the Cisco Cloud Control tokenomics surface without Artifactory access
+exercise Deskside AI Resilience without Artifactory access
 or `npm install`:
 
 ```bash
@@ -263,8 +265,9 @@ API-only dependencies should remain `ClusterIP` unless they serve a user-visible
 UI.
 
 `deploy/k8s/defenseclaw/c3-agent-tokenomics-mfe.yaml` deploys the prebuilt MFE
-handoff beside that BFF. It serves the static MFE on service port `80` and the
-same-origin proxy to the live BFF on service port `8787`:
+handoff beside that BFF. It serves the static MFE and same-origin live BFF
+proxy on service port `80`; its internal API port `8787` is not exposed by the
+Service:
 
 ```bash
 kubectl apply -f deploy/k8s/defenseclaw/c3-agent-tokenomics-mfe.yaml
@@ -283,4 +286,6 @@ kubectl -n defenseclaw-tokenomics get svc c3-agent-tokenomics-mfe
 - Releasing a policy atomically removes it and releases all alerts it produced.
 - Budget breach and enforcement decisions reach the audit/OTel evidence path.
 - O11y and Galileo credentials remain server-side.
-- Dollar cost is shown only when the source reports it; no synthetic pricing is invented.
+- Source-reported dollar cost takes precedence. When it is absent, the BFF may
+  estimate only an exact model in its maintained rate map; unknown and local
+  models remain explicitly `Unpriced`.

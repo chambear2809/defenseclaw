@@ -1,0 +1,196 @@
+{
+  "schema_version": "c3.agent_tokenomics.fleet_analytics.v1",
+  "generated_at": "2026-07-08T22:00:00Z",
+  "source": "amd_deskside_demo_scenario",
+  "debug": {
+    "fixture_backed": true
+  },
+  "scope": {
+    "fleet_id": "amd-deskside-enterprise-pilot",
+    "fleet_name": "AMD Deskside Enterprise Pilot",
+    "window": "-7d",
+    "window_label": "Last 7 days",
+    "timezone": "America/New_York"
+  },
+  "disclosure": {
+    "status": "illustrative",
+    "label": "Demo fleet analytics",
+    "message": "Adoption, employee, team, route, and estimated-cost values are a demo scenario until fleet identity and pricing telemetry is connected. Live DefenseClaw ledger totals must remain visibly separate.",
+    "local_cost_note": "A zero billed-model cost for local execution excludes hardware, power, support, and other total-cost-of-ownership inputs."
+  },
+  "dimensions": {
+    "providers": [
+      {"provider_id": "amd-local", "name": "AMD local", "kind": "local", "route_label": "On-device"},
+      {"provider_id": "openai", "name": "OpenAI", "kind": "frontier", "route_label": "Cloud"},
+      {"provider_id": "anthropic", "name": "Claude", "kind": "frontier", "route_label": "Cloud"},
+      {"provider_id": "google", "name": "Gemini", "kind": "frontier", "route_label": "Cloud"}
+    ],
+    "models": [
+      {"model_id": "amd-local-default", "name": "AMD local default", "provider_id": "amd-local"},
+      {"model_id": "gpt-4o-mini", "name": "GPT-4o mini", "provider_id": "openai"},
+      {"model_id": "gpt-4.1-mini", "name": "GPT-4.1 mini", "provider_id": "openai"},
+      {"model_id": "gpt-5.4-mini", "name": "GPT-5.4 mini", "provider_id": "openai"},
+      {"model_id": "gpt-5.4", "name": "GPT-5.4", "provider_id": "openai"},
+      {"model_id": "gpt-5.5", "name": "GPT-5.5", "provider_id": "openai"},
+      {"model_id": "claude-sonnet-4-5", "name": "Claude Sonnet 4.5", "provider_id": "anthropic"},
+      {"model_id": "claude-sonnet-4-6", "name": "Claude Sonnet 4.6", "provider_id": "anthropic"},
+      {"model_id": "claude-opus-4-8", "name": "Claude Opus 4.8", "provider_id": "anthropic"},
+      {"model_id": "claude-haiku-4-5-20251001", "name": "Claude Haiku 4.5", "provider_id": "anthropic"},
+      {"model_id": "gemini-2.5-flash", "name": "Gemini 2.5 Flash", "provider_id": "google"},
+      {"model_id": "gemini-3.5-flash", "name": "Gemini 3.5 Flash", "provider_id": "google"},
+      {"model_id": "gemini-3.1-pro-preview", "name": "Gemini 3.1 Pro Preview", "provider_id": "google"}
+    ],
+    "teams": [
+      {"team_id": "engineering", "name": "Engineering"},
+      {"team_id": "product", "name": "Product"},
+      {"team_id": "finance", "name": "Finance"},
+      {"team_id": "security", "name": "Security"},
+      {"team_id": "support", "name": "Support"}
+    ],
+    "users": [
+      {"user_id": "maya-chen", "display_name": "Maya Chen", "team_id": "engineering", "job_family": "Software Engineering", "device_id": "DSK-NYC-014"},
+      {"user_id": "jordan-lee", "display_name": "Jordan Lee", "team_id": "product", "job_family": "Product Management", "device_id": "DSK-AUS-017"},
+      {"user_id": "priya-shah", "display_name": "Priya Shah", "team_id": "finance", "job_family": "Finance", "device_id": "DSK-LON-008"},
+      {"user_id": "alex-morgan", "display_name": "Alex Morgan", "team_id": "security", "job_family": "Security", "device_id": "DSK-SJC-022"},
+      {"user_id": "sam-wilson", "display_name": "Sam Wilson", "team_id": "support", "job_family": "Customer Support", "device_id": "DSK-RTP-006"}
+    ],
+    "agents": [
+      {"agent_id": "employee-assistant", "name": "Employee Assistant", "kind": "workload"},
+      {"agent_id": "code-builder", "name": "Code Builder", "kind": "workload"},
+      {"agent_id": "product-planner", "name": "Product Planner", "kind": "workload"},
+      {"agent_id": "finance-assistant", "name": "Finance Assistant", "kind": "workload"},
+      {"agent_id": "research-agent", "name": "Research Agent", "kind": "workload"},
+      {"agent_id": "defenseclaw", "name": "DefenseClaw", "kind": "resident-security"}
+    ]
+  },
+  "adoption": {
+    "status": "illustrative",
+    "summary": {
+      "total_employees": 24,
+      "active_users": 23,
+      "active_user_percent": 95.8,
+      "reporting_desksides": 23
+    },
+    "provider_totals": [
+      {"provider_id": "amd-local", "active_users": 18, "change_from_previous_window": 4},
+      {"provider_id": "openai", "active_users": 9, "change_from_previous_window": 2},
+      {"provider_id": "anthropic", "active_users": 6, "change_from_previous_window": 1},
+      {"provider_id": "google", "active_users": 3, "change_from_previous_window": 1}
+    ],
+    "daily_active_users": [
+      {"date": "2026-07-02", "provider_id": "amd-local", "active_users": 12},
+      {"date": "2026-07-02", "provider_id": "openai", "active_users": 5},
+      {"date": "2026-07-02", "provider_id": "anthropic", "active_users": 3},
+      {"date": "2026-07-02", "provider_id": "google", "active_users": 1},
+      {"date": "2026-07-03", "provider_id": "amd-local", "active_users": 14},
+      {"date": "2026-07-03", "provider_id": "openai", "active_users": 6},
+      {"date": "2026-07-03", "provider_id": "anthropic", "active_users": 4},
+      {"date": "2026-07-03", "provider_id": "google", "active_users": 1},
+      {"date": "2026-07-04", "provider_id": "amd-local", "active_users": 15},
+      {"date": "2026-07-04", "provider_id": "openai", "active_users": 7},
+      {"date": "2026-07-04", "provider_id": "anthropic", "active_users": 4},
+      {"date": "2026-07-04", "provider_id": "google", "active_users": 2},
+      {"date": "2026-07-05", "provider_id": "amd-local", "active_users": 16},
+      {"date": "2026-07-05", "provider_id": "openai", "active_users": 7},
+      {"date": "2026-07-05", "provider_id": "anthropic", "active_users": 5},
+      {"date": "2026-07-05", "provider_id": "google", "active_users": 2},
+      {"date": "2026-07-06", "provider_id": "amd-local", "active_users": 17},
+      {"date": "2026-07-06", "provider_id": "openai", "active_users": 8},
+      {"date": "2026-07-06", "provider_id": "anthropic", "active_users": 5},
+      {"date": "2026-07-06", "provider_id": "google", "active_users": 2},
+      {"date": "2026-07-07", "provider_id": "amd-local", "active_users": 18},
+      {"date": "2026-07-07", "provider_id": "openai", "active_users": 8},
+      {"date": "2026-07-07", "provider_id": "anthropic", "active_users": 6},
+      {"date": "2026-07-07", "provider_id": "google", "active_users": 3},
+      {"date": "2026-07-08", "provider_id": "amd-local", "active_users": 18},
+      {"date": "2026-07-08", "provider_id": "openai", "active_users": 9},
+      {"date": "2026-07-08", "provider_id": "anthropic", "active_users": 6},
+      {"date": "2026-07-08", "provider_id": "google", "active_users": 3}
+    ],
+    "team_provider_matrix": [
+      {"team_id": "engineering", "provider_id": "amd-local", "active_users": 7},
+      {"team_id": "engineering", "provider_id": "openai", "active_users": 4},
+      {"team_id": "engineering", "provider_id": "anthropic", "active_users": 3},
+      {"team_id": "engineering", "provider_id": "google", "active_users": 1},
+      {"team_id": "product", "provider_id": "amd-local", "active_users": 4},
+      {"team_id": "product", "provider_id": "openai", "active_users": 3},
+      {"team_id": "product", "provider_id": "anthropic", "active_users": 2},
+      {"team_id": "product", "provider_id": "google", "active_users": 1},
+      {"team_id": "finance", "provider_id": "amd-local", "active_users": 3},
+      {"team_id": "finance", "provider_id": "openai", "active_users": 1},
+      {"team_id": "finance", "provider_id": "anthropic", "active_users": 1},
+      {"team_id": "finance", "provider_id": "google", "active_users": 1},
+      {"team_id": "security", "provider_id": "amd-local", "active_users": 2},
+      {"team_id": "security", "provider_id": "openai", "active_users": 1},
+      {"team_id": "security", "provider_id": "anthropic", "active_users": 0},
+      {"team_id": "security", "provider_id": "google", "active_users": 0},
+      {"team_id": "support", "provider_id": "amd-local", "active_users": 2},
+      {"team_id": "support", "provider_id": "openai", "active_users": 0},
+      {"team_id": "support", "provider_id": "anthropic", "active_users": 0},
+      {"team_id": "support", "provider_id": "google", "active_users": 0}
+    ]
+  },
+  "cost": {
+    "status": "illustrative",
+    "currency": "USD",
+    "summary": {
+      "total_tokens": 74050000,
+      "cloud_tokens": 71940000,
+      "local_tokens": 2110000,
+      "estimated_cloud_cost_usd": 11863.56,
+      "billed_local_model_cost_usd": 0,
+      "estimated_cloud_cost_avoided_usd": 842.18
+    },
+    "organization_projection": {
+      "status": "illustrative",
+      "basis_window_days": 7,
+      "annualization_weeks": 52,
+      "modeled_non_halo_developers": 6,
+      "modeled_non_halo_cloud_tokens": 1200000000,
+      "modeled_non_halo_estimated_cost_usd": 209000.0,
+      "description": "Modeled non-Halo developer cohort added to the managed seven-day scenario before annualization."
+    },
+    "daily_provider_cost": [
+      {"date": "2026-07-02", "provider_id": "openai", "estimated_cost_usd": 1236.1},
+      {"date": "2026-07-02", "provider_id": "anthropic", "estimated_cost_usd": 443.93},
+      {"date": "2026-07-02", "provider_id": "google", "estimated_cost_usd": 1.8},
+      {"date": "2026-07-03", "provider_id": "openai", "estimated_cost_usd": 1240.4},
+      {"date": "2026-07-03", "provider_id": "anthropic", "estimated_cost_usd": 445.23},
+      {"date": "2026-07-03", "provider_id": "google", "estimated_cost_usd": 2.2},
+      {"date": "2026-07-04", "provider_id": "openai", "estimated_cost_usd": 1241.8},
+      {"date": "2026-07-04", "provider_id": "anthropic", "estimated_cost_usd": 446.33},
+      {"date": "2026-07-04", "provider_id": "google", "estimated_cost_usd": 2.6},
+      {"date": "2026-07-05", "provider_id": "openai", "estimated_cost_usd": 1243.3},
+      {"date": "2026-07-05", "provider_id": "anthropic", "estimated_cost_usd": 447.53},
+      {"date": "2026-07-05", "provider_id": "google", "estimated_cost_usd": 3.0},
+      {"date": "2026-07-06", "provider_id": "openai", "estimated_cost_usd": 1246.42},
+      {"date": "2026-07-06", "provider_id": "anthropic", "estimated_cost_usd": 448.63},
+      {"date": "2026-07-06", "provider_id": "google", "estimated_cost_usd": 3.4},
+      {"date": "2026-07-07", "provider_id": "openai", "estimated_cost_usd": 1249.2},
+      {"date": "2026-07-07", "provider_id": "anthropic", "estimated_cost_usd": 449.93},
+      {"date": "2026-07-07", "provider_id": "google", "estimated_cost_usd": 4.1},
+      {"date": "2026-07-08", "provider_id": "openai", "estimated_cost_usd": 1251.0},
+      {"date": "2026-07-08", "provider_id": "anthropic", "estimated_cost_usd": 452.02},
+      {"date": "2026-07-08", "provider_id": "google", "estimated_cost_usd": 4.64}
+    ],
+    "detail_rows": [
+      {"row_id": "maya-local", "user_id": "maya-chen", "team_id": "engineering", "device_id": "DSK-NYC-014", "agent_id": "employee-assistant", "provider_id": "amd-local", "model_id": "amd-local-default", "tasks": 360, "requests": 511, "total_tokens": 620000, "estimated_cost_usd": 0},
+      {"row_id": "jordan-local", "user_id": "jordan-lee", "team_id": "product", "device_id": "DSK-AUS-017", "agent_id": "employee-assistant", "provider_id": "amd-local", "model_id": "amd-local-default", "tasks": 310, "requests": 447, "total_tokens": 490000, "estimated_cost_usd": 0},
+      {"row_id": "priya-local", "user_id": "priya-shah", "team_id": "finance", "device_id": "DSK-LON-008", "agent_id": "finance-assistant", "provider_id": "amd-local", "model_id": "amd-local-default", "tasks": 240, "requests": 352, "total_tokens": 400000, "estimated_cost_usd": 0},
+      {"row_id": "alex-local", "user_id": "alex-morgan", "team_id": "security", "device_id": "DSK-SJC-022", "agent_id": "research-agent", "provider_id": "amd-local", "model_id": "amd-local-default", "tasks": 180, "requests": 264, "total_tokens": 290000, "estimated_cost_usd": 0},
+      {"row_id": "sam-local", "user_id": "sam-wilson", "team_id": "support", "device_id": "DSK-RTP-006", "agent_id": "employee-assistant", "provider_id": "amd-local", "model_id": "amd-local-default", "tasks": 163, "requests": 241, "total_tokens": 310000, "estimated_cost_usd": 0},
+      {"row_id": "maya-openai", "user_id": "maya-chen", "team_id": "engineering", "device_id": "DSK-NYC-014", "agent_id": "code-builder", "provider_id": "openai", "model_id": "gpt-4o-mini", "tasks": 55, "requests": 80, "total_tokens": 120000, "estimated_cost_usd": 15.2},
+      {"row_id": "maya-openai-gpt-5-4-mini", "user_id": "maya-chen", "team_id": "engineering", "device_id": "DSK-NYC-014", "agent_id": "code-builder", "provider_id": "openai", "model_id": "gpt-5.4-mini", "tasks": 60, "requests": 87, "total_tokens": 150000, "estimated_cost_usd": 19.0},
+      {"row_id": "maya-openai-gpt-5-4", "user_id": "maya-chen", "team_id": "engineering", "device_id": "DSK-NYC-014", "agent_id": "code-builder", "provider_id": "openai", "model_id": "gpt-5.4", "tasks": 35, "requests": 51, "total_tokens": 110000, "estimated_cost_usd": 30.0},
+      {"row_id": "jordan-openai", "user_id": "jordan-lee", "team_id": "product", "device_id": "DSK-AUS-017", "agent_id": "product-planner", "provider_id": "openai", "model_id": "gpt-5.5", "tasks": 170, "requests": 249, "total_tokens": 52000000, "estimated_cost_usd": 8610.0},
+      {"row_id": "alex-defenseclaw", "user_id": "alex-morgan", "team_id": "security", "device_id": "DSK-SJC-022", "agent_id": "defenseclaw", "provider_id": "openai", "model_id": "gpt-4.1-mini", "tasks": 67, "requests": 91, "total_tokens": 150000, "estimated_cost_usd": 34.02},
+      {"row_id": "maya-claude", "user_id": "maya-chen", "team_id": "engineering", "device_id": "DSK-NYC-014", "agent_id": "code-builder", "provider_id": "anthropic", "model_id": "claude-sonnet-4-6", "tasks": 80, "requests": 119, "total_tokens": 280000, "estimated_cost_usd": 45.6},
+      {"row_id": "jordan-claude", "user_id": "jordan-lee", "team_id": "product", "device_id": "DSK-AUS-017", "agent_id": "product-planner", "provider_id": "anthropic", "model_id": "claude-sonnet-4-5", "tasks": 25, "requests": 36, "total_tokens": 5000000, "estimated_cost_usd": 688.0},
+      {"row_id": "jordan-claude-haiku-4-5", "user_id": "jordan-lee", "team_id": "product", "device_id": "DSK-AUS-017", "agent_id": "product-planner", "provider_id": "anthropic", "model_id": "claude-haiku-4-5-20251001", "tasks": 27, "requests": 40, "total_tokens": 6000000, "estimated_cost_usd": 600.0},
+      {"row_id": "jordan-claude-opus-4-8", "user_id": "jordan-lee", "team_id": "product", "device_id": "DSK-AUS-017", "agent_id": "product-planner", "provider_id": "anthropic", "model_id": "claude-opus-4-8", "tasks": 15, "requests": 22, "total_tokens": 8000000, "estimated_cost_usd": 1800.0},
+      {"row_id": "priya-gemini", "user_id": "priya-shah", "team_id": "finance", "device_id": "DSK-LON-008", "agent_id": "finance-assistant", "provider_id": "google", "model_id": "gemini-2.5-flash", "tasks": 20, "requests": 30, "total_tokens": 40000, "estimated_cost_usd": 4.74},
+      {"row_id": "priya-gemini-3-5-flash", "user_id": "priya-shah", "team_id": "finance", "device_id": "DSK-LON-008", "agent_id": "finance-assistant", "provider_id": "google", "model_id": "gemini-3.5-flash", "tasks": 25, "requests": 37, "total_tokens": 60000, "estimated_cost_usd": 7.0},
+      {"row_id": "priya-gemini-3-1-pro-preview", "user_id": "priya-shah", "team_id": "finance", "device_id": "DSK-LON-008", "agent_id": "finance-assistant", "provider_id": "google", "model_id": "gemini-3.1-pro-preview", "tasks": 10, "requests": 15, "total_tokens": 30000, "estimated_cost_usd": 10.0}
+    ]
+  }
+}

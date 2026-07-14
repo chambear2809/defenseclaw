@@ -22,6 +22,9 @@ data:
   GALILEO_PROJECT_ID: "ef0960e1-8744-4019-9faa-103b13f94e0d"
   GALILEO_LOG_STREAM: "defenseclaw-enterprise-ops-20260515"
   GALILEO_LOG_STREAM_ID: "7d3fa020-621d-4164-aa4a-96b600663c92"
+  POLICY_STUDIO_LLM_BASE_URL: "http://openclaw-ui.defenseclaw.svc.cluster.local:8443/v1"
+  POLICY_STUDIO_LLM_MODEL: "gpt-4o-mini"
+  POLICY_STUDIO_LLM_PROVIDER: "BridgeIT"
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -51,7 +54,7 @@ spec:
         fsGroupChangePolicy: OnRootMismatch
       containers:
         - name: bff
-          image: 637423309390.dkr.ecr.us-east-1.amazonaws.com/defenseclaw-c3-tokenomics-demo:c3-tokenomics-20260707-070430-budgetcontrol-2352a4bb-amd64
+          image: 637423309390.dkr.ecr.us-east-1.amazonaws.com/defenseclaw-c3-tokenomics-demo@sha256:a41f84ba3b4e6d32242a4f95c1fcabbb3da2389f29db2ed7e0aed512e713cecf
           imagePullPolicy: IfNotPresent
           command:
             - python
@@ -72,6 +75,9 @@ spec:
                 name: defenseclaw-gateway-access
             - secretRef:
                 name: c3-agent-tokenomics-galileo
+                optional: true
+            - secretRef:
+                name: policy-studio-llm
                 optional: true
           ports:
             - name: http
@@ -121,7 +127,7 @@ metadata:
     app.kubernetes.io/component: bff
     app.kubernetes.io/part-of: defenseclaw
 spec:
-  type: LoadBalancer
+  type: ClusterIP
   selector:
     app.kubernetes.io/name: c3-agent-tokenomics-demo
     app.kubernetes.io/component: bff

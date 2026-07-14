@@ -1,0 +1,390 @@
+{
+  "schema_version": "c3.amd_deskside_fleet.v1",
+  "generated_at": "2026-07-08T22:00:00Z",
+  "source": "amd_deskside_demo_inventory",
+  "fleet": {
+    "fleet_id": "amd-deskside-enterprise-pilot",
+    "name": "AMD Deskside Enterprise Pilot",
+    "total_devices": 24,
+    "online_devices": 23,
+    "protected_devices": 24,
+    "quarantined_devices": 1,
+    "active_workload_agents": 67,
+    "resident_defenseclaw_agents": 24,
+    "tasks_today": 1842,
+    "local_execution_percent": 68,
+    "cloud_cost_avoided_usd": 842.18
+  },
+  "network_topology": {
+    "architecture": "reference-campus",
+    "core": {
+      "display_name": "Cisco C9550",
+      "official_model": "Cisco C9550 Series Smart Switches",
+      "role": "Core + aggregation",
+      "deployment": "Logical core pair",
+      "message": "Campus backbone for agentic AI",
+      "capabilities": {
+        "switching_capacity": {
+          "label": "Up to 6.4 Tbps",
+          "basis": "series-maximum"
+        },
+        "uplink_speed": {
+          "label": "Up to 400G",
+          "basis": "series-maximum"
+        }
+      }
+    },
+    "access": {
+      "display_name": "Cisco C9350",
+      "official_model": "Cisco C9350 Series Smart Switches",
+      "role": "Fixed campus access",
+      "switch_count": 5,
+      "capabilities": {
+        "uplink_speed": {
+          "label": "Up to 100G",
+          "basis": "series-maximum"
+        }
+      }
+    }
+  },
+  "behavior": {
+    "status": "illustrative",
+    "outcomes_met_percent": 94,
+    "outcomes_met_tasks": 1731,
+    "exception_tasks": 111,
+    "objective_drift_agents": 2,
+    "outcomes": [
+      {
+        "id": "software-delivery",
+        "name": "Software delivery",
+        "tasks": 812,
+        "outcomes_met": 780,
+        "exceptions": 32,
+        "alignment_percent": 96
+      },
+      {
+        "id": "employee-assistance",
+        "name": "Employee assistance",
+        "tasks": 436,
+        "outcomes_met": 414,
+        "exceptions": 22,
+        "alignment_percent": 95
+      },
+      {
+        "id": "research-analysis",
+        "name": "Research & analysis",
+        "tasks": 329,
+        "outcomes_met": 296,
+        "exceptions": 33,
+        "alignment_percent": 90
+      },
+      {
+        "id": "it-operations",
+        "name": "IT operations",
+        "tasks": 265,
+        "outcomes_met": 241,
+        "exceptions": 24,
+        "alignment_percent": 91
+      }
+    ],
+    "agents": [
+      {
+        "name": "Code Builder",
+        "owner": "Maya Chen",
+        "device_id": "DSK-NYC-014",
+        "tasks": 312,
+        "expected_outcome": "Code accepted",
+        "alignment_percent": 97,
+        "status": "on_track"
+      },
+      {
+        "name": "Employee Assistant",
+        "owner": "Maya Chen",
+        "device_id": "DSK-NYC-014",
+        "tasks": 284,
+        "expected_outcome": "Requests resolved",
+        "alignment_percent": 95,
+        "status": "on_track"
+      },
+      {
+        "name": "Research Agent",
+        "owner": "Jordan Lee",
+        "device_id": "DSK-LON-008",
+        "tasks": 196,
+        "expected_outcome": "Cited findings",
+        "alignment_percent": 88,
+        "status": "review"
+      },
+      {
+        "name": "Meeting Notes Pro",
+        "owner": "Jordan Lee",
+        "device_id": "DSK-AUS-017",
+        "tasks": 41,
+        "expected_outcome": "Approved summaries",
+        "alignment_percent": 61,
+        "status": "blocked"
+      },
+      {
+        "name": "Incident Triage",
+        "owner": "Priya Shah",
+        "device_id": "DSK-SJC-022",
+        "tasks": 173,
+        "expected_outcome": "Correct escalation",
+        "alignment_percent": 92,
+        "status": "review"
+      }
+    ],
+    "attention": [
+      {
+        "agent": "Meeting Notes Pro",
+        "device_id": "DSK-AUS-017",
+        "signal": "Credential access",
+        "state": "Blocked"
+      },
+      {
+        "agent": "Research Agent",
+        "device_id": "DSK-LON-008",
+        "signal": "Outcome drift",
+        "state": "Review"
+      },
+      {
+        "agent": "Incident Triage",
+        "device_id": "DSK-SJC-022",
+        "signal": "Network isolated",
+        "state": "Blocked"
+      }
+    ]
+  },
+  "model_routes": [
+    {
+      "id": "amd-local",
+      "name": "AMD Ryzen AI",
+      "provider": "Local hardware",
+      "kind": "local",
+      "status": "preferred",
+      "task_count": 1253,
+      "share_percent": 68,
+      "estimated_spend_usd": 0,
+      "policy": "Preferred for sensitive and routine work"
+    },
+    {
+      "id": "openai",
+      "name": "OpenAI",
+      "provider": "Frontier model",
+      "kind": "cloud",
+      "status": "connected",
+      "task_count": 387,
+      "share_percent": 21,
+      "estimated_spend_usd": 184.32,
+      "policy": "Allowed for complex reasoning"
+    },
+    {
+      "id": "claude",
+      "name": "Claude",
+      "provider": "Frontier model",
+      "kind": "cloud",
+      "status": "connected",
+      "task_count": 147,
+      "share_percent": 8,
+      "estimated_spend_usd": 76.48,
+      "policy": "Allowed for code and long context"
+    },
+    {
+      "id": "gemini",
+      "name": "Gemini",
+      "provider": "Frontier model",
+      "kind": "cloud",
+      "status": "connected",
+      "task_count": 55,
+      "share_percent": 3,
+      "estimated_spend_usd": 21.74,
+      "policy": "Allowed for approved workspaces"
+    }
+  ],
+  "security_policy": {
+    "auto_quarantine": false,
+    "mode": "monitor",
+    "scope": "All managed AMD Desksides",
+    "trigger": "Critical Agent Control policy breach",
+    "policy_name": "AMD-DESKSIDE-QUARANTINE",
+    "ise_action": "QUARANTINE",
+    "catalyst_enforcement": "C9350 restricted remediation access",
+    "budget_breach_action": "Stop the agent session; keep the device connected",
+    "updated_at": "2026-07-08T22:00:00Z",
+    "updated_by": "cloud-control-demo"
+  },
+  "integrations": [
+    {
+      "id": "defenseclaw",
+      "name": "DefenseClaw resident agents",
+      "status": "demo-ready",
+      "detail": "Demo fleet inventory · 23 reporting · 24 enrolled"
+    },
+    {
+      "id": "ise",
+      "name": "Cisco ISE",
+      "status": "demo-ready",
+      "detail": "ANC policy assignment contract"
+    },
+    {
+      "id": "cisco_network",
+      "name": "Cisco C9550 / C9350 campus fabric",
+      "status": "demo-ready",
+      "detail": "1 C9550 logical core pair · 5 C9350 access switches"
+    }
+  ],
+  "devices": [
+    {
+      "device_id": "DSK-NYC-014",
+      "employee": "Maya Chen",
+      "department": "Engineering",
+      "site": "New York",
+      "status": "online",
+      "risk": "healthy",
+      "risk_reason": "All controls compliant",
+      "active_agents": 3,
+      "agent_names": ["Employee Assistant", "Code Builder", "Research Agent", "DefenseClaw"],
+      "defenseclaw_status": "reporting",
+      "tasks_today": 96,
+      "model_route": "AMD local",
+      "mac_address": "00:25:96:FF:10:14",
+      "switch_name": "C9350-NYC-01",
+      "switch_port": "Gi1/0/14",
+      "nas_ip_address": "10.40.10.11",
+      "ise_policy": "AMD-DESKSIDE-STANDARD",
+      "network_access": "Full access",
+      "quarantined": false
+    },
+    {
+      "device_id": "DSK-AUS-017",
+      "employee": "Jordan Lee",
+      "department": "Product",
+      "site": "Austin",
+      "status": "online",
+      "risk": "critical",
+      "risk_reason": "Malicious skill attempted credential access and external egress",
+      "active_agents": 2,
+      "agent_names": ["Employee Assistant", "Product Planner", "DefenseClaw"],
+      "defenseclaw_status": "reporting",
+      "tasks_today": 121,
+      "model_route": "OpenAI",
+      "mac_address": "00:25:96:FF:20:17",
+      "switch_name": "C9350-AUS-02",
+      "switch_port": "Gi1/0/17",
+      "nas_ip_address": "10.40.20.12",
+      "ise_policy": "AMD-DESKSIDE-STANDARD",
+      "network_access": "Full access",
+      "quarantined": false
+    },
+    {
+      "device_id": "DSK-LON-008",
+      "employee": "Priya Shah",
+      "department": "Finance",
+      "site": "London",
+      "status": "online",
+      "risk": "review",
+      "risk_reason": "Unapproved cloud model request blocked",
+      "active_agents": 1,
+      "agent_names": ["Finance Assistant", "DefenseClaw"],
+      "defenseclaw_status": "reporting",
+      "tasks_today": 64,
+      "model_route": "AMD local",
+      "mac_address": "00:25:96:FF:30:08",
+      "switch_name": "C9350-LON-01",
+      "switch_port": "Gi1/0/8",
+      "nas_ip_address": "10.40.30.11",
+      "ise_policy": "AMD-DESKSIDE-STANDARD",
+      "network_access": "Full access",
+      "quarantined": false
+    },
+    {
+      "device_id": "DSK-SJC-022",
+      "employee": "Alex Morgan",
+      "department": "Security",
+      "site": "San Jose",
+      "status": "online",
+      "risk": "quarantined",
+      "risk_reason": "Critical command-policy tampering",
+      "active_agents": 0,
+      "agent_names": ["DefenseClaw"],
+      "defenseclaw_status": "reporting",
+      "tasks_today": 39,
+      "model_route": "Blocked",
+      "mac_address": "00:25:96:FF:40:22",
+      "switch_name": "C9350-SJC-03",
+      "switch_port": "Gi1/0/22",
+      "nas_ip_address": "10.40.40.13",
+      "ise_policy": "AMD-DESKSIDE-QUARANTINE",
+      "network_access": "Remediation only",
+      "quarantined": true
+    },
+    {
+      "device_id": "DSK-RTP-006",
+      "employee": "Sam Wilson",
+      "department": "Support",
+      "site": "Research Triangle",
+      "status": "offline",
+      "risk": "healthy",
+      "risk_reason": "Last check-in 18 minutes ago",
+      "active_agents": 0,
+      "agent_names": ["Employee Assistant", "DefenseClaw"],
+      "defenseclaw_status": "offline",
+      "tasks_today": 31,
+      "model_route": "AMD local",
+      "mac_address": "00:25:96:FF:50:06",
+      "switch_name": "C9350-RTP-01",
+      "switch_port": "Gi1/0/6",
+      "nas_ip_address": "10.40.50.11",
+      "ise_policy": "AMD-DESKSIDE-STANDARD",
+      "network_access": "Disconnected",
+      "quarantined": false
+    }
+  ],
+  "enforcement_events": [
+    {
+      "event_id": "evt-detect-sjc-022",
+      "device_id": "DSK-SJC-022",
+      "stage": "detect",
+      "status": "complete",
+      "title": "Critical breach detected",
+      "detail": "DefenseClaw blocked command-policy tampering",
+      "occurred_at": "2026-07-08T21:42:12Z",
+      "simulated": true
+    },
+    {
+      "event_id": "evt-ise-sjc-022",
+      "device_id": "DSK-SJC-022",
+      "stage": "ise",
+      "status": "complete",
+      "title": "ISE ANC policy assigned",
+      "detail": "AMD-DESKSIDE-QUARANTINE assigned to endpoint MAC and NAS",
+      "occurred_at": "2026-07-08T21:42:13Z",
+      "simulated": true
+    },
+    {
+      "event_id": "evt-coa-sjc-022",
+      "device_id": "DSK-SJC-022",
+      "stage": "coa",
+      "status": "complete",
+      "title": "RADIUS CoA accepted",
+      "detail": "C9350-SJC-03 reauthorized Gi1/0/22",
+      "occurred_at": "2026-07-08T21:42:14Z",
+      "simulated": true
+    },
+    {
+      "event_id": "evt-enforce-sjc-022",
+      "device_id": "DSK-SJC-022",
+      "stage": "enforce",
+      "status": "complete",
+      "title": "C9350 restricted access",
+      "detail": "Endpoint can reach only remediation services",
+      "occurred_at": "2026-07-08T21:42:15Z",
+      "simulated": true
+    }
+  ],
+  "demo": {
+    "inventory_is_fixture": true,
+    "network_actions_are_simulated": true,
+    "note": "The workflow mirrors the intended Cloud Control, Cisco ISE ANC, and Cisco C9350 access-enforcement contract. The C9550/C9350 campus topology is a reference architecture; no production ISE or switch is called by this demo endpoint."
+  }
+}

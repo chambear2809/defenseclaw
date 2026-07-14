@@ -29,6 +29,7 @@ from defenseclaw.tui.app import (
     _enforcement_label,
     _event_histogram,
     _fetch_ai_usage,
+    _gateway_api_host,
     _overview_config,
     _policy_posture,
 )
@@ -1781,6 +1782,11 @@ async def test_slow_refresh_uses_tools_store_refresh_without_catalog_subprocess(
     assert refreshed == ["tools"]
     assert loaded == []
     assert app._slow_refresh_running is False  # noqa: SLF001
+
+
+def test_gateway_api_host_prefers_api_host() -> None:
+    gateway = SimpleNamespace(host="openclaw.example", api_host="127.0.0.1")
+    assert _gateway_api_host(gateway) == "127.0.0.1"
 
 
 def test_fetch_ai_usage_uses_gateway_auth_and_accept_headers() -> None:

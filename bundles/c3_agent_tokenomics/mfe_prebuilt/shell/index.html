@@ -3,86 +3,489 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>DefenseClaw Tokenomics Control Plane</title>
+    <title>Fleet Overview | Deskside AI Resilience | Cloud Control</title>
     <link rel="stylesheet" href="/shell/app.css" />
   </head>
   <body>
-    <div class="shell-bg"></div>
+    <header class="topbar">
+      <div class="brand"><span class="cisco-mark" aria-hidden="true">◦◦◦</span> Cloud Control <span class="beta">Beta</span></div>
+      <span class="topbar-divider" aria-hidden="true"></span>
+      <span class="tenant">Deskside AI Resilience⌄</span>
+      <span class="apps" aria-hidden="true">▦</span>
+      <nav class="crumbs" aria-label="Product breadcrumbs">
+        <span>Home</span>
+        <span>Deskside AI Resilience</span>
+        <span class="is-active">Fleet Overview</span>
+      </nav>
+      <div class="topbar-actions" aria-hidden="true"><span>◫</span><span>◨</span><span class="avatar">♙</span></div>
+    </header>
+
+    <aside class="side-nav" aria-label="Cloud Control navigation">
+      <span class="hamburger" aria-hidden="true">≡</span>
+      <a class="nav-item is-active" href="/fleet" data-shell-nav="fleet" aria-current="page">
+        <span class="nav-icon" aria-hidden="true">▦</span>
+        <span>Fleet</span>
+      </a>
+      <a class="nav-item" href="/infrastructure" data-shell-nav="infrastructure">
+        <span class="nav-icon" aria-hidden="true">▥</span>
+        <span>Infrastructure</span>
+      </a>
+      <a class="nav-item" href="/budgets" data-shell-nav="budget">
+        <span class="nav-icon" aria-hidden="true">✣</span>
+        <span>Tokenomics</span>
+      </a>
+      <a class="nav-item" href="/agent-controls" data-shell-nav="controls">
+        <span class="nav-icon" aria-hidden="true">▰</span>
+        <span>Agent Control</span>
+      </a>
+      <a class="nav-item" href="/network-security" data-shell-nav="network">
+        <span class="nav-icon" aria-hidden="true">◈</span>
+        <span>Network Security</span>
+      </a>
+    </aside>
+
     <main class="shell">
+      <section id="fleet-scope-bar" class="fleet-scope-bar" aria-label="Current fleet scope">
+        <div><span>Fleet</span><strong id="fleet-scope-name">Loading AMD Desksides…</strong></div>
+        <div><span>Network identity</span><strong id="fleet-network-identity">Loading Cisco access inventory…</strong></div>
+        <div><span>Agent identities</span><strong id="fleet-agent-identities">Loading protected agents…</strong></div>
+        <div class="scope-source"><span>Data</span><strong id="fleet-data-source">Demo fleet · loading ledger</strong></div>
+      </section>
+
+      <section id="fleet-page" class="shell-page" data-shell-page="fleet">
+        <header class="hero fleet-hero">
+          <div>
+            <h1>Fleet Overview</h1>
+            <p class="hero-copy">Unified inventory, agent identity, infrastructure telemetry, and AI economics.</p>
+          </div>
+          <div class="hero-actions">
+            <span id="fleet-live-status" class="live-status"><span aria-hidden="true"></span>Demo fleet · loading ledger</span>
+            <a class="button button-primary" href="/network-security">Open network policy</a>
+          </div>
+        </header>
+
+        <section id="fleet-banner" class="status-banner warn hidden" aria-live="polite"></section>
+
+        <section class="fleet-priorities" aria-labelledby="fleet-priorities-title">
+          <div class="section-head">
+            <h2 id="fleet-priorities-title">Customer priorities</h2>
+            <span class="pill">Demo fleet</span>
+          </div>
+          <div id="fleet-summary-grid" class="customer-pillar-grid"></div>
+        </section>
+
+        <section class="fleet-overview-grid">
+          <article class="card provider-card">
+            <div class="section-head">
+              <div>
+                <h2>Local + frontier routing</h2>
+              </div>
+            </div>
+            <div id="provider-usage" class="provider-usage" aria-live="polite"></div>
+          </article>
+
+          <article class="card fleet-security-card">
+            <div class="section-head">
+              <div>
+                <h2>Security posture</h2>
+              </div>
+              <span id="fleet-isolation-state" class="control-state">Loading</span>
+            </div>
+            <div id="fleet-security-posture" class="fleet-security-posture"></div>
+            <div class="control-toggle-row fleet-isolation-toggle-row">
+              <div><strong id="fleet-auto-quarantine-label">Automatic isolation</strong><span>Isolate critical breaches through ISE and C9350.</span></div>
+              <button
+                id="fleet-auto-quarantine-toggle"
+                class="control-switch"
+                type="button"
+                role="switch"
+                aria-checked="false"
+                aria-labelledby="fleet-auto-quarantine-label"
+              ><span aria-hidden="true"></span><b>Disabled</b></button>
+            </div>
+            <a class="button button-secondary" href="/network-security">Open isolation policy</a>
+          </article>
+        </section>
+
+        <article class="card fleet-table-card">
+          <div class="section-head">
+            <div>
+              <h2 id="fleet-table-title">Managed AI inventory</h2>
+            </div>
+            <div class="fleet-view-tools">
+              <div id="fleet-inventory-view-toggle" class="segmented-control" aria-label="Fleet inventory view">
+                <button type="button" class="is-active" aria-pressed="true" data-fleet-view="inventory">Inventory</button>
+                <button type="button" aria-pressed="false" data-fleet-view="infrastructure">Infrastructure</button>
+              </div>
+              <span id="fleet-telemetry-source" class="pill">Representative · synthetic telemetry</span>
+            </div>
+          </div>
+          <div id="fleet-inventory-summary" class="fleet-inventory-summary" aria-live="polite"></div>
+          <div id="deskside-list" class="deskside-list"></div>
+        </article>
+      </section>
+
+      <section id="infrastructure-page" class="shell-page hidden" data-shell-page="infrastructure" aria-labelledby="infrastructure-page-title">
+        <header class="hero infrastructure-hero">
+          <div>
+            <h1 id="infrastructure-page-title">Infrastructure</h1>
+            <p class="hero-copy">Fleet compute, network, power, and energy telemetry from Splunk Observability.</p>
+          </div>
+          <div class="hero-actions">
+            <span id="infrastructure-live-status" class="live-status is-demo"><span aria-hidden="true"></span>Splunk Observability · synthetic</span>
+            <button id="infrastructure-refresh-button" class="button button-primary" type="button">Refresh</button>
+          </div>
+        </header>
+
+        <div id="infrastructure-disclosure" class="analytics-disclosure infrastructure-disclosure">
+          <span>Synthetic</span>
+          <p>Loading Splunk Observability-shaped infrastructure telemetry…</p>
+        </div>
+
+        <section id="infrastructure-scope-strip" class="infrastructure-scope-strip" aria-label="Infrastructure telemetry scope">
+          <div><span>Window</span><strong>Last 24 hours</strong><small>1-hour rollups · energy also shows 7d</small></div>
+          <div><span>Fleet</span><strong>Representative managed Halo devices</strong><small id="infrastructure-reporting-state">Loading coverage</small></div>
+          <div><span>Source</span><strong>Splunk Observability</strong><small id="infrastructure-source-state">Synthetic scenario</small></div>
+        </section>
+
+        <section id="infrastructure-summary-grid" class="summary-grid infrastructure-summary-grid" aria-live="polite"></section>
+
+        <section class="analytics-grid analytics-grid-primary infrastructure-analytics-grid">
+          <article class="card analytics-card">
+            <div class="section-head">
+              <div><h2>Compute utilization trend</h2></div>
+              <span class="pill">CPU · memory · GPU</span>
+            </div>
+            <div id="infrastructure-utilization-chart" class="analytics-chart" role="img" aria-label="Synthetic fleet CPU, memory, and GPU utilization trend"></div>
+          </article>
+          <article class="card analytics-card">
+            <div class="section-head">
+              <div><h2>Energy efficiency</h2></div>
+              <span class="pill pill-warn">Synthetic</span>
+            </div>
+            <div id="infrastructure-efficiency-list" class="infrastructure-efficiency-list"></div>
+          </article>
+        </section>
+
+        <article class="card analytics-card infrastructure-device-card">
+          <div class="section-head">
+            <div><h2>Halo infrastructure by device</h2></div>
+            <span class="pill">5-minute latest sample</span>
+          </div>
+          <div id="infrastructure-device-table" class="infrastructure-device-table-wrap"></div>
+        </article>
+      </section>
+
+      <section id="budget-page" class="shell-page" data-shell-page="budget">
       <header class="hero">
         <div>
-          <p class="eyebrow">Cisco Cloud Control</p>
-          <h1>Tokenomics Control Plane</h1>
-          <p class="hero-copy">
-            Live budget alerts come from DefenseClaw. Policies are still enforced locally now and can be pushed down
-            from Galileo SaaS later without changing the operator surface.
-          </p>
+          <h1>Tokenomics</h1>
+          <p class="hero-copy">Organization-wide AI usage, cost, and optimization opportunities.</p>
         </div>
         <div class="hero-actions">
+          <span id="tokenomics-ledger-status" class="live-status"><span aria-hidden="true"></span>Loading agent telemetry</span>
           <button id="refresh-button" class="button button-primary" type="button">Refresh</button>
-          <a class="button button-secondary" href="/embedded-live/?view=tokenomics" target="tokenomics-embedded" rel="noreferrer">
-            Open Embedded MFE
-          </a>
         </div>
       </header>
 
       <section id="status-banner" class="status-banner hidden"></section>
 
-      <section id="summary-grid" class="summary-grid"></section>
+      <nav id="tokenomics-tabs" class="tokenomics-tabs" role="tablist" aria-label="Tokenomics views">
+        <button id="tokenomics-tab-adoption" type="button" role="tab" aria-selected="false" aria-controls="tokenomics-adoption-panel" data-tokenomics-tab="adoption">Adoption</button>
+        <button id="tokenomics-tab-cost" type="button" role="tab" aria-selected="true" aria-controls="tokenomics-cost-panel" data-tokenomics-tab="cost">Cost</button>
+        <button id="tokenomics-tab-budget" type="button" role="tab" aria-selected="false" aria-controls="tokenomics-budget-panel" data-tokenomics-tab="budget">Budget</button>
+      </nav>
+
+      <section class="tokenomics-filter-bar" aria-label="Fleet analytics filters">
+        <label>
+          <span>Range</span>
+          <select id="tokenomics-window-filter" disabled>
+            <option value="-7d">Last 7 days · demo</option>
+          </select>
+        </label>
+        <label>
+          <span>Department</span>
+          <select id="tokenomics-team-filter">
+            <option value="all">All departments</option>
+          </select>
+        </label>
+        <label id="tokenomics-model-filter-field">
+          <span>Model</span>
+          <select id="tokenomics-model-filter">
+            <option value="all">All models</option>
+          </select>
+          <small>Cost views</small>
+        </label>
+        <label id="tokenomics-agent-filter-field">
+          <span>Agent</span>
+          <select id="tokenomics-agent-filter">
+            <option value="all">All agents</option>
+          </select>
+          <small>Cost views</small>
+        </label>
+        <div class="analytics-source">
+          <span>Data</span>
+          <strong id="tokenomics-analytics-source">Demo data</strong>
+          <small id="tokenomics-analytics-updated">Loading modeled analytics…</small>
+          <button id="tokenomics-clear-filters" class="tokenomics-clear-filters hidden" type="button">Clear filters</button>
+        </div>
+      </section>
+
+      <section id="tokenomics-cost-panel" class="tokenomics-tab-panel" role="tabpanel" aria-labelledby="tokenomics-tab-cost" data-tokenomics-panel="cost">
+
+      <section id="routing-demo" class="card routing-demo-card" aria-labelledby="routing-demo-title">
+        <div class="routing-demo-head">
+          <div>
+            <h2 id="routing-demo-title">Frontier vs. local-first routing</h2>
+          </div>
+          <span class="demo-disclosure-badge">Demo · not telemetry</span>
+        </div>
+
+        <div class="routing-demo-grid">
+          <article class="demo-task-card">
+            <div class="demo-task-status" aria-live="polite"><span id="demo-task-dot" aria-hidden="true"></span><strong id="demo-task-state">Ready to run</strong></div>
+            <h3>Refactor auth middleware</h3>
+            <p>DSK-NYC-014 · Coding agent</p>
+            <div class="token-counter">
+              <span>Task tokens</span>
+              <strong id="demo-token-counter">0</strong>
+              <small>tokens</small>
+            </div>
+            <div class="demo-task-result" aria-live="polite">
+              <span>Outcome</span>
+              <strong id="demo-task-result">Awaiting run</strong>
+            </div>
+            <button id="demo-run-button" class="button button-primary" type="button">Run task</button>
+          </article>
+
+          <article class="router-control-card">
+            <div class="router-control-head">
+              <div>
+                <h3>Lemonade routing</h3>
+              </div>
+              <button
+                id="lemonade-routing-toggle"
+                class="control-switch"
+                type="button"
+                role="switch"
+                aria-checked="false"
+                aria-labelledby="lemonade-routing-label"
+              ><span aria-hidden="true"></span><b>Disabled</b></button>
+            </div>
+            <strong id="lemonade-routing-label" class="router-mode-label">Cloud route</strong>
+            <p id="router-mode-copy">100% approved cloud</p>
+            <div class="route-visual" aria-label="Task routing comparison">
+              <div class="route-segment local-route" id="local-route-segment"><span>AMD local</span><strong id="local-route-share">0%</strong></div>
+              <div class="route-segment cloud-route" id="cloud-route-segment"><span>Frontier cloud</span><strong id="cloud-route-share">100%</strong></div>
+            </div>
+            <div class="routing-comparison">
+              <div><span>Frontier baseline</span><strong>18,400</strong><small>tokens</small></div>
+              <div class="is-routed"><span>Lemonade cloud</span><strong>4,600</strong><small>tokens</small></div>
+              <div class="routing-savings"><span>Reduction</span><strong>75%</strong><small>same result</small></div>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      </section>
+
+      <section id="tokenomics-adoption-panel" class="tokenomics-tab-panel hidden" role="tabpanel" aria-labelledby="tokenomics-tab-adoption" data-tokenomics-panel="adoption">
+        <section id="adoption-provider-summary" class="provider-adoption-summary" aria-live="polite"></section>
+
+        <section class="analytics-grid analytics-grid-primary">
+          <article class="card analytics-card">
+            <div class="section-head">
+              <div><h2>Active users by provider</h2></div>
+            </div>
+            <div id="adoption-trend-chart" class="analytics-chart" role="img" aria-label="Active employee trend by provider"></div>
+          </article>
+          <article class="card analytics-card">
+            <div class="section-head">
+              <div><h2>Active users by department</h2></div>
+              <span class="pill">Number</span>
+            </div>
+            <div id="adoption-team-matrix" class="analytics-matrix-wrap"></div>
+          </article>
+        </section>
+
+        <section class="analytics-grid analytics-grid-secondary">
+          <article class="card analytics-card">
+            <div class="section-head"><div><h2>Active vs. enrolled</h2></div></div>
+            <div id="adoption-utilization-donut" class="donut-layout"></div>
+          </article>
+          <article class="card analytics-card">
+            <div class="section-head"><div><h2>Tokens by provider</h2></div></div>
+            <div id="adoption-job-donut" class="donut-layout"></div>
+          </article>
+        </section>
+      </section>
+
+      <section id="tokenomics-cost-analytics" class="tokenomics-cost-analytics">
+        <section id="cost-summary-grid" class="summary-grid cost-summary-grid" aria-live="polite"></section>
+
+        <article id="agent-economics" class="card analytics-card agent-economics-card" aria-labelledby="agent-economics-title">
+          <div class="section-head">
+            <div>
+              <h2 id="agent-economics-title">Agent economics</h2>
+            </div>
+            <span id="agent-economics-count" class="pill">0 agents</span>
+          </div>
+          <p id="agent-economics-context" class="card-intro" role="status" aria-live="polite">Tokens, work, execution routes, and modeled cloud spend by managed agent.</p>
+          <div id="agent-economics-table" class="agent-economics-table-wrap" role="region" aria-label="Agent spend detail" tabindex="0"></div>
+        </article>
+
+        <article id="tokenomics-opportunities" class="card analytics-card token-opportunities-card" aria-labelledby="tokenomics-opportunities-title">
+          <div class="section-head">
+            <div>
+              <h2 id="tokenomics-opportunities-title">Agent optimization recommendation</h2>
+            </div>
+          </div>
+          <div id="tokenomics-opportunity-list" class="token-opportunity-list" aria-live="polite"></div>
+        </article>
+
+        <article class="card analytics-card cost-trend-card">
+          <div class="section-head">
+            <div><h2>Daily spend by model</h2></div>
+            <span class="pill">Allocated estimate</span>
+          </div>
+          <div id="cost-trend-chart" class="analytics-chart cost-chart" role="img" aria-label="Cloud AI cost trend"></div>
+        </article>
+
+        <article class="card analytics-card cost-breakdown-card">
+          <div class="analytics-toolbar">
+            <div><h2>Cost breakdown</h2></div>
+            <div class="segmented-control" id="cost-breakdown-controls" aria-label="Cost breakdown dimension">
+              <button type="button" aria-pressed="false" data-cost-breakdown="model">Model</button>
+              <button type="button" aria-pressed="false" data-cost-breakdown="provider">Provider</button>
+              <button type="button" aria-pressed="false" data-cost-breakdown="team">Department</button>
+              <button type="button" class="is-active" aria-pressed="true" data-cost-breakdown="agent">Agent</button>
+            </div>
+          </div>
+          <div id="cost-breakdown-bars" class="cost-breakdown-bars"></div>
+        </article>
+
+        <article class="card analytics-card usage-detail-card">
+          <div class="analytics-toolbar usage-detail-toolbar">
+            <div class="usage-detail-title">
+              <span>Agent spend detail</span>
+              <div class="segmented-control" id="usage-detail-dimensions" aria-label="Usage detail dimension">
+                <button type="button" aria-pressed="false" data-usage-dimension="model">Model</button>
+                <button type="button" aria-pressed="false" data-usage-dimension="user">User</button>
+                <button type="button" aria-pressed="false" data-usage-dimension="team">Department</button>
+                <button type="button" aria-pressed="false" data-usage-dimension="provider">Provider</button>
+                <button type="button" class="is-active" aria-pressed="true" data-usage-dimension="agent">Agent</button>
+              </div>
+            </div>
+            <label class="analytics-search"><span class="visually-hidden">Search usage details</span><input id="usage-detail-search" type="search" placeholder="Search" /></label>
+          </div>
+          <div id="usage-detail-table" class="usage-detail-table-wrap"></div>
+          <div class="analytics-pagination">
+            <button id="usage-page-prev" class="button button-secondary" type="button">Previous</button>
+            <span id="usage-page-state">Page 1</span>
+            <button id="usage-page-next" class="button button-secondary" type="button">Next</button>
+          </div>
+        </article>
+      </section>
+
+      <section id="tokenomics-budget-panel" class="tokenomics-tab-panel hidden" role="tabpanel" aria-labelledby="tokenomics-tab-budget" data-tokenomics-panel="budget">
 
       <section class="workspace">
         <aside class="control-rail card">
           <div class="section-head">
-            <div>
-              <p class="section-kicker">Runtime Control</p>
-              <h2>Apply Local Budget Policy</h2>
+              <div>
+              <h2>Budget policy</h2>
             </div>
           </div>
           <form id="policy-form" class="policy-form">
-            <label>
-              <span>Agent ID</span>
-              <input id="agent-id" name="agent_id" placeholder="openclaw or *" required />
-            </label>
-            <label>
-              <span>Agent Name</span>
-              <input id="agent-name" name="agent_name" placeholder="Operator-friendly label" />
-            </label>
-            <label>
-              <span>Action</span>
-              <select id="policy-action" name="action">
-                <option value="deny">Deny</option>
-                <option value="steer">Steer</option>
-              </select>
-            </label>
-            <label>
-              <span>Session Token Budget</span>
-              <input id="session-token-budget" name="session_token_budget" type="number" min="1" step="1" placeholder="150000" />
-            </label>
-            <label>
-              <span>Daily Token Budget</span>
-              <input id="daily-token-budget" name="daily_token_budget" type="number" min="1" step="1" placeholder="1000000" />
-            </label>
-            <label>
-              <span>Session Cost Budget (USD)</span>
-              <input id="session-cost-budget" name="session_cost_budget_usd" type="number" min="0.01" step="0.01" placeholder="25.00" />
-            </label>
-            <label>
-              <span>Daily Cost Budget (USD)</span>
-              <input id="daily-cost-budget" name="daily_cost_budget_usd" type="number" min="0.01" step="0.01" placeholder="150.00" />
-            </label>
-            <div class="form-actions">
-              <button class="button button-primary" type="submit">Apply Policy</button>
-              <button id="release-button" class="button button-secondary" type="button">Release Policy</button>
+            <div class="form-section">
+              <p class="form-section-title">Scope</p>
+              <div class="field-grid">
+                <label>
+                  <span>Agent</span>
+                  <input id="agent-id" name="agent_id" placeholder="openclaw or *" required />
+                </label>
+                <label>
+                  <span>Name</span>
+                  <input id="agent-name" name="agent_name" placeholder="Display name" />
+                </label>
+              </div>
             </div>
-            <p class="form-hint">
-              Use an alert row to prefill the target agent. Use <code>*</code> for a catch-all safety net.
-            </p>
+
+            <div class="form-section">
+              <p class="form-section-title">Enforcement</p>
+              <label>
+                <span>Breach action</span>
+                <select id="policy-action" name="action">
+                  <option value="deny">Stop the task</option>
+                  <option value="steer">Switch models</option>
+                </select>
+              </label>
+            </div>
+
+            <div class="form-section">
+              <p class="form-section-title">Token limits</p>
+              <div class="field-grid">
+                <label>
+                  <span>Session limit</span>
+                  <input
+                    id="session-token-budget"
+                    name="session_token_budget"
+                    type="number"
+                    min="1"
+                    step="1"
+                    placeholder="150000"
+                  />
+                </label>
+                <label>
+                  <span>24h limit</span>
+                  <input
+                    id="daily-token-budget"
+                    name="daily_token_budget"
+                    type="number"
+                    min="1"
+                    step="1"
+                    placeholder="1000000"
+                  />
+                </label>
+              </div>
+            </div>
+
+            <div class="form-section">
+              <p class="form-section-title">Cost limits</p>
+              <div class="field-grid">
+                <label>
+                  <span>Session USD</span>
+                  <input
+                    id="session-cost-budget"
+                    name="session_cost_budget_usd"
+                    type="number"
+                    min="0.01"
+                    step="0.01"
+                    placeholder="25.00"
+                  />
+                </label>
+                <label>
+                  <span>24h USD</span>
+                  <input
+                    id="daily-cost-budget"
+                    name="daily_cost_budget_usd"
+                    type="number"
+                    min="0.01"
+                    step="0.01"
+                    placeholder="150.00"
+                  />
+                </label>
+              </div>
+            </div>
+            <div class="form-actions">
+              <button id="release-button" class="button button-secondary" type="button">Remove limit</button>
+              <button class="button button-primary" type="submit">Apply</button>
+            </div>
           </form>
 
           <div class="section-head compact">
             <div>
-              <p class="section-kicker">Effective Policies</p>
-              <h3>Current Control State</h3>
+              <h3>Effective policies</h3>
             </div>
           </div>
           <div id="policies-list" class="stack-list"></div>
@@ -92,30 +495,595 @@
           <div class="card">
             <div class="section-head">
               <div>
-                <p class="section-kicker">Active Alerts</p>
-                <h2>Budget Breach Feed</h2>
+                <h2>Budget breaches</h2>
               </div>
             </div>
             <div id="alerts-list" class="stack-list"></div>
           </div>
+        </section>
+      </section>
+      </section>
+      </section>
 
-          <div class="card embedded-card">
-            <div class="section-head">
+      <section id="agent-controls-page" class="shell-page hidden" data-shell-page="controls" aria-labelledby="agent-control-title">
+        <header class="hero controls-hero">
+          <div>
+            <h1 id="agent-control-title">Agent Control</h1>
+            <p class="hero-copy">Govern policy, permissions, and outcomes from one place.</p>
+          </div>
+        </header>
+
+        <nav id="agent-control-tabs" class="tokenomics-tabs agent-control-tabs" role="tablist" aria-label="Agent Control views">
+          <button id="agent-control-tab-controls" type="button" role="tab" aria-selected="true" aria-controls="agent-controls-panel" data-agent-control-tab="controls">Controls</button>
+          <button id="agent-control-tab-studio" type="button" role="tab" aria-selected="false" aria-controls="policy-studio-page" data-agent-control-tab="studio" tabindex="-1">Policy Studio</button>
+          <button id="agent-control-tab-behavior" type="button" role="tab" aria-selected="false" aria-controls="agent-behavior-page" data-agent-control-tab="behavior" tabindex="-1">Agent Behavior</button>
+        </nav>
+
+        <section id="agent-controls-panel" class="agent-control-tab-panel" role="tabpanel" aria-labelledby="agent-control-tab-controls" data-agent-control-panel="controls" tabindex="0">
+          <div class="agent-control-panel-meta">
+            <span id="agent-controls-mode" class="live-status"><span aria-hidden="true"></span>Loading controls</span>
+            <a class="button button-secondary" href="/budgets">Budgets</a>
+          </div>
+
+          <section id="agent-controls-banner" class="status-banner hidden" aria-live="polite"></section>
+
+          <section id="agent-policy-scope" class="policy-scope-strip" aria-label="Agent Control policy scope">
+            <div><span>Known identities</span><strong id="agent-identity-count">—</strong><small id="agent-identity-note">Loading fleet</small></div>
+            <div><span>Enforcer</span><strong>DefenseClaw</strong><small>Local policy</small></div>
+            <div><span>Fleet coverage</span><strong id="agent-fleet-coverage">—</strong><small id="agent-fleet-note">Loading devices</small></div>
+          </section>
+
+          <section class="agent-control-grid">
+          <article id="guardrail-policy-catalog" class="card control-card control-card-featured">
+            <div class="control-card-head">
               <div>
-                <p class="section-kicker">Embedded Surface</p>
-                <h2>C3 Tokenomics MFE</h2>
+                <h2>Guardrails and model provenance</h2>
+                <p class="control-description">Synthetic policies evaluated locally by DefenseClaw before a tool or model can run.</p>
+              </div>
+              <span class="control-state is-on">Enforced · synthetic</span>
+            </div>
+            <div class="guardrail-policy-list">
+              <details id="jira-delete-guardrail" class="guardrail-policy">
+                <summary>
+                  <span><b>Jira ticket deletion</b><code>jira.delete_issue</code></span>
+                  <strong>Deny</strong>
+                </summary>
+                <div class="guardrail-policy-detail">
+                  <dl class="control-facts">
+                    <div><dt>Scope</dt><dd>All agent identities</dd></div>
+                    <div><dt>Decision</dt><dd>Deny before tool execution</dd></div>
+                    <div><dt>Outcome</dt><dd>Ticket preserved</dd></div>
+                  </dl>
+                  <div class="guardrail-test-prompt">
+                    <span>User prompt</span>
+                    <code>Delete Jira ticket SEC-1842.</code>
+                  </div>
+                  <div class="guardrail-test-action">
+                    <button id="jira-guardrail-demo-button" class="button button-primary" type="button">Test guardrail</button>
+                    <div id="jira-guardrail-demo-result" class="guardrail-test-result" role="status" aria-live="polite">Ready · no tool call executed.</div>
+                  </div>
+                </div>
+              </details>
+              <details id="model-provenance-guardrail" class="guardrail-policy">
+                <summary>
+                  <span><b>Restricted model provenance</b><code>agent-control.model-provenance</code></span>
+                  <strong>Block + critical</strong>
+                </summary>
+                <div class="guardrail-policy-detail">
+                  <dl class="control-facts">
+                    <div><dt>Scope</dt><dd>Managed AMD Halo devices</dd></div>
+                    <div><dt>Requirement</dt><dd>Signed, approved source</dd></div>
+                    <div><dt>Critical result</dt><dd>Block + ISE isolation</dd></div>
+                  </dl>
+                  <div class="guardrail-test-prompt">
+                    <span>Restricted artifact</span>
+                    <code>hf://unverified/shadow-llm-13b.gguf</code>
+                  </div>
+                  <a class="button button-secondary" href="/network-security#restricted-model-demo">Open security replay</a>
+                </div>
+              </details>
+            </div>
+          </article>
+
+          <article class="card control-card">
+            <div class="control-card-head">
+              <div>
+                <h2>100K token hard stop</h2>
+              </div>
+              <span id="chat-budget-state" class="control-state" aria-live="polite">Checking</span>
+            </div>
+            <dl class="control-facts">
+              <div><dt>Scope</dt><dd>All agents</dd></div>
+              <div><dt>Limit</dt><dd>100K / chat</dd></div>
+              <div><dt>Action</dt><dd>Stop</dd></div>
+            </dl>
+            <div class="control-toggle-row">
+              <div><strong id="chat-budget-toggle-label">100K chat hard stop</strong><span>All-agent default</span></div>
+              <button
+                id="chat-budget-toggle"
+                class="control-switch"
+                type="button"
+                role="switch"
+                aria-checked="false"
+                aria-labelledby="chat-budget-toggle-label"
+                aria-describedby="chat-budget-note"
+              >
+                <span aria-hidden="true"></span><b>Disabled</b>
+              </button>
+            </div>
+            <p id="chat-budget-note" class="control-note" aria-live="polite">Loading the effective catch-all policy…</p>
+          </article>
+
+          <article class="card control-card">
+            <div class="control-card-head">
+              <div>
+                <h2>Approved commands</h2>
+              </div>
+              <span id="approved-command-count" class="control-state" aria-live="polite">0 approved</span>
+            </div>
+            <p class="control-description">Exact matches only; dangerous-command rules still apply.</p>
+            <form id="approved-command-form" class="inline-control-form">
+              <label for="approved-command-input">Exact command</label>
+              <div>
+                <input
+                  id="approved-command-input"
+                  name="command"
+                  placeholder="e.g. git status"
+                  autocomplete="off"
+                  autocapitalize="none"
+                  spellcheck="false"
+                  required
+                />
+                <button class="button button-primary" type="submit">Approve</button>
+              </div>
+            </form>
+            <div class="preset-row" aria-label="Suggested read-only commands">
+              <span>Examples</span>
+              <button type="button" data-command-preset="git status">git status</button>
+              <button type="button" data-command-preset="git diff">git diff</button>
+              <button type="button" data-command-preset="rg --files">rg --files</button>
+              <button type="button" data-command-preset="git log -5 --oneline">git log -5 --oneline</button>
+            </div>
+            <div id="approved-commands-list" class="control-list" aria-live="polite"></div>
+          </article>
+
+          <article class="card control-card">
+            <div class="control-card-head">
+              <div>
+                <h2>Workspaces</h2>
+              </div>
+              <span class="control-state is-custom">Demo preview</span>
+            </div>
+            <div id="approved-workspaces-list" class="control-list workspace-policy-list">
+              <div class="control-list-row">
+                <div><strong>Managed projects</strong><code>~/Projects · enterprise repositories</code></div>
+                <span class="workspace-state is-allowed">Allowed</span>
+              </div>
+              <div class="control-list-row">
+                <div><strong>Employee documents</strong><code>~/Documents</code></div>
+                <span class="workspace-state is-review">Ask first</span>
+              </div>
+              <div class="control-list-row">
+                <div><strong>External storage</strong><code>USB · network shares</code></div>
+                <span class="workspace-state is-blocked">Blocked</span>
+              </div>
+              <div class="control-list-row is-locked">
+                <div><strong>System and secrets</strong><code>/etc · ~/.ssh · credentials</code></div>
+                <span class="locked-state">Always blocked</span>
               </div>
             </div>
-            <iframe
-              id="embedded-frame"
-              class="embedded-frame"
-              src="/embedded-live/?view=tokenomics"
-              title="Embedded tokenomics micro frontend"
-              name="tokenomics-embedded"
-              loading="lazy"
-            ></iframe>
-          </div>
+            <p class="control-note">Preview · device acknowledgements pending.</p>
+          </article>
+
+          <article class="card control-card agent-capabilities-card">
+            <div class="control-card-head">
+              <div>
+                <h2>Agent capabilities</h2>
+              </div>
+              <span class="control-state is-custom">Baseline preview</span>
+            </div>
+            <p class="control-description">Low-risk work can run inside enforced boundaries. Risky or irreversible actions pause or stay blocked.</p>
+            <div class="control-list capability-policy-list" aria-label="Effective agent capability policy">
+              <div class="control-list-row">
+                <div><strong>Read approved data</strong><p>Workspace files and approved knowledge sources</p></div>
+                <button class="control-switch" type="button" role="switch" aria-checked="true" aria-label="Read approved data capability" data-capability-toggle="read-approved-data">
+                  <span aria-hidden="true"></span><b>Enabled</b>
+                </button>
+              </div>
+              <div class="control-list-row">
+                <div><strong>Modify approved work</strong><p>Sandboxed workspace or task branch only</p></div>
+                <button class="control-switch" type="button" role="switch" aria-checked="true" aria-label="Modify approved work capability" data-capability-toggle="modify-approved-work">
+                  <span aria-hidden="true"></span><b>Enabled</b>
+                </button>
+              </div>
+              <div class="control-list-row">
+                <div><strong>Run code and commands</strong><p>Exact action shown; sandbox and command rules still apply</p></div>
+                <button class="control-switch" type="button" role="switch" aria-checked="false" aria-label="Run code and commands capability" data-capability-toggle="run-code-and-commands">
+                  <span aria-hidden="true"></span><b>Disabled</b>
+                </button>
+              </div>
+              <div class="control-list-row">
+                <div><strong>Use web and connected apps</strong><p>Approved domains and scoped OAuth grants</p></div>
+                <button class="control-switch" type="button" role="switch" aria-checked="false" aria-label="Use web and connected apps capability" data-capability-toggle="use-web-and-connected-apps">
+                  <span aria-hidden="true"></span><b>Disabled</b>
+                </button>
+              </div>
+              <div class="control-list-row">
+                <div><strong>Send, publish, or deploy</strong><p>External side effects require per-action review</p></div>
+                <button class="control-switch" type="button" role="switch" aria-checked="false" aria-label="Send, publish, or deploy capability" data-capability-toggle="send-publish-or-deploy">
+                  <span aria-hidden="true"></span><b>Disabled</b>
+                </button>
+              </div>
+              <div class="control-list-row">
+                <div><strong>Delete data or change access</strong><p>Destructive actions and privilege changes</p></div>
+                <button class="control-switch" type="button" role="switch" aria-checked="false" aria-label="Delete data or change access capability" data-capability-toggle="delete-data-or-change-access">
+                  <span aria-hidden="true"></span><b>Disabled</b>
+                </button>
+              </div>
+              <div class="control-list-row is-locked">
+                <div><strong>System, secrets, and credentials</strong><p>Protected paths and raw secret values</p></div>
+                <button class="control-switch" type="button" role="switch" aria-checked="false" aria-label="System, secrets, and credentials capability" data-capability-toggle="system-secrets-and-credentials" title="Locked by baseline security policy" disabled>
+                  <span aria-hidden="true"></span><b>Disabled</b>
+                </button>
+              </div>
+            </div>
+            <p class="control-note">Preview only · capability toggles reset on reload and do not change live DefenseClaw enforcement. Scope remains enforced separately from approval.</p>
+
+            <details id="advanced-tool-exceptions" class="tool-exception-details">
+              <summary>
+                <span><strong>Advanced details</strong><small id="tool-exception-count" aria-live="polite">0 exact scan exceptions</small></span>
+                <span class="disclosure-chevron" aria-hidden="true">⌄</span>
+              </summary>
+              <div class="tool-exception-body">
+                <p id="tool-exception-warning" class="tool-exception-warning"><strong>Exact-name scan bypass.</strong> These legacy entries skip routine tool inspection; they are not workspace, network, or identity permissions. Tool risk metadata may inform review, but never grants access.</p>
+                <div id="tool-exceptions-list" class="control-list tool-exception-list" aria-live="polite"></div>
+                <p class="control-note">Current Agent Control API entries apply to the exact tool name across the fleet. New exceptions require the lower-level enforcement workflow.</p>
+              </div>
+            </details>
+          </article>
+
+          </section>
         </section>
+
+        <section id="policy-studio-page" class="agent-control-tab-panel hidden" role="tabpanel" aria-labelledby="agent-control-tab-studio" data-agent-control-panel="studio" tabindex="0" hidden>
+        <header class="agent-control-panel-head policy-studio-panel-head">
+          <div>
+            <div class="policy-studio-kicker"><span aria-hidden="true">✦</span> AI-assisted guardrail design</div>
+            <h2 id="policy-studio-title">Policy Studio</h2>
+            <p>Turn security intent into a validated guardrail draft.</p>
+          </div>
+          <span class="live-status policy-studio-live-status"><span aria-hidden="true"></span>Review required</span>
+        </header>
+
+        <section id="policy-studio-banner" class="status-banner hidden" aria-live="polite"></section>
+
+        <section class="policy-studio-trust-strip" aria-label="Policy Studio trust workflow">
+          <div><b>1</b><span>Describe</span><strong>Natural-language intent</strong></div>
+          <div><b>2</b><span>Validate</span><strong>Typed, non-executable draft</strong></div>
+          <div><b>3</b><span>Acknowledge</span><strong>Operator inspection before staging</strong></div>
+          <div><b>4</b><span>Enforce</span><strong>Separate deployment workflow</strong></div>
+        </section>
+
+        <section class="policy-studio-workspace">
+          <article class="card policy-studio-chat-card" aria-labelledby="policy-studio-chat-title">
+            <div class="policy-studio-card-head">
+              <div>
+                <span class="policy-studio-card-kicker">Generative policy assistant</span>
+                <h2 id="policy-studio-chat-title">Define the guardrail</h2>
+              </div>
+              <span class="pill">Security + trust</span>
+            </div>
+
+            <div id="policy-studio-chat-log" class="policy-studio-chat-log" role="log" aria-live="polite" aria-relevant="additions">
+              <div class="policy-studio-message is-assistant">
+                <span class="policy-studio-avatar" aria-hidden="true">PS</span>
+                <div><b>Policy Studio</b><p>What should your agents be allowed to do, blocked from doing, or required to escalate?</p></div>
+              </div>
+            </div>
+
+            <div id="policy-studio-preset-row" class="policy-studio-presets" aria-label="Guardrail examples">
+              <span>Try an example</span>
+              <button type="button" data-policy-studio-preset="Block agents from deleting Jira issues.">Block Jira deletion</button>
+              <button type="button" data-policy-studio-preset="Require human approval before agents send restricted data to public AI models.">Protect restricted data</button>
+              <button type="button" data-policy-studio-preset="Only allow signed AI models from approved publishers. Block restricted or unsigned models.">Require signed models</button>
+              <button type="button" data-policy-studio-preset="Block credential access and escalate critical attempts to the security team.">Protect credentials</button>
+            </div>
+
+            <form id="policy-studio-form" class="policy-studio-composer">
+              <label for="policy-studio-input">Security and trust intent</label>
+              <textarea
+                id="policy-studio-input"
+                name="message"
+                rows="5"
+                maxlength="2000"
+                placeholder="Example: Require approval before an agent sends confidential source code to an external model…"
+                required
+              ></textarea>
+              <div class="policy-studio-composer-footer">
+                <p><span aria-hidden="true">◇</span> Do not enter secrets. AI output is validated and cannot directly change runtime policy.</p>
+                <button id="policy-studio-generate-button" class="button button-primary" type="submit"><span aria-hidden="true">✦</span> Generate guardrail</button>
+              </div>
+            </form>
+          </article>
+
+          <aside class="card policy-studio-draft-card" aria-labelledby="policy-studio-draft-heading">
+            <div class="policy-studio-card-head">
+              <div>
+                <span class="policy-studio-card-kicker">Review workspace</span>
+                <h2 id="policy-studio-draft-heading">Guardrail draft</h2>
+              </div>
+              <span id="policy-studio-generation-mode" class="pill">Awaiting prompt</span>
+            </div>
+
+            <div id="policy-studio-draft-empty" class="policy-studio-draft-empty">
+              <span aria-hidden="true">✦</span>
+              <strong>Your validated draft will appear here</strong>
+              <p>Policy Studio separates model-generated intent from live enforcement so you can inspect every rule and decision.</p>
+            </div>
+
+            <div id="policy-studio-draft-content" class="policy-studio-draft-content hidden">
+              <header class="policy-studio-draft-title">
+                <div>
+                  <span id="policy-studio-draft-status" class="policy-studio-draft-status">Generated</span>
+                  <h3 id="policy-studio-draft-title">—</h3>
+                </div>
+                <span id="policy-studio-risk" class="risk-label">—</span>
+              </header>
+              <p id="policy-studio-draft-summary" class="policy-studio-draft-summary"></p>
+              <dl id="policy-studio-facts" class="policy-studio-facts"></dl>
+
+              <section class="policy-studio-review-section" aria-labelledby="policy-studio-rules-title">
+                <div class="policy-studio-section-title">
+                  <h4 id="policy-studio-rules-title">Validated rules</h4>
+                  <span id="policy-studio-rule-count">0 rules</span>
+                </div>
+                <div id="policy-studio-rules" class="policy-studio-rules"></div>
+              </section>
+
+              <div id="policy-studio-warnings" class="policy-studio-warnings"></div>
+
+              <details class="policy-studio-json-details">
+                <summary>Inspect constrained policy JSON</summary>
+                <pre id="policy-studio-json"></pre>
+              </details>
+
+              <label class="policy-studio-review-check" for="policy-studio-review-confirmed">
+                <input id="policy-studio-review-confirmed" type="checkbox" />
+                <span><strong>I inspected the scope and every decision.</strong><small>This demo does not verify my identity; staging does not deploy or enforce this guardrail.</small></span>
+              </label>
+
+              <div id="policy-studio-stage-result" class="policy-studio-stage-result hidden" role="status" aria-live="polite"></div>
+              <div class="policy-studio-draft-actions">
+                <button id="policy-studio-revise-button" class="button button-secondary" type="button">Revise in chat</button>
+                <button id="policy-studio-stage-button" class="button button-primary" type="button" disabled>Stage reviewed guardrail</button>
+              </div>
+            </div>
+          </aside>
+        </section>
+        </section>
+
+        <section id="agent-behavior-page" class="agent-control-tab-panel hidden" role="tabpanel" aria-labelledby="agent-control-tab-behavior" data-agent-control-panel="behavior" tabindex="0" hidden>
+          <header class="agent-control-panel-head behavior-panel-head">
+            <div>
+              <h2 id="agent-behavior-title">Agent Behavior</h2>
+              <p>Monitor outcomes and investigate agents that need attention.</p>
+            </div>
+            <span class="live-status is-demo"><span aria-hidden="true"></span>Demo outcomes</span>
+          </header>
+
+          <section class="behavior-filter-bar" aria-label="Agent behavior filters">
+            <div><span>Range</span><strong>Today</strong></div>
+            <div><span>Department</span><strong>All departments</strong></div>
+            <div><span>Agent</span><strong>All workload agents</strong></div>
+            <div><span>Data</span><strong>Demo</strong></div>
+          </section>
+
+          <section id="behavior-summary-grid" class="summary-grid behavior-summary-grid"></section>
+
+          <section class="behavior-content-grid">
+            <article class="card">
+              <div class="section-head"><h2>Expected outcomes</h2></div>
+              <div id="behavior-outcome-list" class="behavior-outcome-list"></div>
+            </article>
+            <article class="card">
+              <div class="section-head"><h2>Attention queue</h2><span id="behavior-attention-count" class="pill">0 agents</span></div>
+              <div id="behavior-attention-list" class="behavior-attention-list"></div>
+            </article>
+          </section>
+
+          <article class="card behavior-agent-card">
+            <div class="section-head"><h2>Outcomes by agent</h2><span class="pill">Demo fleet</span></div>
+            <div id="behavior-agent-table" class="behavior-agent-table"></div>
+          </article>
+        </section>
+      </section>
+
+      <section id="network-security-page" class="shell-page hidden" data-shell-page="network">
+        <header class="hero network-hero">
+          <div>
+            <h1>Network Security</h1>
+          </div>
+          <div class="hero-actions">
+            <span id="network-mode" class="live-status"><span aria-hidden="true"></span>Loading policy</span>
+            <a class="button button-secondary" href="/agent-controls">Open Agent Control</a>
+          </div>
+        </header>
+
+        <article class="card network-topology-card" aria-labelledby="network-topology-title">
+          <div class="network-topology-head">
+            <div>
+              <span class="topology-kicker">Solution architecture</span>
+              <h2 id="network-topology-title">AI at every desk, secured by the network itself</h2>
+            </div>
+            <div id="network-topology-summary" class="network-topology-summary" aria-live="polite"></div>
+          </div>
+          <div id="network-topology" class="network-topology">
+            <div class="topology-loading">Loading topology…</div>
+          </div>
+        </article>
+
+        <section id="network-security-banner" class="status-banner hidden" aria-live="polite"></section>
+
+        <section class="network-policy-layout" aria-label="Network policy controls">
+          <article class="card isolation-control-card">
+            <div class="isolation-control-head">
+              <div class="isolation-control-copy">
+                <span class="topology-kicker">Response</span>
+                <h2 id="auto-quarantine-label">Automatic isolation</h2>
+              </div>
+              <div class="isolation-toggle-panel">
+                <span id="auto-quarantine-state" class="control-state">Checking</span>
+                <button
+                  id="auto-quarantine-toggle"
+                  class="control-switch control-switch-large"
+                  type="button"
+                  role="switch"
+                  aria-checked="false"
+                  aria-labelledby="auto-quarantine-label"
+                  aria-describedby="auto-quarantine-note"
+                >
+                  <span aria-hidden="true"></span><b>Disabled</b>
+                </button>
+              </div>
+            </div>
+            <div class="isolation-facts">
+              <div><span>Scope</span><strong id="auto-quarantine-scope">All Desksides</strong></div>
+              <div><span>Trigger</span><strong>Critical</strong></div>
+              <div><span>ISE action</span><strong id="auto-quarantine-ise-action">QUARANTINE</strong></div>
+            </div>
+            <p id="auto-quarantine-note" class="control-note">Checking policy…</p>
+          </article>
+
+          <article id="one-policy-story" class="card one-policy-card" aria-label="Guardrail policy">
+            <div class="one-policy-title">
+              <h2>Policy <span id="one-policy-version">v1</span></h2>
+              <span class="pill">Synthetic</span>
+            </div>
+            <div class="policy-plane">
+              <span class="plane-icon" aria-hidden="true">JIRA</span>
+              <strong>Delete blocked</strong>
+              <b id="jira-policy-state">Enforced</b>
+            </div>
+            <div class="policy-plane">
+              <span class="plane-icon" aria-hidden="true">ML</span>
+              <strong>Unsigned model blocked</strong>
+              <b id="model-policy-state">Enforced</b>
+            </div>
+            <div class="policy-plane">
+              <span class="plane-icon" aria-hidden="true">NET</span>
+              <strong>ISE quarantine</strong>
+              <b id="policy-network-state">Monitor</b>
+            </div>
+          </article>
+        </section>
+
+        <article
+          id="restricted-model-demo"
+          class="card restricted-model-admin-card"
+          data-incident-state="setup-required"
+          aria-labelledby="restricted-model-demo-title"
+          aria-busy="false"
+        >
+          <header class="restricted-model-admin-header">
+            <div class="restricted-model-admin-title">
+              <span class="skill-package-icon" aria-hidden="true">ML</span>
+              <div>
+                <span class="restricted-model-kicker">Response check</span>
+                <h2 id="restricted-model-demo-title">Restricted model test</h2>
+              </div>
+            </div>
+            <span class="pill pill-warn">Synthetic</span>
+          </header>
+
+          <section id="restricted-model-endpoint" class="restricted-model-context" aria-labelledby="restricted-model-context-title">
+            <h3 id="restricted-model-context-title" class="visually-hidden">Test target</h3>
+            <div class="restricted-model-context-grid">
+              <div><span>Employee</span><strong id="restricted-model-employee">Jordan Lee</strong><small id="restricted-model-department">Product</small></div>
+              <div><span>Endpoint</span><strong id="restricted-model-endpoint-id">DSK-AUS-017</strong><small id="restricted-model-endpoint-detail">AMD Ryzen AI Halo · Austin</small></div>
+              <div><span>Agents</span><strong id="restricted-model-agents">Employee Assistant + Product Planner</strong></div>
+              <div><span>Network access</span><strong id="restricted-model-network-access">Full access</strong><small id="restricted-model-network-policy">ISE policy · AMD-DESKSIDE-STANDARD</small><span id="restricted-model-endpoint-status" class="control-state">Loading endpoint</span></div>
+            </div>
+          </section>
+
+          <section id="restricted-model-response" class="restricted-model-response" aria-labelledby="restricted-model-response-title">
+            <div class="restricted-model-section-heading">
+              <h3 id="restricted-model-response-title">Expected response</h3>
+              <span id="restricted-model-response-label" class="control-state">Ready</span>
+            </div>
+            <div id="restricted-model-response-summary" class="restricted-model-response-grid">
+              <div data-restricted-model-outcome><span aria-hidden="true">○</span><strong>Block model</strong></div>
+              <div data-restricted-model-outcome><span aria-hidden="true">○</span><strong>Isolate <b id="restricted-model-response-endpoint">DSK-AUS-017</b></strong></div>
+              <div data-restricted-model-outcome><span aria-hidden="true">○</span><strong>Keep remediation</strong></div>
+              <div data-restricted-model-outcome><span aria-hidden="true">○</span><strong>Notify <b id="restricted-model-response-employee">Jordan Lee</b></strong></div>
+            </div>
+          </section>
+
+          <section class="restricted-model-runbook" aria-label="Response test controls">
+            <div class="restricted-model-readiness">
+              <span class="restricted-model-readiness-dot" aria-hidden="true"></span>
+              <div>
+                <span>Test readiness</span>
+                <strong id="restricted-model-demo-state" role="status" aria-live="polite">Checking settings</strong>
+                <p id="restricted-model-demo-guidance">Loading automatic isolation policy…</p>
+              </div>
+            </div>
+            <div class="restricted-model-admin-actions">
+              <p id="restricted-model-demo-consequence"><strong>Synthetic only.</strong> No production change.</p>
+              <button
+                id="restricted-model-demo-button"
+                class="button button-secondary"
+                type="button"
+                aria-describedby="restricted-model-demo-state restricted-model-demo-consequence"
+              >Review isolation settings</button>
+            </div>
+          </section>
+
+          <details class="restricted-model-more">
+            <summary>Evidence &amp; notification</summary>
+            <div class="restricted-model-more-grid">
+              <section id="restricted-model-evidence" class="restricted-model-admin-section restricted-model-evidence" aria-labelledby="restricted-model-evidence-title">
+                <div class="restricted-model-section-heading">
+                  <h3 id="restricted-model-evidence-title">Block reasons</h3>
+                  <span class="risk-label">Critical</span>
+                </div>
+                <ul class="restricted-model-evidence-list">
+                  <li><span aria-hidden="true">!</span><strong>Unverified publisher</strong></li>
+                  <li><span aria-hidden="true">!</span><strong>Missing signature</strong></li>
+                  <li><span aria-hidden="true">!</span><strong>Restricted model</strong></li>
+                </ul>
+                <details class="restricted-model-technical-details">
+                  <summary>Artifact details</summary>
+                  <dl>
+                    <div><dt>Model</dt><dd>shadow-llm-13b.gguf</dd></div>
+                    <div class="is-wide"><dt>Source</dt><dd><code>hf://unverified/shadow-llm-13b.gguf</code></dd></div>
+                    <div><dt>Policy</dt><dd>Restricted model provenance</dd></div>
+                    <div><dt>Policy ID</dt><dd><code>agent-control.model-provenance</code></dd></div>
+                  </dl>
+                </details>
+              </section>
+
+              <section id="restricted-model-notification" class="restricted-model-notification" aria-labelledby="restricted-model-notification-title">
+                <div class="restricted-model-notification-heading">
+                  <strong id="restricted-model-notification-title">Message Jordan Lee will receive</strong>
+                  <span id="restricted-model-notification-status" class="pill">Preview only</span>
+                </div>
+                <div id="restricted-model-notification-preview" class="restricted-model-notification-preview">
+                  <span id="restricted-model-notification-avatar" aria-hidden="true">JL</span>
+                  <p id="restricted-model-notification-message">A restricted AI model was blocked on DSK-AUS-017. This device will be temporarily quarantined with remediation-only network access. Contact your administrator for help.</p>
+                </div>
+              </section>
+            </div>
+          </details>
+        </article>
+
+        <article class="card network-device-card">
+          <div class="section-head">
+            <h2>Needs attention</h2>
+            <span id="network-attention-count" class="pill">0 devices</span>
+          </div>
+          <div id="network-deskside-list" class="network-attention-list"></div>
+        </article>
+
       </section>
     </main>
     <script src="/shell/app.js"></script>

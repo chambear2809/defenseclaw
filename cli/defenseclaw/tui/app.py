@@ -9868,12 +9868,7 @@ def _fetch_gateway_health(config: object | None) -> HealthSnapshot | None:
         return None
     if port <= 0:
         return None
-    host = str(getattr(gateway_cfg, "host", "") or "127.0.0.1") or "127.0.0.1"
-    # The gateway's API server binds 127.0.0.1 by default; ``0.0.0.0`` /
-    # empty values would resolve fine over the wire but make the client
-    # round-trip needlessly slow on macOS. Normalize to loopback.
-    if host in ("", "0.0.0.0"):
-        host = "127.0.0.1"
+    host = _gateway_api_host(gateway_cfg)
     resolve_token = getattr(gateway_cfg, "resolved_token", None)
     token = resolve_token() if callable(resolve_token) else str(getattr(gateway_cfg, "token", "") or "")
 
@@ -9910,9 +9905,7 @@ def _fetch_ai_usage(config: object | None) -> AIUsageSnapshot | None:
         return None
     if port <= 0:
         return None
-    host = str(getattr(gateway_cfg, "host", "") or "127.0.0.1") or "127.0.0.1"
-    if host in ("", "0.0.0.0"):
-        host = "127.0.0.1"
+    host = _gateway_api_host(gateway_cfg)
     resolve_token = getattr(gateway_cfg, "resolved_token", None)
     token = resolve_token() if callable(resolve_token) else str(getattr(gateway_cfg, "token", "") or "")
 
@@ -9935,6 +9928,14 @@ def _fetch_ai_usage(config: object | None) -> AIUsageSnapshot | None:
         return AIUsageSnapshot.from_mapping(payload)
     except Exception:  # noqa: BLE001
         return None
+
+
+def _gateway_api_host(gateway_cfg: object) -> str:
+    """Return the host serving the DefenseClaw API, not the agent gateway."""
+    host = os.environ.get("DEFENSECLAW_API_HOST", "").strip()
+    if not host:
+        host = str(getattr(gateway_cfg, "api_host", "") or getattr(gateway_cfg, "host", "") or "127.0.0.1")
+    return "127.0.0.1" if host in ("", "0.0.0.0") else host
 
 
 def _resolve_data_dir(config: object | None, data_dir: str | Path | None) -> Path | None:

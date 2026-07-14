@@ -35,6 +35,21 @@ TOKEN_TYPE_ALIASES = {
 
 KNOWN_TOKEN_TYPES = ("input", "output", "cached", "reasoning", "tool")
 
+# Public API list prices in USD per one million text tokens. Keep this map
+# intentionally narrow: a missing entry is surfaced as unpriced rather than
+# silently applying a nearby model's rate. Source-reported ledger cost always
+# wins over this presentation-layer estimate.
+MODEL_PRICING_USD_PER_MILLION = {
+    "gpt-4o-mini": {
+        "input": 0.15,
+        "output": 0.60,
+    },
+    "gpt-4o-mini-2024-07-18": {
+        "input": 0.15,
+        "output": 0.60,
+    },
+}
+
 
 @dataclass(frozen=True)
 class MetricPoint:
@@ -42,6 +57,7 @@ class MetricPoint:
     timestamp: str
     tokens: float
     cost_usd: float
+    pricing_status: str
     token_type: str
     agent_name: str
     model: str
@@ -101,6 +117,36 @@ def infer_provider_from_model(value: Any) -> str:
     return "unknown"
 
 
+def estimate_model_cost_usd(
+    model: Any,
+    *,
+    provider: Any = None,
+    input_tokens: Any = 0,
+    output_tokens: Any = 0,
+) -> tuple[float, float] | None:
+    """Estimate input/output cost for an exact, explicitly priced model.
+
+    Provider prefixes used by configured OpenAI-compatible gateways are
+    removed, but model families are never prefix-matched. That keeps variants
+    such as ``gpt-4o-mini-tts`` unpriced unless they receive their own entry.
+    """
+    model_id = str(model or "").strip().lower()
+    provider_id = str(provider or "").strip().lower()
+    if "/" in model_id:
+        model_provider_id, model_id = model_id.rsplit("/", 1)
+        if model_provider_id not in {"bridgeit", "openai"}:
+            return None
+        provider_id = provider_id or model_provider_id
+    if provider_id not in {"", "unknown", "bridgeit", "openai"}:
+        return None
+    pricing = MODEL_PRICING_USD_PER_MILLION.get(model_id)
+    if pricing is None:
+        return None
+    input_cost = max(_to_float(input_tokens), 0.0) * pricing["input"] / 1_000_000
+    output_cost = max(_to_float(output_tokens), 0.0) * pricing["output"] / 1_000_000
+    return input_cost, output_cost
+
+
 def metric_point_from_row(row: Mapping[str, Any]) -> MetricPoint:
     """Normalize SignalFlow/O11y rows into a stable Cisco Cloud Control DTO input.
 
@@ -122,11 +168,14 @@ def metric_point_from_row(row: Mapping[str, Any]) -> MetricPoint:
     tokens = _coalesce(row, "tokens", "value", "sum", "metric_value", default=0)
 
     model = str(_coalesce(row, "model", "gen_ai.request.model", "gen_ai_request_model", default="unknown"))
+    cost_usd = _to_float(_coalesce(row, "cost_usd", "estimated_cost_usd", default=0))
+    pricing_status = str(_coalesce(row, "pricing_status", default="priced" if cost_usd > 0 else "unpriced"))
     return MetricPoint(
         request_id=str(_coalesce(row, "request_id", "observation_id", "id", default="")),
         timestamp=str(_coalesce(row, "timestamp", "ts", default="")),
         tokens=_to_float(tokens),
-        cost_usd=_to_float(_coalesce(row, "cost_usd", "estimated_cost_usd", default=0)),
+        cost_usd=cost_usd,
+        pricing_status=pricing_status,
         token_type=token_type,
         agent_name=str(_coalesce(row, "agent_name", "gen_ai.agent.name", "gen_ai_agent_name", default="unknown")),
         model=model,
@@ -342,6 +391,18 @@ def build_summary(
     total_requests = sum(request_counts_by_key.values())
 
     total_tokens = sum(token_totals.values())
+    priced_statuses = {point.pricing_status for point in points if point.tokens > 0 or point.cost_usd > 0}
+    has_estimated_cost = "estimated" in priced_statuses
+    has_priced_cost = "priced" in priced_statuses
+    has_unpriced_usage = "unpriced" in priced_statuses
+    if has_unpriced_usage and (has_estimated_cost or has_priced_cost):
+        pricing_status = "partially_priced"
+    elif has_estimated_cost:
+        pricing_status = "estimated"
+    elif has_priced_cost:
+        pricing_status = "priced"
+    else:
+        pricing_status = "unpriced"
     summary = {
         "total_tokens": round(total_tokens, 2),
         "input_tokens": round(token_totals.get("input", 0.0), 2),
@@ -358,7 +419,7 @@ def build_summary(
             "input": round(cost_totals.get("input", 0.0), 4),
             "output": round(cost_totals.get("output", 0.0), 4),
             "currency": "USD",
-            "pricing_status": "priced" if any(cost_totals.values()) else "unpriced",
+            "pricing_status": pricing_status,
         },
     }
 
@@ -416,7 +477,7 @@ def gateway_observations_to_metric_rows(observations: Iterable[Mapping[str, Any]
         prompt_tokens = _to_float(_coalesce(obs, "prompt_tokens", default=0))
         completion_tokens = _to_float(_coalesce(obs, "completion_tokens", default=0))
         total_tokens = _to_float(_coalesce(obs, "total_tokens", default=prompt_tokens + completion_tokens))
-        cost_usd = _to_float(_coalesce(obs, "cost_usd", default=0))
+        cost_usd = max(_to_float(_coalesce(obs, "cost_usd", default=0)), 0.0)
         service_name = str(_coalesce(obs, "source", default="defenseclaw"))
 
         accounted_tokens = prompt_tokens + completion_tokens
@@ -424,9 +485,19 @@ def gateway_observations_to_metric_rows(observations: Iterable[Mapping[str, Any]
         residual_tokens = max(total_tokens - accounted_tokens, 0.0)
         allocated_input_cost = 0.0
         allocated_output_cost = 0.0
+        pricing_status = "unpriced"
         if allocation_tokens > 0 and cost_usd > 0:
             allocated_input_cost = cost_usd * (prompt_tokens / allocation_tokens)
             allocated_output_cost = cost_usd * (completion_tokens / allocation_tokens)
+            pricing_status = "priced"
+        elif estimated_cost := estimate_model_cost_usd(
+            model,
+            provider=provider,
+            input_tokens=prompt_tokens,
+            output_tokens=completion_tokens,
+        ):
+            allocated_input_cost, allocated_output_cost = estimated_cost
+            pricing_status = "estimated"
         residual_cost = max(cost_usd - allocated_input_cost - allocated_output_cost, 0.0)
 
         if prompt_tokens > 0:
@@ -437,6 +508,7 @@ def gateway_observations_to_metric_rows(observations: Iterable[Mapping[str, Any]
                     "token_type": "input",
                     "tokens": prompt_tokens,
                     "cost_usd": allocated_input_cost,
+                    "pricing_status": pricing_status,
                     "agent_name": agent_name,
                     "model": model,
                     "service_name": service_name,
@@ -458,6 +530,7 @@ def gateway_observations_to_metric_rows(observations: Iterable[Mapping[str, Any]
                     "token_type": "output",
                     "tokens": completion_tokens,
                     "cost_usd": allocated_output_cost,
+                    "pricing_status": pricing_status,
                     "agent_name": agent_name,
                     "model": model,
                     "service_name": service_name,
@@ -479,6 +552,7 @@ def gateway_observations_to_metric_rows(observations: Iterable[Mapping[str, Any]
                     "token_type": "other",
                     "tokens": residual_tokens,
                     "cost_usd": residual_cost,
+                    "pricing_status": "priced" if residual_cost > 0 else "unpriced",
                     "agent_name": agent_name,
                     "model": model,
                     "service_name": service_name,
@@ -500,6 +574,7 @@ def gateway_observations_to_metric_rows(observations: Iterable[Mapping[str, Any]
                     "token_type": "input",
                     "tokens": total_tokens,
                     "cost_usd": cost_usd,
+                    "pricing_status": pricing_status,
                     "agent_name": agent_name,
                     "model": model,
                     "service_name": service_name,

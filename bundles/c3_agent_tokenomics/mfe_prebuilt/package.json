@@ -1,5 +1,5 @@
 {
-  "name": "my-mfe",
+  "name": "deskside-ai-resilience",
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
@@ -8,12 +8,13 @@
     "serve:tokenomics-fixture": "node scripts/serve-tokenomics-fixture.js",
     "start": "webpack serve --mode development",
     "test": "node scripts/test-o11y-request-construction.js && node scripts/test-sandbox-build.js",
+    "test:e2e:demo": "npm --prefix e2e run test:demo",
     "test:e2e:live": "npm --prefix e2e test"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "description": "",
+  "description": "Deskside AI Resilience micro-frontend",
   "dependencies": {
     "@ciscodesignsystems/cds-magnetic-theme-web": "^1.9.4",
     "@ciscodesignsystems/cds-react-button": "^1.9.4",

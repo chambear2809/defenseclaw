@@ -128,7 +128,7 @@ _ALLOWLIST_PATHS: tuple[str, ...] = (
     "scripts/test-e2e-bedrock-region.sh",
     "scripts/test-e2e-custom-provider.sh",
     "scripts/test-e2e-full-stack.sh",
-    # Docs-site policy-creator quick-start: an illustrative apply.ts
+    # Docs-site policy-creator quick-start: an example apply.ts
     # snippet mentions DEFENSECLAW_LOG as an example client-side toggle;
     # it is sample documentation, not a var DefenseClaw reads.
     "docs-site/components/policy-creator/quick-start/apply.ts",

@@ -49,14 +49,21 @@ async function main() {
     const chunks = [];
     request.on("data", (chunk) => chunks.push(chunk));
     request.on("end", () => {
-      const body = Buffer.concat(chunks).toString("utf8");
-      requests.push({ body, method: request.method, url: request.url });
-      const payload = Buffer.from(JSON.stringify({ body, method: request.method, url: request.url }));
-      response.writeHead(200, {
-        "content-length": payload.length,
-        "content-type": "application/json",
-      });
-      response.end(payload);
+      const sendResponse = () => {
+        const body = Buffer.concat(chunks).toString("utf8");
+        requests.push({ body, method: request.method, url: request.url });
+        const payload = Buffer.from(JSON.stringify({ body, method: request.method, url: request.url }));
+        response.writeHead(200, {
+          "content-length": payload.length,
+          "content-type": "application/json",
+        });
+        response.end(payload);
+      };
+      if (request.url.startsWith("/v1/c3/agent-tokenomics/policy-studio/drafts")) {
+        setTimeout(sendResponse, 250);
+      } else {
+        sendResponse();
+      }
     });
   });
   upstream.listen(0, "127.0.0.1");
@@ -73,6 +80,7 @@ async function main() {
       MFE_PORT: String(appPort),
       TOKENOMICS_BFF_URL: `http://127.0.0.1:${upstreamPort}`,
       TOKENOMICS_BFF_TIMEOUT_MS: "100",
+      POLICY_STUDIO_BFF_TIMEOUT_MS: "500",
     },
     stdio: ["ignore", "ignore", "pipe"],
   });
@@ -103,6 +111,20 @@ async function main() {
     assert.equal(control.method, "POST");
     assert.deepEqual(JSON.parse(control.body), controlBody);
     assert.equal(requests.at(-1).url, "/v1/c3/agent-tokenomics/controls/apply");
+
+    const policyStudioBody = { message: "Block credential access" };
+    const policyStudioResponse = await fetch(
+      `http://127.0.0.1:${apiPort}/v1/c3/agent-tokenomics/policy-studio/drafts`,
+      {
+        body: JSON.stringify(policyStudioBody),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      },
+    );
+    assert.equal(policyStudioResponse.status, 200);
+    const policyStudio = await policyStudioResponse.json();
+    assert.deepEqual(JSON.parse(policyStudio.body), policyStudioBody);
+    assert.equal(requests.at(-1).url, "/v1/c3/agent-tokenomics/policy-studio/drafts");
 
     hangRequests = true;
     const timeoutResponse = await fetch(`http://127.0.0.1:${apiPort}/healthz`);

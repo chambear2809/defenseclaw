@@ -105,7 +105,7 @@ def bundled_local_observability_dir() -> Path:
 
 
 def bundled_c3_agent_tokenomics_dir() -> Path:
-    """Cisco Cloud Control tokenomics demo fixtures and OpenAPI contract."""
+    """Deskside AI Resilience demo fixtures and OpenAPI contract."""
     return _first_existing(
         _DATA_DIR / "c3_agent_tokenomics",
         _REPO_ROOT / "bundles" / "c3_agent_tokenomics",

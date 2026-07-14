@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -30,7 +29,7 @@ import (
 )
 
 // NewCommandStarter returns a PTY starter for command. When command is empty,
-// it re-execs this binary as "tui --skip-first-run-prompt".
+// it launches the packaged DefenseClaw CLI's Textual TUI.
 func NewCommandStarter(command []string) PTYStarter {
 	argv := append([]string(nil), command...)
 	if len(argv) == 0 {
@@ -42,13 +41,19 @@ func NewCommandStarter(command []string) PTYStarter {
 }
 
 func defaultTUICommand() []string {
-	if self, err := os.Executable(); err == nil && self != "" {
-		if resolved, rerr := filepath.EvalSymlinks(self); rerr == nil {
-			self = resolved
-		}
-		return []string{self, "tui", "--skip-first-run-prompt"}
+	return defaultTUICommandFor("/app/.venv/bin/defenseclaw", fileExists)
+}
+
+func defaultTUICommandFor(packagedCLI string, exists func(string) bool) []string {
+	if exists(packagedCLI) {
+		return []string{packagedCLI, "tui"}
 	}
-	return []string{"defenseclaw-gateway", "tui", "--skip-first-run-prompt"}
+	return []string{"defenseclaw", "tui"}
+}
+
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
 }
 
 type commandSession struct {

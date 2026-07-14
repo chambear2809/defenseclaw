@@ -97,6 +97,10 @@ metadata:
   name: {{ .Values.agentControl.uiService.name }}
 spec:
   type: {{ .Values.agentControl.uiService.type }}
+  {{- with .Values.agentControl.uiService.loadBalancerSourceRanges }}
+  loadBalancerSourceRanges:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
   selector:
     app.kubernetes.io/component: server
     app.kubernetes.io/name: {{ .Values.agentControl.name }}

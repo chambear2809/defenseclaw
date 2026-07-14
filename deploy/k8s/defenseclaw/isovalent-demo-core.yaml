@@ -295,7 +295,7 @@ data:
       reconnect_ms: 800
       max_reconnect_ms: 15000
       approval_timeout_s: 30
-      api_host: defenseclaw.defenseclaw.svc.cluster.local
+      api_host: 127.0.0.1
       api_bind: 0.0.0.0
       api_port: 18970
       otlp_forward_http_endpoint: http://splunk-otel-collector-agent.otel-splunk.svc:4318
@@ -1206,7 +1206,7 @@ data:
                 "name": "BridgeIT GPT-4o Mini",
                 "reasoning": false,
                 "input": ["text"],
-                "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+                "cost": { "input": 0.15, "output": 0.6, "cacheRead": 0.075, "cacheWrite": 0.15 },
                 "contextWindow": 128000,
                 "maxTokens": 8192
               }
@@ -1352,7 +1352,7 @@ spec:
               subPath: openclaw-client
       containers:
         - name: defenseclaw
-          image: 637423309390.dkr.ecr.us-east-1.amazonaws.com/defenseclaw:0.8.3-web-tui-20260707-162000-tokenomics-e2e-2352a4bb
+          image: 637423309390.dkr.ecr.us-east-1.amazonaws.com/defenseclaw:0.8.3-web-tui-20260708-224311-agent-controls-f456bbb3
           imagePullPolicy: IfNotPresent
           env:
             - name: HOME
@@ -1441,7 +1441,7 @@ spec:
             - mountPath: /tmp
               name: tmp
         - name: defenseclaw-web-tui
-          image: 637423309390.dkr.ecr.us-east-1.amazonaws.com/defenseclaw:0.8.3-web-tui-20260707-162000-tokenomics-e2e-2352a4bb
+          image: 637423309390.dkr.ecr.us-east-1.amazonaws.com/defenseclaw:0.8.3-web-tui-20260708-224311-agent-controls-f456bbb3
           imagePullPolicy: IfNotPresent
           command:
             - defenseclaw-gateway
@@ -1458,6 +1458,8 @@ spec:
           env:
             - name: HOME
               value: /home/node
+            - name: DEFENSECLAW_API_HOST
+              value: 127.0.0.1
             - name: OTEL_SERVICE_NAME
               value: defenseclaw
             - name: DEFENSECLAW_DECISION_EVIDENCE
@@ -1587,6 +1589,8 @@ metadata:
   namespace: defenseclaw
 spec:
   type: LoadBalancer
+  loadBalancerSourceRanges:
+    - 0.0.0.0/0
   selector:
     app.kubernetes.io/name: defenseclaw
   ports:
@@ -1608,6 +1612,8 @@ metadata:
   namespace: defenseclaw
 spec:
   type: LoadBalancer
+  loadBalancerSourceRanges:
+    - 0.0.0.0/0
   selector:
     app.kubernetes.io/name: defenseclaw
   ports:
@@ -1938,6 +1944,7 @@ spec:
                 ! grep -q '"bridgeit"' "${dst}" 2>/dev/null || \
                 grep -q 'bridgeit-rag' "${dst}" 2>/dev/null || \
                 grep -q '"primary": "bridgeit/gpt-5-nano"' "${dst}" 2>/dev/null || \
+                ! grep -q '"cost": { "input": 0.15, "output": 0.6, "cacheRead": 0.075, "cacheWrite": 0.15 }' "${dst}" 2>/dev/null || \
                 ! grep -q 'splunk-observability-cloud' "${dst}" 2>/dev/null || \
                 ! grep -q 'thousandeyes-mcp' "${dst}" 2>/dev/null || \
                 ! grep -q 'THOUSANDEYES_TOKEN_FILE' "${dst}" 2>/dev/null || \
@@ -2210,6 +2217,8 @@ metadata:
   namespace: defenseclaw
 spec:
   type: LoadBalancer
+  loadBalancerSourceRanges:
+    - 0.0.0.0/0
   selector:
     app.kubernetes.io/component: gateway
     app.kubernetes.io/name: openclaw
@@ -2364,6 +2373,8 @@ metadata:
   namespace: defenseclaw
 spec:
   type: LoadBalancer
+  loadBalancerSourceRanges:
+    - 0.0.0.0/0
   selector:
     app.kubernetes.io/name: splunk-local
   ports:
@@ -2598,6 +2609,8 @@ metadata:
   namespace: defenseclaw
 spec:
   type: LoadBalancer
+  loadBalancerSourceRanges:
+    - 0.0.0.0/0
   selector:
     app.kubernetes.io/component: server
     app.kubernetes.io/name: agent-control

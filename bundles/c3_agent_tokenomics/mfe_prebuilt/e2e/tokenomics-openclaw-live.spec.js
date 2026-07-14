@@ -30,10 +30,10 @@ function resolveURLs() {
   const tokenomicsUI = new URL(process.env.TOKENOMICS_UI_URL || DEFAULT_TOKENOMICS_UI_URL);
   const tokenomicsAPI = process.env.TOKENOMICS_API_URL
     ? new URL(process.env.TOKENOMICS_API_URL)
-    : new URL(`${tokenomicsUI.protocol}//${tokenomicsUI.hostname}:8787/v1/c3/agent-tokenomics`);
+    : new URL("/v1/c3/agent-tokenomics", tokenomicsUI);
   const tokenomicsHealth = process.env.TOKENOMICS_HEALTH_URL
     ? new URL(process.env.TOKENOMICS_HEALTH_URL)
-    : new URL(`${tokenomicsAPI.protocol}//${tokenomicsAPI.host}/healthz`);
+    : new URL("/healthz", tokenomicsUI);
   return {
     gatewayToken: process.env.OPENCLAW_GATEWAY_TOKEN || "",
     openClaw: process.env.OPENCLAW_CHAT_URL || DEFAULT_OPENCLAW_URL,
@@ -269,14 +269,6 @@ async function connectOpenClaw(page, gatewayToken) {
   await expect(composer).toBeEnabled();
 }
 
-async function reloadEmbeddedMFE(page) {
-  const embedded = page.frames().find((frame) => frame.url().includes("/embedded-live/"));
-  if (!embedded) {
-    throw new Error("embedded Tokenomics MFE frame was not loaded");
-  }
-  await embedded.goto(embedded.url(), { waitUntil: "domcontentloaded" });
-}
-
 async function restorePolicy(request, apiBase, originalPolicy) {
   let releaseError = null;
   try {
@@ -425,11 +417,7 @@ test("OpenClaw usage is governed through the live Tokenomics GUI", async ({ cont
 
       await page.bringToFront();
       await page.getByRole("button", { name: "Refresh" }).click();
-      await reloadEmbeddedMFE(page);
-      const embedded = page.frameLocator("#embedded-frame");
-      await expect(embedded.getByRole("button", { name: "Cost" })).toBeVisible();
-      await embedded.getByRole("button", { name: "Settings" }).click();
-      await expect(embedded.locator("#settings-cards")).toContainText("live DefenseClaw ledger");
+      await expect(page.locator("#tokenomics-ledger-status")).toContainText("1-device live ledger");
     });
 
     await test.step("Apply a deterministic deny policy through the GUI", async () => {
@@ -466,17 +454,9 @@ test("OpenClaw usage is governed through the live Tokenomics GUI", async ({ cont
     await test.step("Review policy evidence across the Tokenomics GUI", async () => {
       await page.bringToFront();
       await page.getByRole("button", { name: "Refresh" }).click();
-      await reloadEmbeddedMFE(page);
       await expect(page.locator("#status-banner")).toContainText(/live budget alert/i);
       await expect(page.locator("#alerts-list")).toContainText(AGENT_ID);
-
-      const embedded = page.frameLocator("#embedded-frame");
-      await embedded.getByRole("button", { name: "Budget" }).click();
-      await expect(embedded.locator("#policies-panel")).toContainText(AGENT_ID);
-      await embedded.getByRole("button", { name: "Controls" }).click();
-      await expect(embedded.locator("#controls-evidence")).toContainText(AGENT_ID);
-      await embedded.getByRole("button", { name: "Settings" }).click();
-      await expect(embedded.locator("#settings-cards")).toContainText("live DefenseClaw ledger");
+      await expect(page.locator("#policies-list")).toContainText(AGENT_ID);
     });
 
     await test.step("Release the policy through the GUI", async () => {

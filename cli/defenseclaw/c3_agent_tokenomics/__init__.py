@@ -8,11 +8,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Cisco Cloud Control Agent Tokenomics demo bridge.
+"""Deskside AI Resilience demo bridge.
 
 This package is intentionally thin: Splunk Observability remains the source of
 truth for token metrics, and Galileo Agent Control / runtime eval evidence is an
-optional server-side enrichment for the Cisco Cloud Control native app.
+optional server-side enrichment for Deskside AI Resilience in Cisco Cloud
+Control.
 """
 
 from .galileo import merge_galileo_enrichment, summarize_galileo

@@ -92,6 +92,15 @@ class GatewayClient:
     def release_control(self, payload: dict[str, Any]) -> Any:
         return self._request_json("POST", "/api/v1/budget-control/controls/release", body=payload)
 
+    def list_allowed_controls(self) -> Any:
+        return self._request_json("GET", "/enforce/allowed")
+
+    def allow_runtime_control(self, payload: dict[str, Any]) -> Any:
+        return self._request_json("POST", "/enforce/allow", body=payload)
+
+    def remove_runtime_control(self, payload: dict[str, Any]) -> Any:
+        return self._request_json("DELETE", "/enforce/allow", body=payload)
+
     def _request_json(
         self,
         method: str,

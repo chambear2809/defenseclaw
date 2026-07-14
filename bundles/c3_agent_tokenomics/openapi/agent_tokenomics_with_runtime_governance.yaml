@@ -1,13 +1,21 @@
 openapi: 3.0.3
 info:
-  title: Cisco Cloud Control Agent Tokenomics with Galileo Runtime Governance
-  version: 1.0.0
+  title: Deskside AI Resilience API
+  version: 1.7.0
   description: >-
-    Cisco Cloud Control-facing tokenomics and budget-control endpoint. The live
-    deployment reads DefenseClaw's local usage ledger and applies agent-scoped
-    policy to the DefenseClaw enforcement path. Galileo metadata is optional
-    server-side enrichment; a future Galileo SaaS control plane can write the
-    same policy contract without changing the runtime enforcement API.
+    Deskside AI Resilience tokenomics, budget-control, and agent-control API for
+    Cisco Cloud Control. Each managed AMD Deskside has one resident DefenseClaw
+    security agent that reports telemetry and applies local controls for
+    separate employee and task agents. The live deployment reads the resident
+    agent's usage ledger and applies budget and allow-list policy to its
+    enforcement path. The fleet inventory and Cisco ISE/C9350 network-action
+    endpoints in this demo are explicitly fixture-backed and simulated. Galileo
+    metadata is optional server-side enrichment; a future Galileo SaaS control
+    plane can write the same policy contract without changing the runtime
+    enforcement API.
+    Policy Studio can turn natural-language intent into a constrained,
+    non-executable guardrail draft, but staging a reviewed draft never mutates
+    live runtime enforcement.
 servers:
   - url: http://127.0.0.1:8787
 paths:
@@ -47,9 +55,225 @@ paths:
                     type: integer
         '503':
           description: DefenseClaw is required but unavailable or misconfigured.
+  /v1/c3/agent-tokenomics/fleet/overview:
+    get:
+      x-demo-inventory-fixture: true
+      summary: Get the simulated AMD Deskside fleet overview
+      description: >-
+        Returns demo inventory, model-routing, security-policy, and enforcement
+        timeline data. Inventory is fixture-backed. Each Deskside has one
+        resident DefenseClaw security agent; active_workload_agents and each
+        device's active_agents describe separate employee or task agents.
+      responses:
+        '200':
+          description: Simulated fleet overview with an explicit demo disclosure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FleetOverviewResponse'
+        '500':
+          description: The fleet demo fixture could not be loaded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/c3/agent-tokenomics/fleet/analytics:
+    get:
+      x-demo-analytics-fixture: true
+      summary: Get modeled AMD Deskside fleet tokenomics analytics
+      description: >-
+        Returns the maintained seven-day adoption and modeled-cost scenario used
+        by the Tokenomics demo. Employee, department, route, and estimated-cost
+        values are modeled and remain separate from the live DefenseClaw
+        ledger exposed by the summary and usage-row endpoints.
+      responses:
+        '200':
+          description: Modeled fleet analytics with explicit provenance markers.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FleetAnalyticsResponse'
+        '500':
+          description: The modeled fleet analytics fixture could not be loaded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/c3/agent-tokenomics/fleet/infrastructure:
+    get:
+      x-demo-infrastructure-fixture: true
+      summary: Get AMD Deskside infrastructure telemetry aggregated by Splunk Observability
+      description: >-
+        Returns a production-shaped, deterministic demo contract for CPU,
+        memory, GPU, endpoint network, power, and energy telemetry. Every
+        fixture value carries explicit quality and Splunk Observability source
+        provenance. A device filter recalculates the summary and deterministic
+        trend series for the selected device.
+      parameters:
+        - in: query
+          name: window
+          schema:
+            type: string
+            enum: [-1h, -6h, -24h]
+            default: -24h
+        - in: query
+          name: resolution
+          schema:
+            type: string
+            enum: [1h, 6h]
+            default: 1h
+        - in: query
+          name: device_id
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 128
+            pattern: '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$'
+      responses:
+        '200':
+          description: Infrastructure telemetry with explicit synthetic provenance and freshness.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FleetInfrastructureResponse'
+        '400':
+          description: Invalid or repeated window, resolution, or device identifier.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: The requested device is not present in the infrastructure fixture.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: The infrastructure fixture could not be loaded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/c3/agent-tokenomics/fleet/demo/reset:
+    post:
+      x-demo-simulated: true
+      summary: Reset the simulated AMD Deskside demo to its pristine baseline
+      description: >-
+        Clears mutable in-memory demo state and returns a fresh fleet overview
+        loaded from the maintained fixture. This demo-only operation resets
+        policy, device, event-timeline, network-action, and restore state. It
+        does not change live DefenseClaw, Cisco ISE, or Cisco C9350 state.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FleetDemoResetInput'
+      responses:
+        '200':
+          description: Reset confirmation together with the fresh simulated fleet overview.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FleetDemoResetResponse'
+        '400':
+          description: Invalid field, reason, or JSON body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          description: Request body exceeds 64 KiB.
+        '500':
+          description: The fleet demo fixture could not be reloaded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/c3/agent-tokenomics/security/policy:
+    post:
+      x-demo-simulated: true
+      summary: Enable or disable simulated automatic network quarantine
+      description: >-
+        Updates in-memory demo policy state only. No production Cisco ISE or
+        Cisco C9350 system is called. Disabling automatic quarantine prevents
+        future simulated actions and does not release existing quarantines.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SecurityPolicyUpdateInput'
+      responses:
+        '200':
+          description: Updated or already-matching simulated policy state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SecurityPolicyMutationResponse'
+        '400':
+          description: Invalid field, value, or JSON body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: The expected policy version does not match current state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          description: Request body exceeds 64 KiB.
+  /v1/c3/agent-tokenomics/fleet/desksides/{device_id}/network-action:
+    post:
+      x-demo-simulated: true
+      summary: Simulate quarantine or restore for one AMD Deskside
+      description: >-
+        Mutates demo inventory and appends a simulated Cloud Control, Cisco ISE,
+        RADIUS CoA, and Cisco C9350 acknowledgement chain. The resident
+        DefenseClaw agent remains distinct from employee and task agents on the
+        selected device. No production network system is called.
+      parameters:
+        - in: path
+          name: device_id
+          required: true
+          description: Stable demo AMD Deskside identifier.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 128
+            pattern: '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NetworkActionInput'
+      responses:
+        '200':
+          description: Idempotent simulated network-action result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NetworkActionResponse'
+        '400':
+          description: Invalid device identifier, field, value, or JSON body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: The demo inventory does not contain the requested Deskside.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          description: Request body exceeds 64 KiB.
   /v1/c3/agent-tokenomics/summary:
     get:
-      summary: Cisco Cloud Control Agent Tokenomics summary
+      summary: Deskside AI Resilience tokenomics summary
       parameters:
         - in: query
           name: tenant_id
@@ -74,7 +298,9 @@ paths:
           description: Attach Galileo runtime controls and eval evidence.
       responses:
         '200':
-          description: Live DefenseClaw tokenomics summary, optionally enriched with Galileo metadata.
+          description: >-
+            Tokenomics for workload agents, reported by the resident
+            DefenseClaw security agent and optionally enriched with Galileo metadata.
           content:
             application/json:
               schema:
@@ -92,7 +318,9 @@ paths:
             default: -24h
       responses:
         '200':
-          description: Rows transformed from DefenseClaw budget usage observations.
+          description: >-
+            Workload-agent rows transformed from observations reported by the
+            resident DefenseClaw security agent.
           content:
             application/json:
               schema:
@@ -107,7 +335,9 @@ paths:
           name: agent_id
           schema:
             type: string
-          description: Resolve the exact policy or catch-all policy effective for one agent.
+          description: >-
+            Resolve the exact policy or catch-all policy effective for one
+            employee/task agent, as enforced by resident DefenseClaw.
       responses:
         '200':
           description: Effective policies.
@@ -119,6 +349,180 @@ paths:
                   $ref: '#/components/schemas/BudgetPolicy'
         '503':
           description: DefenseClaw policy storage is unavailable.
+  /v1/c3/agent-tokenomics/agent-controls/allowed:
+    get:
+      summary: List exact command approvals and tool scan exceptions
+      description: >-
+        Returns only DefenseClaw allow-list entries whose target type is
+        command or tool. Command entries are exact approvals; tool entries are
+        exact-name scan exceptions. Skill, plugin, and MCP records remain
+        outside this focused operator surface.
+      responses:
+        '200':
+          description: Exact command approvals and exact-name tool scan exceptions.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/RuntimeControlEntry'
+        '503':
+          description: DefenseClaw enforcement storage is unavailable.
+  /v1/c3/agent-tokenomics/agent-controls/allow:
+    post:
+      summary: Create an exact command approval or tool scan exception
+      description: >-
+        Command approvals match the complete command policy key rather than
+        every invocation of the executable. Built-in dangerous-command checks
+        run first and cannot be bypassed by this approval. Tool entries skip
+        the ordinary scan gate and do not grant workspace, path, network, or
+        identity scope. The hook lane retains CodeGuard only for recognized
+        write tools with inspectable arguments; the sidecar lane treats the
+        entry as a full scan bypass.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RuntimeControlInput'
+      responses:
+        '200':
+          description: Approval persisted. Clients should refresh the allowed list to confirm current state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuntimeControlMutationResponse'
+        '400':
+          description: Invalid target type, target name, or reason.
+        '413':
+          description: Request body exceeds 64 KiB.
+        '503':
+          description: DefenseClaw enforcement storage is unavailable.
+  /v1/c3/agent-tokenomics/agent-controls/remove:
+    post:
+      summary: Remove one exact command approval or tool scan exception
+      description: >-
+        This Cloud Control-facing POST is translated by the BFF into a DELETE
+        against DefenseClaw's authenticated enforcement API. It removes only
+        the exact target type and target name supplied.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RuntimeControlInput'
+      responses:
+        '200':
+          description: Approval removed. Clients should refresh the allowed list to confirm current state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuntimeControlMutationResponse'
+        '400':
+          description: Invalid target type, target name, or reason.
+        '413':
+          description: Request body exceeds 64 KiB.
+        '503':
+          description: DefenseClaw enforcement storage is unavailable.
+  /v1/c3/agent-tokenomics/policy-studio/drafts:
+    post:
+      summary: Generate a constrained agent guardrail draft from natural-language intent
+      description: >-
+        Uses the configured approved model provider when available and a
+        disclosed deterministic template otherwise. Operator text and model
+        output are untrusted. The BFF normalizes the result into fixed enums
+        and a server-owned AgentGuardrailDraft JSON preview. This endpoint has
+        no runtime policy side effects and never accepts executable Rego or YAML.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PolicyStudioDraftInput'
+      responses:
+        '201':
+          description: Server-held guardrail draft generated and validated for operator inspection.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyStudioDraftResponse'
+        '400':
+          description: Invalid, unsupported, or oversized intent field.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: The referenced previous draft does not exist.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: The previous draft belongs to another conversation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          description: Request body exceeds 64 KiB.
+        '429':
+          description: Policy Studio generation concurrency or per-minute capacity was exceeded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/c3/agent-tokenomics/policy-studio/drafts/{draft_id}/apply:
+    post:
+      summary: Record a demo operator acknowledgment and stage a server-held guardrail draft
+      description: >-
+        Requires explicit operator acknowledgment and an optimistic version match.
+        The server uses its held draft rather than accepting policy JSON from
+        the browser. The resulting stage is process-local and explicitly not
+        enforced; a separate approved deployment workflow is required to
+        change DefenseClaw runtime policy. This demo endpoint has no
+        authenticated principal, so its review record is explicitly marked as
+        unverified and must not be used as approval evidence.
+      parameters:
+        - in: path
+          name: draft_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PolicyStudioStageInput'
+      responses:
+        '200':
+          description: Demo acknowledgment recorded and draft staged without changing live enforcement.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyStudioStageResponse'
+        '400':
+          description: Review was not confirmed or a field is invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: The server-held draft does not exist.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: The draft version is stale or the draft was already staged.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          description: Request body exceeds 64 KiB.
   /v1/c3/agent-tokenomics/alerts:
     get:
       summary: List budget breach alerts
@@ -190,6 +594,1209 @@ paths:
           description: DefenseClaw control is unavailable.
 components:
   schemas:
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+        detail:
+          type: string
+        device_id:
+          type: string
+      additionalProperties: true
+    FleetOverviewResponse:
+      type: object
+      required:
+        - schema_version
+        - generated_at
+        - source
+        - fleet
+        - network_topology
+        - model_routes
+        - security_policy
+        - integrations
+        - devices
+        - enforcement_events
+        - demo
+      properties:
+        schema_version:
+          type: string
+          enum: [c3.amd_deskside_fleet.v1]
+        generated_at:
+          type: string
+          format: date-time
+        source:
+          type: string
+          enum: [amd_deskside_demo_inventory]
+        fleet:
+          $ref: '#/components/schemas/FleetSummary'
+        network_topology:
+          $ref: '#/components/schemas/NetworkTopology'
+        model_routes:
+          type: array
+          items:
+            $ref: '#/components/schemas/ModelRoute'
+        security_policy:
+          $ref: '#/components/schemas/SecurityPolicy'
+        integrations:
+          type: array
+          items:
+            $ref: '#/components/schemas/FleetIntegration'
+        devices:
+          type: array
+          items:
+            $ref: '#/components/schemas/DesksideDevice'
+        enforcement_events:
+          type: array
+          items:
+            $ref: '#/components/schemas/NetworkEnforcementEvent'
+        demo:
+          $ref: '#/components/schemas/FleetDemoDisclosure'
+    NetworkTopology:
+      type: object
+      additionalProperties: false
+      description: >-
+        Fixture-backed reference campus architecture. This object identifies
+        the intended C9550 core and C9350 access roles; it is not discovered
+        production inventory and its capability labels are not observed
+        telemetry.
+      required: [architecture, core, access]
+      properties:
+        architecture:
+          type: string
+          enum: [reference-campus]
+        core:
+          $ref: '#/components/schemas/NetworkTopologyCore'
+        access:
+          $ref: '#/components/schemas/NetworkTopologyAccess'
+    NetworkTopologyCore:
+      type: object
+      additionalProperties: false
+      required:
+        - display_name
+        - official_model
+        - role
+        - deployment
+        - message
+        - capabilities
+      properties:
+        display_name:
+          type: string
+          enum: [Cisco C9550]
+        official_model:
+          type: string
+          enum: [Cisco C9550 Series Smart Switches]
+          description: Official Cisco series name used by this reference architecture.
+        role:
+          type: string
+          enum: [Core + aggregation]
+        deployment:
+          type: string
+          enum: [Logical core pair]
+          description: >-
+            One logical core tier represented by a resilient pair; this is a
+            design statement, not live device-count telemetry.
+        message:
+          type: string
+          enum: [Campus backbone for agentic AI]
+        capabilities:
+          $ref: '#/components/schemas/NetworkTopologyCoreCapabilities'
+    NetworkTopologyCoreCapabilities:
+      type: object
+      additionalProperties: false
+      description: >-
+        Published C9550 series maxima for reference-design context. These are
+        not measured capacity, current utilization, or guarantees for every SKU.
+      required: [switching_capacity, uplink_speed]
+      properties:
+        switching_capacity:
+          type: object
+          additionalProperties: false
+          required: [label, basis]
+          properties:
+            label:
+              type: string
+              enum: [Up to 6.4 Tbps]
+            basis:
+              type: string
+              enum: [series-maximum]
+              description: Published series maximum; never observed telemetry.
+        uplink_speed:
+          type: object
+          additionalProperties: false
+          required: [label, basis]
+          properties:
+            label:
+              type: string
+              enum: [Up to 400G]
+            basis:
+              type: string
+              enum: [series-maximum]
+              description: Published series maximum; never observed telemetry.
+    NetworkTopologyAccess:
+      type: object
+      additionalProperties: false
+      required:
+        - display_name
+        - official_model
+        - role
+        - switch_count
+        - capabilities
+      properties:
+        display_name:
+          type: string
+          enum: [Cisco C9350]
+        official_model:
+          type: string
+          enum: [Cisco C9350 Series Smart Switches]
+          description: Official Cisco series name used by this reference architecture.
+        role:
+          type: string
+          enum: [Fixed campus access]
+        switch_count:
+          type: integer
+          minimum: 1
+          description: Number of access-switch nodes represented by the demo fixture.
+        capabilities:
+          $ref: '#/components/schemas/NetworkTopologyAccessCapabilities'
+    NetworkTopologyAccessCapabilities:
+      type: object
+      additionalProperties: false
+      description: >-
+        Published C9350 series maximum for reference-design context. This is
+        not measured uplink speed or a guarantee for every SKU or configuration.
+      required: [uplink_speed]
+      properties:
+        uplink_speed:
+          type: object
+          additionalProperties: false
+          required: [label, basis]
+          properties:
+            label:
+              type: string
+              enum: [Up to 100G]
+            basis:
+              type: string
+              enum: [series-maximum]
+              description: Published series maximum; never observed telemetry.
+    FleetAnalyticsResponse:
+      type: object
+      required:
+        - schema_version
+        - generated_at
+        - source
+        - debug
+        - scope
+        - disclosure
+        - dimensions
+        - adoption
+        - cost
+      properties:
+        schema_version:
+          type: string
+          enum: [c3.agent_tokenomics.fleet_analytics.v1]
+        generated_at:
+          type: string
+          format: date-time
+        source:
+          type: string
+          enum: [amd_deskside_demo_scenario]
+        debug:
+          type: object
+          required: [fixture_backed]
+          properties:
+            fixture_backed:
+              type: boolean
+              enum: [true]
+          additionalProperties: true
+        scope:
+          $ref: '#/components/schemas/FleetAnalyticsScope'
+        disclosure:
+          $ref: '#/components/schemas/FleetAnalyticsDisclosure'
+        dimensions:
+          $ref: '#/components/schemas/FleetAnalyticsDimensions'
+        adoption:
+          $ref: '#/components/schemas/FleetAdoptionAnalytics'
+        cost:
+          $ref: '#/components/schemas/FleetCostAnalytics'
+    FleetInfrastructureResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - schema_version
+        - generated_at
+        - source
+        - debug
+        - disclosure
+        - scope
+        - fleet_summary
+        - devices
+        - series
+      properties:
+        schema_version:
+          type: string
+          enum: [c3.agent_tokenomics.fleet_infrastructure.v1]
+        generated_at:
+          type: string
+          format: date-time
+        source:
+          type: string
+          enum: [splunk_o11y_synthetic_demo]
+        debug:
+          $ref: '#/components/schemas/FleetInfrastructureDebug'
+        disclosure:
+          $ref: '#/components/schemas/FleetInfrastructureDisclosure'
+        scope:
+          $ref: '#/components/schemas/FleetInfrastructureScope'
+        fleet_summary:
+          $ref: '#/components/schemas/FleetInfrastructureSummary'
+        devices:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/FleetInfrastructureDevice'
+        series:
+          $ref: '#/components/schemas/FleetInfrastructureSeries'
+    FleetInfrastructureDebug:
+      type: object
+      additionalProperties: true
+      required: [fixture_backed, synthetic, requested_filters]
+      properties:
+        fixture_backed:
+          type: boolean
+          enum: [true]
+        synthetic:
+          type: boolean
+          enum: [true]
+        requested_filters:
+          $ref: '#/components/schemas/FleetInfrastructureRequestedFilters'
+    FleetInfrastructureRequestedFilters:
+      type: object
+      additionalProperties: false
+      required: [window, resolution, device_id]
+      properties:
+        window:
+          type: string
+          enum: [-1h, -6h, -24h]
+        resolution:
+          type: string
+          enum: [1h, 6h]
+        device_id:
+          type: string
+          nullable: true
+    FleetInfrastructureDisclosure:
+      type: object
+      additionalProperties: false
+      required: [status, label, message]
+      properties:
+        status:
+          type: string
+          enum: [synthetic]
+        label:
+          type: string
+        message:
+          type: string
+    FleetInfrastructureScope:
+      type: object
+      additionalProperties: false
+      required: [fleet_id, fleet_name, window, resolution, device_id, timezone]
+      properties:
+        fleet_id:
+          type: string
+        fleet_name:
+          type: string
+        window:
+          type: string
+          enum: [-1h, -6h, -24h]
+        resolution:
+          type: string
+          enum: [1h, 6h]
+        device_id:
+          type: string
+          nullable: true
+        timezone:
+          type: string
+          enum: [UTC]
+    InfrastructureMetric:
+      type: object
+      additionalProperties: false
+      required: [value, unit, quality, source]
+      properties:
+        value:
+          type: number
+          nullable: true
+        unit:
+          type: string
+          enum: ['%', Mbps, W, kWh]
+        quality:
+          type: string
+          enum: [observed, derived, synthetic, unavailable]
+        source:
+          type: string
+          pattern: '^splunk_o11y_'
+        method:
+          type: string
+        coverage:
+          type: string
+    FleetInfrastructureSummary:
+      type: object
+      additionalProperties: false
+      required:
+        - avg_cpu_utilization
+        - avg_memory_utilization
+        - avg_gpu_utilization
+        - avg_network_link_utilization
+        - total_network_receive
+        - total_network_transmit
+        - current_power
+        - energy_24h
+        - energy_7d
+        - reporting_devices
+        - stale_devices
+      properties:
+        avg_cpu_utilization:
+          $ref: '#/components/schemas/InfrastructureMetric'
+        avg_memory_utilization:
+          $ref: '#/components/schemas/InfrastructureMetric'
+        avg_gpu_utilization:
+          $ref: '#/components/schemas/InfrastructureMetric'
+        avg_network_link_utilization:
+          $ref: '#/components/schemas/InfrastructureMetric'
+        total_network_receive:
+          $ref: '#/components/schemas/InfrastructureMetric'
+        total_network_transmit:
+          $ref: '#/components/schemas/InfrastructureMetric'
+        current_power:
+          $ref: '#/components/schemas/InfrastructureMetric'
+        energy_24h:
+          $ref: '#/components/schemas/InfrastructureMetric'
+        energy_7d:
+          $ref: '#/components/schemas/InfrastructureMetric'
+        reporting_devices:
+          type: integer
+          minimum: 0
+        stale_devices:
+          type: integer
+          minimum: 0
+    FleetInfrastructureDeviceContext:
+      type: object
+      additionalProperties: false
+      required: [tokens_7d]
+      properties:
+        tokens_7d:
+          type: integer
+          minimum: 0
+          description: Tokenomics context only; not an infrastructure metric.
+    FleetInfrastructureDeviceMetrics:
+      type: object
+      additionalProperties: false
+      required:
+        - cpu_utilization
+        - memory_utilization
+        - gpu_utilization
+        - network_receive
+        - network_transmit
+        - network_link_utilization
+        - network_link_speed
+        - power
+        - energy_24h
+        - energy_7d
+      properties:
+        cpu_utilization:
+          $ref: '#/components/schemas/InfrastructureMetric'
+        memory_utilization:
+          $ref: '#/components/schemas/InfrastructureMetric'
+        gpu_utilization:
+          $ref: '#/components/schemas/InfrastructureMetric'
+        network_receive:
+          $ref: '#/components/schemas/InfrastructureMetric'
+        network_transmit:
+          $ref: '#/components/schemas/InfrastructureMetric'
+        network_link_utilization:
+          $ref: '#/components/schemas/InfrastructureMetric'
+        network_link_speed:
+          $ref: '#/components/schemas/InfrastructureMetric'
+        power:
+          $ref: '#/components/schemas/InfrastructureMetric'
+        energy_24h:
+          $ref: '#/components/schemas/InfrastructureMetric'
+        energy_7d:
+          $ref: '#/components/schemas/InfrastructureMetric'
+    FleetInfrastructureDevice:
+      type: object
+      additionalProperties: false
+      required: [device_id, observed_at, freshness_seconds, stale, context, metrics]
+      properties:
+        device_id:
+          type: string
+        observed_at:
+          type: string
+          format: date-time
+        freshness_seconds:
+          type: integer
+          minimum: 0
+        stale:
+          type: boolean
+        context:
+          $ref: '#/components/schemas/FleetInfrastructureDeviceContext'
+        metrics:
+          $ref: '#/components/schemas/FleetInfrastructureDeviceMetrics'
+    FleetInfrastructureSeriesPoint:
+      type: object
+      additionalProperties: false
+      required: [timestamp, value]
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        value:
+          type: number
+          nullable: true
+    FleetInfrastructureSeries:
+      type: object
+      additionalProperties: false
+      required:
+        - cpu_utilization
+        - memory_utilization
+        - gpu_utilization
+        - network_receive
+        - network_transmit
+        - power
+      properties:
+        cpu_utilization:
+          type: array
+          items:
+            $ref: '#/components/schemas/FleetInfrastructureSeriesPoint'
+        memory_utilization:
+          type: array
+          items:
+            $ref: '#/components/schemas/FleetInfrastructureSeriesPoint'
+        gpu_utilization:
+          type: array
+          items:
+            $ref: '#/components/schemas/FleetInfrastructureSeriesPoint'
+        network_receive:
+          type: array
+          items:
+            $ref: '#/components/schemas/FleetInfrastructureSeriesPoint'
+        network_transmit:
+          type: array
+          items:
+            $ref: '#/components/schemas/FleetInfrastructureSeriesPoint'
+        power:
+          type: array
+          items:
+            $ref: '#/components/schemas/FleetInfrastructureSeriesPoint'
+    FleetAnalyticsScope:
+      type: object
+      required: [fleet_id, fleet_name, window, window_label, timezone]
+      properties:
+        fleet_id:
+          type: string
+        fleet_name:
+          type: string
+        window:
+          type: string
+          enum: [-7d]
+        window_label:
+          type: string
+        timezone:
+          type: string
+      additionalProperties: false
+    FleetAnalyticsDisclosure:
+      type: object
+      required: [status, label, message, local_cost_note]
+      properties:
+        status:
+          type: string
+          enum: [illustrative]
+        label:
+          type: string
+        message:
+          type: string
+        local_cost_note:
+          type: string
+      additionalProperties: true
+    FleetAnalyticsDimensions:
+      type: object
+      required: [providers, models, teams, users, agents]
+      properties:
+        providers:
+          type: array
+          items:
+            $ref: '#/components/schemas/FleetAnalyticsProvider'
+        models:
+          type: array
+          items:
+            $ref: '#/components/schemas/FleetAnalyticsModel'
+        teams:
+          type: array
+          items:
+            $ref: '#/components/schemas/FleetAnalyticsTeam'
+        users:
+          type: array
+          items:
+            $ref: '#/components/schemas/FleetAnalyticsUser'
+        agents:
+          type: array
+          items:
+            $ref: '#/components/schemas/FleetAnalyticsAgent'
+      additionalProperties: false
+    FleetAnalyticsProvider:
+      type: object
+      required: [provider_id, name, kind, route_label]
+      properties:
+        provider_id:
+          type: string
+        name:
+          type: string
+        kind:
+          type: string
+          enum: [local, frontier]
+        route_label:
+          type: string
+      additionalProperties: false
+    FleetAnalyticsModel:
+      type: object
+      required: [model_id, name, provider_id]
+      properties:
+        model_id:
+          type: string
+        name:
+          type: string
+        provider_id:
+          type: string
+      additionalProperties: false
+    FleetAnalyticsTeam:
+      type: object
+      required: [team_id, name]
+      properties:
+        team_id:
+          type: string
+        name:
+          type: string
+      additionalProperties: false
+    FleetAnalyticsUser:
+      type: object
+      required: [user_id, display_name, team_id, job_family, device_id]
+      properties:
+        user_id:
+          type: string
+        display_name:
+          type: string
+        team_id:
+          type: string
+        job_family:
+          type: string
+        device_id:
+          type: string
+      additionalProperties: false
+    FleetAnalyticsAgent:
+      type: object
+      required: [agent_id, name, kind]
+      properties:
+        agent_id:
+          type: string
+        name:
+          type: string
+        kind:
+          type: string
+          enum: [workload, resident-security]
+      additionalProperties: false
+    FleetAdoptionAnalytics:
+      type: object
+      required: [status, summary, provider_totals, daily_active_users, team_provider_matrix]
+      properties:
+        status:
+          type: string
+          enum: [illustrative]
+        summary:
+          $ref: '#/components/schemas/FleetAdoptionSummary'
+        provider_totals:
+          type: array
+          items:
+            $ref: '#/components/schemas/FleetProviderAdoptionTotal'
+        daily_active_users:
+          type: array
+          items:
+            $ref: '#/components/schemas/FleetDailyProviderAdoption'
+        team_provider_matrix:
+          type: array
+          items:
+            $ref: '#/components/schemas/FleetTeamProviderAdoption'
+      additionalProperties: false
+    FleetAdoptionSummary:
+      type: object
+      required: [total_employees, active_users, active_user_percent, reporting_desksides]
+      properties:
+        total_employees:
+          type: integer
+          minimum: 0
+        active_users:
+          type: integer
+          minimum: 0
+        active_user_percent:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 100
+        reporting_desksides:
+          type: integer
+          minimum: 0
+      additionalProperties: false
+    FleetProviderAdoptionTotal:
+      type: object
+      required: [provider_id, active_users, change_from_previous_window]
+      properties:
+        provider_id:
+          type: string
+        active_users:
+          type: integer
+          minimum: 0
+        change_from_previous_window:
+          type: integer
+      additionalProperties: false
+    FleetDailyProviderAdoption:
+      type: object
+      required: [date, provider_id, active_users]
+      properties:
+        date:
+          type: string
+          format: date
+        provider_id:
+          type: string
+        active_users:
+          type: integer
+          minimum: 0
+      additionalProperties: false
+    FleetTeamProviderAdoption:
+      type: object
+      required: [team_id, provider_id, active_users]
+      properties:
+        team_id:
+          type: string
+        provider_id:
+          type: string
+        active_users:
+          type: integer
+          minimum: 0
+      additionalProperties: false
+    FleetCostAnalytics:
+      type: object
+      required: [status, currency, summary, organization_projection, daily_provider_cost, detail_rows]
+      properties:
+        status:
+          type: string
+          enum: [illustrative]
+        currency:
+          type: string
+          enum: [USD]
+        summary:
+          $ref: '#/components/schemas/FleetCostSummary'
+        organization_projection:
+          $ref: '#/components/schemas/FleetOrganizationProjection'
+        daily_provider_cost:
+          type: array
+          items:
+            $ref: '#/components/schemas/FleetDailyProviderCost'
+        detail_rows:
+          type: array
+          items:
+            $ref: '#/components/schemas/FleetCostDetailRow'
+      additionalProperties: false
+    FleetOrganizationProjection:
+      type: object
+      additionalProperties: false
+      required:
+        - status
+        - basis_window_days
+        - annualization_weeks
+        - modeled_non_halo_developers
+        - modeled_non_halo_cloud_tokens
+        - modeled_non_halo_estimated_cost_usd
+        - description
+      properties:
+        status:
+          type: string
+          enum: [illustrative]
+        basis_window_days:
+          type: integer
+          minimum: 1
+        annualization_weeks:
+          type: integer
+          minimum: 1
+        modeled_non_halo_developers:
+          type: integer
+          minimum: 0
+        modeled_non_halo_cloud_tokens:
+          type: integer
+          minimum: 0
+        modeled_non_halo_estimated_cost_usd:
+          type: number
+          format: double
+          minimum: 0
+        description:
+          type: string
+    FleetCostSummary:
+      type: object
+      required:
+        - total_tokens
+        - cloud_tokens
+        - local_tokens
+        - estimated_cloud_cost_usd
+        - billed_local_model_cost_usd
+        - estimated_cloud_cost_avoided_usd
+      properties:
+        total_tokens:
+          type: integer
+          minimum: 0
+        cloud_tokens:
+          type: integer
+          minimum: 0
+        local_tokens:
+          type: integer
+          minimum: 0
+        estimated_cloud_cost_usd:
+          type: number
+          format: double
+          minimum: 0
+        billed_local_model_cost_usd:
+          type: number
+          format: double
+          minimum: 0
+        estimated_cloud_cost_avoided_usd:
+          type: number
+          format: double
+          minimum: 0
+      additionalProperties: false
+    FleetDailyProviderCost:
+      type: object
+      required: [date, provider_id, estimated_cost_usd]
+      properties:
+        date:
+          type: string
+          format: date
+        provider_id:
+          type: string
+        estimated_cost_usd:
+          type: number
+          format: double
+          minimum: 0
+      additionalProperties: false
+    FleetCostDetailRow:
+      type: object
+      required:
+        - row_id
+        - user_id
+        - team_id
+        - device_id
+        - agent_id
+        - provider_id
+        - model_id
+        - tasks
+        - requests
+        - total_tokens
+        - estimated_cost_usd
+      properties:
+        row_id:
+          type: string
+        user_id:
+          type: string
+        team_id:
+          type: string
+        device_id:
+          type: string
+        agent_id:
+          type: string
+        provider_id:
+          type: string
+        model_id:
+          type: string
+        tasks:
+          type: integer
+          minimum: 0
+        requests:
+          type: integer
+          minimum: 0
+        total_tokens:
+          type: integer
+          minimum: 0
+        estimated_cost_usd:
+          type: number
+          format: double
+          minimum: 0
+      additionalProperties: false
+    FleetSummary:
+      type: object
+      required:
+        - fleet_id
+        - name
+        - total_devices
+        - online_devices
+        - protected_devices
+        - quarantined_devices
+        - active_workload_agents
+        - resident_defenseclaw_agents
+      properties:
+        fleet_id:
+          type: string
+        name:
+          type: string
+        total_devices:
+          type: integer
+          minimum: 0
+        online_devices:
+          type: integer
+          minimum: 0
+        protected_devices:
+          type: integer
+          minimum: 0
+        quarantined_devices:
+          type: integer
+          minimum: 0
+        active_workload_agents:
+          type: integer
+          minimum: 0
+          description: >-
+            Employee and task agents running across the fleet. This count does
+            not include resident DefenseClaw security agents.
+        resident_defenseclaw_agents:
+          type: integer
+          minimum: 0
+          description: >-
+            Resident DefenseClaw security agents enrolled on the Desksides,
+            normally one per managed device; these are not workload agents.
+        tasks_today:
+          type: integer
+          minimum: 0
+        local_execution_percent:
+          type: number
+          minimum: 0
+          maximum: 100
+        cloud_cost_avoided_usd:
+          type: number
+          minimum: 0
+        network_action_count:
+          type: integer
+          minimum: 0
+        last_network_action_at:
+          type: string
+          format: date-time
+    ModelRoute:
+      type: object
+      required: [id, name, provider, kind, status]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        provider:
+          type: string
+        kind:
+          type: string
+          enum: [local, cloud]
+        status:
+          type: string
+        task_count:
+          type: integer
+          minimum: 0
+        share_percent:
+          type: number
+          minimum: 0
+          maximum: 100
+        estimated_spend_usd:
+          type: number
+          minimum: 0
+        policy:
+          type: string
+    SecurityPolicy:
+      type: object
+      required:
+        - policy_id
+        - version
+        - auto_quarantine
+        - mode
+        - trigger
+        - policy_name
+        - simulated
+        - integration_state
+      properties:
+        policy_id:
+          type: string
+        version:
+          type: integer
+          minimum: 1
+        auto_quarantine:
+          type: boolean
+        mode:
+          type: string
+          enum: [monitor, enforce]
+        scope:
+          type: string
+        trigger:
+          type: string
+          description: Security trigger only; a budget breach does not network-quarantine a Deskside.
+        policy_name:
+          type: string
+        ise_action:
+          type: string
+        catalyst_enforcement:
+          type: string
+          description: >-
+            Legacy API field name. The canonical fixture value describes Cisco
+            C9350 access-switch enforcement.
+        budget_breach_action:
+          type: string
+        updated_at:
+          type: string
+          format: date-time
+        updated_by:
+          type: string
+        change_reason:
+          type: string
+        simulated:
+          type: boolean
+          enum: [true]
+          description: Always true for this demo policy endpoint.
+        integration_state:
+          type: string
+          enum: [demo-ready]
+    FleetIntegration:
+      type: object
+      required: [id, name, status, detail]
+      properties:
+        id:
+          type: string
+          enum: [defenseclaw, ise, cisco_network, catalyst]
+          description: >-
+            cisco_network is canonical; catalyst remains accepted for legacy
+            fixture compatibility.
+        name:
+          type: string
+        status:
+          type: string
+          enum: [connected, demo-ready, degraded, unavailable, offline, disconnected, failed, error]
+        detail:
+          type: string
+    DesksideDevice:
+      type: object
+      required:
+        - device_id
+        - status
+        - risk
+        - active_agents
+        - defenseclaw_status
+        - quarantined
+      properties:
+        device_id:
+          type: string
+        employee:
+          type: string
+        department:
+          type: string
+        site:
+          type: string
+        status:
+          type: string
+          enum: [online, offline, quarantined]
+        risk:
+          type: string
+          enum: [healthy, review, critical, quarantined]
+        risk_reason:
+          type: string
+        active_agents:
+          type: integer
+          minimum: 0
+          description: >-
+            Active employee and task agents on this Deskside. The resident
+            DefenseClaw security agent is represented separately.
+        agent_names:
+          type: array
+          description: >-
+            Demo display names. A DefenseClaw entry identifies the one resident
+            security agent and must not be treated as an employee/task agent.
+          items:
+            type: string
+        defenseclaw_status:
+          type: string
+          enum: [reporting, offline]
+          description: Status of the single resident DefenseClaw security agent.
+        tasks_today:
+          type: integer
+          minimum: 0
+        model_route:
+          type: string
+        mac_address:
+          type: string
+        switch_name:
+          type: string
+          description: Fixture identifier for the endpoint's Cisco C9350 access switch.
+        switch_port:
+          type: string
+        nas_ip_address:
+          type: string
+        ise_policy:
+          type: string
+        network_access:
+          type: string
+        quarantined:
+          type: boolean
+    NetworkEnforcementEvent:
+      type: object
+      required: [event_id, device_id, stage, status, title, detail, occurred_at]
+      properties:
+        event_id:
+          type: string
+        device_id:
+          type: string
+        stage:
+          type: string
+          enum: [detect, cloud-control, ise, coa, enforce]
+        status:
+          type: string
+          enum: [complete]
+        title:
+          type: string
+        detail:
+          type: string
+        action:
+          type: string
+          enum: [quarantine, restore]
+        occurred_at:
+          type: string
+          format: date-time
+        simulated:
+          type: boolean
+          enum: [true]
+    FleetDemoDisclosure:
+      type: object
+      required: [inventory_is_fixture, network_actions_are_simulated, note]
+      properties:
+        inventory_is_fixture:
+          type: boolean
+          enum: [true]
+        network_actions_are_simulated:
+          type: boolean
+          enum: [true]
+        note:
+          type: string
+    FleetDemoResetInput:
+      type: object
+      additionalProperties: false
+      properties:
+        reason:
+          type: string
+          maxLength: 512
+          pattern: '^[^\r\n\u0000]*$'
+          description: Optional single-line presenter or test reset reason.
+          example: Prepare the next presenter run
+    FleetDemoResetStatus:
+      type: object
+      required: [completed, reason, simulated]
+      properties:
+        completed:
+          type: boolean
+          enum: [true]
+        reason:
+          type: string
+        simulated:
+          type: boolean
+          enum: [true]
+          description: The reset affects demo state only.
+    FleetDemoResetResponse:
+      allOf:
+        - $ref: '#/components/schemas/FleetOverviewResponse'
+        - type: object
+          required: [reset]
+          properties:
+            reset:
+              $ref: '#/components/schemas/FleetDemoResetStatus'
+    SecurityPolicyUpdateInput:
+      type: object
+      additionalProperties: false
+      required: [enabled]
+      properties:
+        enabled:
+          type: boolean
+        expected_version:
+          type: integer
+          minimum: 1
+          description: Optional optimistic-concurrency version.
+        version:
+          type: integer
+          minimum: 1
+          deprecated: true
+          description: Backward-compatible alias for expected_version.
+        reason:
+          type: string
+          maxLength: 512
+          pattern: '^[^\r\n\u0000]*$'
+        updated_by:
+          type: string
+          maxLength: 128
+          pattern: '^[^\r\n\u0000]*$'
+    SecurityPolicyMutationResponse:
+      allOf:
+        - $ref: '#/components/schemas/SecurityPolicy'
+        - type: object
+          required: [changed, existing_quarantines_released]
+          properties:
+            changed:
+              type: boolean
+              description: False when the requested state already matched.
+            existing_quarantines_released:
+              type: boolean
+              enum: [false]
+              description: Disabling automatic quarantine never restores existing devices.
+    NetworkActionInput:
+      type: object
+      additionalProperties: false
+      required: [action]
+      properties:
+        action:
+          type: string
+          enum: [quarantine, restore]
+        reason:
+          type: string
+          maxLength: 512
+          pattern: '^[^\r\n\u0000]*$'
+        requested_by:
+          type: string
+          maxLength: 128
+          pattern: '^[^\r\n\u0000]*$'
+    NetworkActionResponse:
+      type: object
+      required:
+        - action
+        - changed
+        - device
+        - events
+        - fleet
+        - network_actions_are_simulated
+        - timeline_count
+      properties:
+        action:
+          type: string
+          enum: [quarantine, restore]
+        changed:
+          type: boolean
+          description: False when the Deskside was already in the requested state.
+        device:
+          $ref: '#/components/schemas/DesksideDevice'
+        events:
+          type: array
+          description: Empty for an idempotent no-op; otherwise the simulated acknowledgement chain.
+          items:
+            $ref: '#/components/schemas/NetworkEnforcementEvent'
+        fleet:
+          $ref: '#/components/schemas/FleetSummary'
+        network_actions_are_simulated:
+          type: boolean
+          enum: [true]
+        timeline_count:
+          type: integer
+          minimum: 0
     AgentTokenomicsResponse:
       type: object
       required:
@@ -291,7 +1898,9 @@ components:
         agent_id:
           type: string
           minLength: 1
-          description: Concrete DefenseClaw agent ID or '*' for a catch-all policy.
+          description: >-
+            Concrete employee/task agent ID, or '*' for the resident
+            DefenseClaw instance to enforce as a catch-all workload policy.
         agent_name:
           type: string
         session_token_budget:
@@ -333,6 +1942,329 @@ components:
             updated_at:
               type: string
               format: date-time
+    RuntimeControlInput:
+      type: object
+      additionalProperties: false
+      required: [target_type, target_name]
+      properties:
+        target_type:
+          type: string
+          enum: [command, tool]
+          description: >-
+            command approves an exact full command policy key; tool creates an
+            exact-name scan exception and does not grant a capability boundary.
+        target_name:
+          type: string
+          minLength: 1
+          maxLength: 512
+          pattern: '^[^\r\n\u0000]+$'
+          description: >-
+            Exact single-line command string or tool name after surrounding
+            whitespace is removed. Carriage returns, line feeds, and NUL are
+            rejected.
+          example: git status
+        reason:
+          type: string
+          maxLength: 512
+          description: Operator-facing justification stored with the approval.
+          example: Read-only repository status
+    RuntimeControlEntry:
+      type: object
+      required: [id, target_type, target_name, reason, updated_at]
+      properties:
+        id:
+          type: string
+        target_type:
+          type: string
+          enum: [command, tool]
+        target_name:
+          type: string
+        reason:
+          type: string
+        updated_at:
+          type: string
+          format: date-time
+        fixture_backed:
+          type: boolean
+          description: True only for mutable local rehearsal state.
+    RuntimeControlMutationResponse:
+      oneOf:
+        - $ref: '#/components/schemas/RuntimeControlEntry'
+        - type: object
+          required: [status]
+          properties:
+            status:
+              type: string
+              enum: [allowed, removed]
+            target_type:
+              type: string
+              enum: [command, tool]
+            target_name:
+              type: string
+            fixture_backed:
+              type: boolean
+    PolicyStudioDraftInput:
+      type: object
+      additionalProperties: false
+      required: [message]
+      properties:
+        message:
+          type: string
+          minLength: 1
+          maxLength: 2000
+          description: Untrusted natural-language security and trust intent. NUL is rejected.
+        conversation_id:
+          type: string
+          maxLength: 128
+        previous_draft_id:
+          type: string
+          format: uuid
+          description: Server-held draft to revise within the same conversation.
+    PolicyStudioScope:
+      type: object
+      additionalProperties: false
+      required: [type, value]
+      properties:
+        type:
+          type: string
+          enum: [fleet, department, agent]
+        value:
+          type: string
+          maxLength: 120
+    PolicyStudioRule:
+      type: object
+      additionalProperties: false
+      required: [category, condition, decision, severity, rationale]
+      properties:
+        category:
+          type: string
+          enum: [data_protection, identity, model_trust, network_egress, prompt_safety, tool_safety]
+        condition:
+          type: string
+          maxLength: 280
+        decision:
+          type: string
+          enum: [monitor, require_approval, block]
+        severity:
+          type: string
+          enum: [low, medium, high, critical]
+        rationale:
+          type: string
+          maxLength: 280
+    PolicyStudioGeneration:
+      type: object
+      required: [mode, provider, reason]
+      properties:
+        mode:
+          type: string
+          enum: [live, fallback]
+        provider:
+          type: string
+        model:
+          type: string
+          nullable: true
+        reason:
+          type: string
+          nullable: true
+          enum: [not_configured, provider_unavailable, invalid_provider_draft, fixture_server]
+    AgentGuardrailDraftPreview:
+      type: object
+      additionalProperties: false
+      required: [apiVersion, kind, metadata, spec]
+      description: Server-owned, non-executable JSON preview. It is not a deployed runtime policy.
+      properties:
+        apiVersion:
+          type: string
+          enum: [cloudcontrol.cisco.com/v1alpha1]
+        kind:
+          type: string
+          enum: [AgentGuardrailDraft]
+        metadata:
+          type: object
+          additionalProperties: false
+          required: [name, draftId]
+          properties:
+            name:
+              type: string
+            draftId:
+              type: string
+              format: uuid
+        spec:
+          type: object
+          additionalProperties: false
+          required: [scope, riskLevel, defaultDecision, rules, exceptions]
+          properties:
+            scope:
+              $ref: '#/components/schemas/PolicyStudioScope'
+            riskLevel:
+              type: string
+              enum: [low, medium, high, critical]
+            defaultDecision:
+              type: string
+              enum: [monitor, require_approval, block]
+            rules:
+              type: array
+              minItems: 1
+              maxItems: 6
+              items:
+                $ref: '#/components/schemas/PolicyStudioRule'
+            exceptions:
+              type: array
+              maxItems: 5
+              items:
+                type: string
+                maxLength: 180
+    PolicyStudioDraft:
+      type: object
+      required:
+        - id
+        - conversation_id
+        - version
+        - status
+        - created_at
+        - name
+        - summary
+        - scope
+        - risk_level
+        - mode
+        - rules
+        - exceptions
+        - generation
+        - warnings
+        - policy
+      properties:
+        id:
+          type: string
+          format: uuid
+        conversation_id:
+          type: string
+          format: uuid
+        version:
+          type: integer
+          minimum: 1
+        status:
+          type: string
+          enum: [generated, staged]
+        created_at:
+          type: string
+          format: date-time
+        name:
+          type: string
+          maxLength: 80
+        summary:
+          type: string
+          maxLength: 320
+        scope:
+          $ref: '#/components/schemas/PolicyStudioScope'
+        risk_level:
+          type: string
+          enum: [low, medium, high, critical]
+        mode:
+          type: string
+          enum: [monitor, require_approval, block]
+        rules:
+          type: array
+          minItems: 1
+          maxItems: 6
+          items:
+            $ref: '#/components/schemas/PolicyStudioRule'
+        exceptions:
+          type: array
+          maxItems: 5
+          items:
+            type: string
+            maxLength: 180
+        generation:
+          $ref: '#/components/schemas/PolicyStudioGeneration'
+        warnings:
+          type: array
+          items:
+            type: string
+        policy:
+          $ref: '#/components/schemas/AgentGuardrailDraftPreview'
+        review:
+          type: object
+          additionalProperties: false
+          required: [confirmed, reviewed_at, reviewed_by, identity_verified, evidence_status, reason]
+          properties:
+            confirmed:
+              type: boolean
+              enum: [true]
+            reviewed_at:
+              type: string
+              format: date-time
+            reviewed_by:
+              type: string
+              enum: [Unauthenticated demo operator]
+            claimed_reviewer:
+              type: string
+              nullable: true
+            identity_verified:
+              type: boolean
+              enum: [false]
+            evidence_status:
+              type: string
+              enum: [demo_acknowledgement]
+            reason:
+              type: string
+    PolicyStudioDraftResponse:
+      type: object
+      required: [conversation_id, assistant, draft]
+      properties:
+        conversation_id:
+          type: string
+          format: uuid
+        assistant:
+          type: object
+          required: [message]
+          properties:
+            message:
+              type: string
+        draft:
+          $ref: '#/components/schemas/PolicyStudioDraft'
+    PolicyStudioStageInput:
+      type: object
+      additionalProperties: false
+      required: [expected_version, review_confirmed]
+      properties:
+        expected_version:
+          type: integer
+          minimum: 1
+        review_confirmed:
+          type: boolean
+          enum: [true]
+        reviewed_by:
+          type: string
+          maxLength: 120
+          description: Optional unverified display claim; the server does not treat it as identity evidence.
+        reason:
+          type: string
+          maxLength: 512
+    PolicyStudioStageResponse:
+      type: object
+      required: [draft, application]
+      properties:
+        draft:
+          $ref: '#/components/schemas/PolicyStudioDraft'
+        application:
+          type: object
+          additionalProperties: false
+          required: [status, enforcement_status, persistence, review_type, message]
+          properties:
+            status:
+              type: string
+              enum: [staged]
+            enforcement_status:
+              type: string
+              enum: [not_enforced]
+            persistence:
+              type: string
+              enum: [ephemeral]
+            review_type:
+              type: string
+              enum: [demo_acknowledgement]
+            message:
+              type: string
     BudgetAlert:
       type: object
       required:
@@ -407,11 +2339,35 @@ components:
           type: integer
         active_agents:
           type: integer
+          description: Active employee/task agents; resident DefenseClaw is the reporting and enforcement agent.
+        cost:
+          type: object
+          required: [total, input, output, currency, pricing_status]
+          properties:
+            total:
+              type: number
+              minimum: 0
+            input:
+              type: number
+              minimum: 0
+            output:
+              type: number
+              minimum: 0
+            currency:
+              type: string
+              enum: [USD]
+            pricing_status:
+              type: string
+              description: >-
+                Priced uses source-reported cost; estimated uses a maintained exact-model rate;
+                partially_priced means at least one usage row has no mapping.
+              enum: [priced, estimated, partially_priced, unpriced]
     TopAgent:
       type: object
       properties:
         agent_name:
           type: string
+          description: Employee/task agent name unless runtime_only explicitly describes control-plane evidence.
         service_name:
           type: string
         connector:

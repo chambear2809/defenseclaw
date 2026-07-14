@@ -11,26 +11,185 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import os
+import re
+import threading
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from .cli import build_payload_from_files
 from .fixtures import default_o11y_rows, package_data_json, read_json
 from .galileo_config import galileo_config_from_env
 from .gateway_client import GatewayAPIError, GatewayClient, gateway_client_config_from_env
+from .policy_studio import (
+    POLICY_STUDIO_APPLY_PATH_RE,
+    POLICY_STUDIO_DRAFT_PATH,
+    PolicyStudioAPIError,
+    PolicyStudioService,
+)
 from .transform import build_summary, gateway_observations_to_metric_rows
 
 TRUTHY = {"1", "true", "yes", "y", "on"}
 MAX_GATEWAY_LIST_LIMIT = 5000
 MAX_CONTROL_BODY_BYTES = 64 * 1024
+RUNTIME_CONTROL_TARGET_TYPES = {"command", "tool"}
+NETWORK_ACTIONS = {"quarantine", "restore"}
+FLEET_OVERVIEW_PATH = "/v1/c3/agent-tokenomics/fleet/overview"
+FLEET_ANALYTICS_PATH = "/v1/c3/agent-tokenomics/fleet/analytics"
+FLEET_INFRASTRUCTURE_PATH = "/v1/c3/agent-tokenomics/fleet/infrastructure"
+FLEET_DEMO_RESET_PATH = "/v1/c3/agent-tokenomics/fleet/demo/reset"
+SECURITY_POLICY_PATH = "/v1/c3/agent-tokenomics/security/policy"
+DESKSIDE_ACTION_PREFIX = "/v1/c3/agent-tokenomics/fleet/desksides/"
+DESKSIDE_ACTION_SUFFIX = "/network-action"
+DESKSIDE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+INFRASTRUCTURE_WINDOWS = {"-1h": 1, "-6h": 6, "-24h": 24}
+INFRASTRUCTURE_RESOLUTIONS = {"1h": 1, "6h": 6}
 
 
 class PayloadTooLargeError(ValueError):
     pass
+
+
+class FleetStateConflictError(ValueError):
+    pass
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _new_fleet_demo_state() -> dict[str, Any]:
+    try:
+        state = package_data_json("mfe_prebuilt", "fixtures", "amd-deskside-fleet.json")
+    except FileNotFoundError:
+        # Source checkouts can have a stale wheel-staging _data directory.
+        # The maintained bundle (also copied explicitly into the demo image)
+        # remains authoritative until the next package-data refresh.
+        source_fixture = (
+            Path(__file__).resolve().parents[3]
+            / "bundles"
+            / "c3_agent_tokenomics"
+            / "mfe_prebuilt"
+            / "fixtures"
+            / "amd-deskside-fleet.json"
+        )
+        state = json.loads(source_fixture.read_text(encoding="utf-8"))
+    if not isinstance(state, dict):
+        raise ValueError("AMD Deskside fleet fixture must be an object")
+    policy = state.setdefault("security_policy", {})
+    if not isinstance(policy, dict):
+        raise ValueError("AMD Deskside security policy fixture must be an object")
+    policy.setdefault("policy_id", "amd-deskside-critical-quarantine")
+    policy.setdefault("version", 1)
+    policy["simulated"] = True
+    policy.setdefault("integration_state", "demo-ready")
+    demo = state.setdefault("demo", {})
+    if isinstance(demo, dict):
+        demo["inventory_is_fixture"] = True
+        demo["network_actions_are_simulated"] = True
+    fleet = state.setdefault("fleet", {})
+    if isinstance(fleet, dict):
+        fleet.setdefault("network_action_count", 0)
+    if not isinstance(state.get("devices"), list):
+        state["devices"] = []
+    if not isinstance(state.get("enforcement_events"), list):
+        state["enforcement_events"] = []
+    return state
+
+
+def _load_fleet_analytics() -> dict[str, Any]:
+    try:
+        payload = package_data_json("mfe_prebuilt", "fixtures", "tokenomics-fleet-analytics.json")
+    except FileNotFoundError:
+        source_fixture = (
+            Path(__file__).resolve().parents[3]
+            / "bundles"
+            / "c3_agent_tokenomics"
+            / "mfe_prebuilt"
+            / "fixtures"
+            / "tokenomics-fleet-analytics.json"
+        )
+        payload = json.loads(source_fixture.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("fleet analytics fixture must be an object")
+    for name in ("debug", "scope", "disclosure", "dimensions", "adoption", "cost"):
+        if not isinstance(payload.get(name), dict):
+            raise ValueError(f"fleet analytics {name} must be an object")
+    required_lists = {
+        "dimensions": ("providers", "models", "teams", "users", "agents"),
+        "adoption": ("provider_totals", "daily_active_users", "team_provider_matrix"),
+        "cost": ("daily_provider_cost", "detail_rows"),
+    }
+    for section, names in required_lists.items():
+        for name in names:
+            rows = payload[section].get(name)
+            if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+                raise ValueError(f"fleet analytics {section}.{name} must be an array of objects")
+    for section in ("adoption", "cost"):
+        if not isinstance(payload[section].get("summary"), dict):
+            raise ValueError(f"fleet analytics {section}.summary must be an object")
+    projection = payload["cost"].get("organization_projection")
+    if not isinstance(projection, dict):
+        raise ValueError("fleet analytics cost.organization_projection must be an object")
+    for name in (
+        "basis_window_days",
+        "annualization_weeks",
+        "modeled_non_halo_developers",
+        "modeled_non_halo_cloud_tokens",
+        "modeled_non_halo_estimated_cost_usd",
+    ):
+        if not isinstance(projection.get(name), (int, float)) or isinstance(projection.get(name), bool):
+            raise ValueError(f"fleet analytics cost.organization_projection.{name} must be numeric")
+    # These markers are an API invariant: modeled fleet analytics must
+    # never be mistaken for the separately reported live gateway ledger.
+    payload["source"] = "amd_deskside_demo_scenario"
+    payload["debug"]["fixture_backed"] = True
+    payload["disclosure"]["status"] = "illustrative"
+    payload["adoption"]["status"] = "illustrative"
+    payload["cost"]["status"] = "illustrative"
+    return payload
+
+
+def _load_fleet_infrastructure() -> dict[str, Any]:
+    try:
+        payload = package_data_json("mfe_prebuilt", "fixtures", "splunk-o11y-infrastructure.json")
+    except FileNotFoundError:
+        source_fixture = (
+            Path(__file__).resolve().parents[3]
+            / "bundles"
+            / "c3_agent_tokenomics"
+            / "mfe_prebuilt"
+            / "fixtures"
+            / "splunk-o11y-infrastructure.json"
+        )
+        payload = json.loads(source_fixture.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("Splunk O11y infrastructure fixture must be an object")
+    for name in ("debug", "disclosure", "scope", "fleet_summary", "series"):
+        if not isinstance(payload.get(name), dict):
+            raise ValueError(f"Splunk O11y infrastructure {name} must be an object")
+    if not isinstance(payload.get("devices"), list):
+        raise ValueError("Splunk O11y infrastructure devices must be an array")
+    for metric in (
+        "cpu_utilization",
+        "memory_utilization",
+        "gpu_utilization",
+        "network_receive",
+        "network_transmit",
+        "power",
+    ):
+        if not isinstance(payload["series"].get(metric), list):
+            raise ValueError(f"Splunk O11y infrastructure series.{metric} must be an array")
+    payload["source"] = "splunk_o11y_synthetic_demo"
+    payload["debug"]["fixture_backed"] = True
+    payload["debug"]["synthetic"] = True
+    payload["disclosure"]["status"] = "synthetic"
+    return payload
 
 
 def _bool_query(query: dict[str, list[str]], name: str, default: bool = False) -> bool:
@@ -45,6 +204,13 @@ def _first(query: dict[str, list[str]], name: str, default: str | None = None) -
     if not values:
         return default
     return values[-1]
+
+
+def _one_query_value(query: dict[str, list[str]], name: str, default: str = "") -> str:
+    values = query.get(name, [])
+    if len(values) > 1:
+        raise ValueError(f"{name} must be provided at most once")
+    return values[0].strip() if values else default
 
 
 def _gateway_object_list(value: Any, resource: str) -> list[dict[str, Any]]:
@@ -90,6 +256,12 @@ class C3TokenomicsHandler(BaseHTTPRequestHandler):
     realm: str | None = None
     allow_fixture_fallback: bool = True
     gateway_client: GatewayClient | None = None
+    fleet_state: dict[str, Any] | None = None
+    fleet_analytics_payload: dict[str, Any] | None = None
+    fleet_infrastructure_payload: dict[str, Any] | None = None
+    policy_studio_service: PolicyStudioService | None = None
+    fleet_state_lock = threading.RLock()
+    fleet_restore_state: dict[str, dict[str, Any]] = {}
 
     def _send_json(self, status: int, payload: Any) -> None:
         body = json.dumps(payload, indent=2, sort_keys=True).encode("utf-8")
@@ -138,6 +310,391 @@ class C3TokenomicsHandler(BaseHTTPRequestHandler):
         if self.gateway_client is None:
             return []
         return _gateway_object_list(self.gateway_client.list_alerts(limit=limit), "budget alerts")
+
+    def _gateway_allowed_controls(self) -> list[dict[str, Any]]:
+        if self.gateway_client is None:
+            return []
+        rows = _gateway_object_list(self.gateway_client.list_allowed_controls(), "allowed runtime controls")
+        return [row for row in rows if row.get("target_type") in RUNTIME_CONTROL_TARGET_TYPES]
+
+    @staticmethod
+    def _runtime_control_payload(payload: dict[str, Any]) -> dict[str, str]:
+        supported_fields = {"target_type", "target_name", "reason"}
+        unsupported_fields = sorted(str(key) for key in payload if key not in supported_fields)
+        if unsupported_fields:
+            raise ValueError(f"unsupported agent-control field: {unsupported_fields[0]}")
+        target_type = str(payload.get("target_type") or "").strip().lower()
+        target_name = str(payload.get("target_name") or "").strip()
+        reason = str(payload.get("reason") or "").strip() or "Approved through C3 Tokenomics Agent Controls"
+        if target_type not in RUNTIME_CONTROL_TARGET_TYPES:
+            raise ValueError("target_type must be command or tool")
+        if not target_name:
+            raise ValueError("target_name is required")
+        if any(character in target_name for character in ("\r", "\n", "\x00")):
+            raise ValueError("target_name must be one line and cannot contain NUL")
+        if len(target_name) > 512:
+            raise ValueError("target_name must be 512 characters or fewer")
+        if len(reason) > 512:
+            raise ValueError("reason must be 512 characters or fewer")
+        return {"target_type": target_type, "target_name": target_name, "reason": reason}
+
+    @staticmethod
+    def _single_line_text(
+        payload: dict[str, Any],
+        name: str,
+        *,
+        default: str = "",
+        maximum: int = 512,
+    ) -> str:
+        value = payload.get(name)
+        if value is None:
+            return default
+        if not isinstance(value, str):
+            raise ValueError(f"{name} must be a string")
+        value = value.strip()
+        if any(character in value for character in ("\r", "\n", "\x00")):
+            raise ValueError(f"{name} must be one line and cannot contain NUL")
+        if len(value) > maximum:
+            raise ValueError(f"{name} must be {maximum} characters or fewer")
+        return value or default
+
+    @staticmethod
+    def _deskside_id_from_action_path(path: str) -> str | None:
+        if not path.startswith(DESKSIDE_ACTION_PREFIX) or not path.endswith(DESKSIDE_ACTION_SUFFIX):
+            return None
+        encoded = path[len(DESKSIDE_ACTION_PREFIX) : -len(DESKSIDE_ACTION_SUFFIX)]
+        try:
+            device_id = unquote(encoded)
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise ValueError("invalid device_id encoding") from exc
+        if not DESKSIDE_ID_RE.fullmatch(device_id):
+            raise ValueError("device_id must be 1-128 letters, numbers, dots, underscores, or hyphens")
+        return device_id
+
+    def _fleet_overview(self) -> dict[str, Any]:
+        with self.fleet_state_lock:
+            if self.fleet_state is None:
+                self.__class__.fleet_state = _new_fleet_demo_state()
+            return copy.deepcopy(self.fleet_state)
+
+    def _fleet_analytics_response(self) -> dict[str, Any]:
+        if self.fleet_analytics_payload is None:
+            self.__class__.fleet_analytics_payload = _load_fleet_analytics()
+        return copy.deepcopy(self.fleet_analytics_payload)
+
+    @staticmethod
+    def _selected_infrastructure_summary(device: dict[str, Any]) -> dict[str, Any]:
+        metrics = device["metrics"]
+
+        def selected(name: str, method: str) -> dict[str, Any]:
+            metric = copy.deepcopy(metrics[name])
+            metric["method"] = method
+            metric["coverage"] = (
+                "selected device is stale" if device["stale"] else "1 of 1 selected device"
+            )
+            return metric
+
+        return {
+            "avg_cpu_utilization": selected("cpu_utilization", "selected device current value"),
+            "avg_memory_utilization": selected("memory_utilization", "selected device current value"),
+            "avg_gpu_utilization": selected("gpu_utilization", "selected device current value"),
+            "avg_network_link_utilization": selected(
+                "network_link_utilization", "selected device current value"
+            ),
+            "total_network_receive": selected("network_receive", "selected device current value"),
+            "total_network_transmit": selected("network_transmit", "selected device current value"),
+            "current_power": selected("power", "selected device current value"),
+            "energy_24h": selected("energy_24h", "selected device historical total"),
+            "energy_7d": selected("energy_7d", "selected device historical total"),
+            "reporting_devices": 0 if device["stale"] else 1,
+            "stale_devices": 1 if device["stale"] else 0,
+        }
+
+    def _fleet_infrastructure_response(self, query: dict[str, list[str]]) -> dict[str, Any]:
+        window = _one_query_value(query, "window", "-24h")
+        resolution = _one_query_value(query, "resolution", "1h")
+        device_id = _one_query_value(query, "device_id")
+        if window not in INFRASTRUCTURE_WINDOWS:
+            raise ValueError("window must be one of -1h, -6h, or -24h")
+        if resolution not in INFRASTRUCTURE_RESOLUTIONS:
+            raise ValueError("resolution must be 1h or 6h")
+        if device_id and not DESKSIDE_ID_RE.fullmatch(device_id):
+            raise ValueError("device_id must be 1-128 letters, numbers, dots, underscores, or hyphens")
+
+        if self.fleet_infrastructure_payload is None:
+            self.__class__.fleet_infrastructure_payload = _load_fleet_infrastructure()
+        payload = copy.deepcopy(self.fleet_infrastructure_payload)
+        selected_device = next(
+            (device for device in payload["devices"] if device.get("device_id") == device_id),
+            None,
+        )
+        if device_id and selected_device is None:
+            raise KeyError(device_id)
+
+        payload["scope"]["window"] = window
+        payload["scope"]["resolution"] = resolution
+        payload["scope"]["device_id"] = device_id or None
+        payload["debug"]["requested_filters"] = {
+            "window": window,
+            "resolution": resolution,
+            "device_id": device_id or None,
+        }
+
+        if selected_device is not None:
+            payload["devices"] = [selected_device]
+            payload["fleet_summary"] = self._selected_infrastructure_summary(selected_device)
+            current_by_series = {
+                "cpu_utilization": "cpu_utilization",
+                "memory_utilization": "memory_utilization",
+                "gpu_utilization": "gpu_utilization",
+                "network_receive": "network_receive",
+                "network_transmit": "network_transmit",
+                "power": "power",
+            }
+            for series_name, metric_name in current_by_series.items():
+                points = payload["series"][series_name]
+                current_fleet_value = float(points[-1]["value"]) if points else 0
+                current_device_value = selected_device["metrics"][metric_name]["value"]
+                for point in points:
+                    point["value"] = (
+                        None
+                        if current_device_value is None or current_fleet_value == 0
+                        else round(float(point["value"]) * float(current_device_value) / current_fleet_value, 2)
+                    )
+
+        generated_at = datetime.fromisoformat(str(payload["generated_at"]).replace("Z", "+00:00"))
+        cutoff = generated_at - timedelta(hours=INFRASTRUCTURE_WINDOWS[window])
+        resolution_hours = INFRASTRUCTURE_RESOLUTIONS[resolution]
+        for series_name, points in payload["series"].items():
+            within_window = [
+                point
+                for point in points
+                if datetime.fromisoformat(str(point["timestamp"]).replace("Z", "+00:00")) >= cutoff
+            ]
+            payload["series"][series_name] = list(reversed(list(reversed(within_window))[::resolution_hours]))
+        return payload
+
+    def _reset_fleet_demo(self, payload: dict[str, Any]) -> dict[str, Any]:
+        unsupported_fields = sorted(str(key) for key in payload if key != "reason")
+        if unsupported_fields:
+            raise ValueError(f"unsupported fleet-demo-reset field: {unsupported_fields[0]}")
+        reason = self._single_line_text(
+            payload,
+            "reason",
+            default="Reset AMD Deskside demo state through Cloud Control",
+        )
+        with self.fleet_state_lock:
+            self.__class__.fleet_state = _new_fleet_demo_state()
+            self.fleet_restore_state.clear()
+            response = copy.deepcopy(self.fleet_state)
+        response["reset"] = {
+            "completed": True,
+            "reason": reason,
+            "simulated": True,
+        }
+        return response
+
+    def _update_security_policy(self, payload: dict[str, Any]) -> dict[str, Any]:
+        supported_fields = {"enabled", "expected_version", "version", "reason", "updated_by"}
+        unsupported_fields = sorted(str(key) for key in payload if key not in supported_fields)
+        if unsupported_fields:
+            raise ValueError(f"unsupported security-policy field: {unsupported_fields[0]}")
+        enabled = payload.get("enabled")
+        if not isinstance(enabled, bool):
+            raise ValueError("enabled must be a boolean")
+        expected_version = payload.get("expected_version", payload.get("version"))
+        if expected_version is not None and (
+            isinstance(expected_version, bool) or not isinstance(expected_version, int) or expected_version < 1
+        ):
+            raise ValueError("expected_version must be a positive integer")
+        reason = self._single_line_text(
+            payload,
+            "reason",
+            default="Updated through Cloud Control AMD Deskside security policy",
+        )
+        updated_by = self._single_line_text(
+            payload,
+            "updated_by",
+            default="cloud-control-demo",
+            maximum=128,
+        )
+
+        with self.fleet_state_lock:
+            if self.fleet_state is None:
+                self.__class__.fleet_state = _new_fleet_demo_state()
+            policy = self.fleet_state.setdefault("security_policy", {})
+            current_version = int(policy.get("version") or 1)
+            if expected_version is not None and expected_version != current_version:
+                raise FleetStateConflictError(
+                    f"security policy version conflict: expected {expected_version}, current {current_version}"
+                )
+            changed = bool(policy.get("auto_quarantine")) != enabled
+            if changed:
+                policy["auto_quarantine"] = enabled
+                policy["mode"] = "enforce" if enabled else "monitor"
+                policy["version"] = current_version + 1
+                policy["updated_at"] = _utc_now()
+                policy["updated_by"] = updated_by
+                policy["change_reason"] = reason
+            policy["simulated"] = True
+            policy["integration_state"] = "demo-ready"
+            response = copy.deepcopy(policy)
+            response["changed"] = changed
+            response["existing_quarantines_released"] = False
+            return response
+
+    def _update_fleet_counts(self) -> None:
+        if self.fleet_state is None:
+            return
+        devices = self.fleet_state.get("devices") or []
+        fleet = self.fleet_state.setdefault("fleet", {})
+        fleet["quarantined_devices"] = sum(
+            1 for device in devices if isinstance(device, dict) and bool(device.get("quarantined"))
+        )
+
+    def _network_action_events(
+        self,
+        *,
+        device: dict[str, Any],
+        action: str,
+        reason: str,
+        requested_by: str,
+    ) -> list[dict[str, Any]]:
+        if self.fleet_state is None:
+            return []
+        occurred_at = _utc_now()
+        events = self.fleet_state.setdefault("enforcement_events", [])
+        device_id = str(device.get("device_id") or "unknown")
+        switch = str(device.get("switch_name") or "Cisco C9350 access switch")
+        switch_port = str(device.get("switch_port") or "managed port")
+        policy = self.fleet_state.get("security_policy") or {}
+        quarantine_policy = str(policy.get("policy_name") or "AMD-DESKSIDE-QUARANTINE")
+        if action == "quarantine":
+            stages = [
+                (
+                    "cloud-control",
+                    "Network quarantine requested",
+                    f"{requested_by} requested simulated quarantine: {reason}",
+                ),
+                ("ise", "ISE ANC policy assigned", f"{quarantine_policy} assigned to {device_id}"),
+                ("coa", "RADIUS CoA accepted", f"{switch} reauthorized {switch_port}"),
+                ("enforce", "C9350 restricted access", "Endpoint can reach only remediation services"),
+            ]
+        else:
+            stages = [
+                (
+                    "cloud-control",
+                    "Network restore requested",
+                    f"{requested_by} requested simulated restore: {reason}",
+                ),
+                ("ise", "ISE standard policy assigned", f"Standard access policy assigned to {device_id}"),
+                ("coa", "RADIUS CoA accepted", f"{switch} reauthorized {switch_port}"),
+                ("enforce", "C9350 restored access", "Endpoint returned to its previous network access"),
+            ]
+        created: list[dict[str, Any]] = []
+        for stage, title, detail in stages:
+            event = {
+                "event_id": f"evt-demo-{action}-{device_id.lower()}-{len(events) + 1:04d}",
+                "device_id": device_id,
+                "stage": stage,
+                "status": "complete",
+                "title": title,
+                "detail": detail,
+                "action": action,
+                "occurred_at": occurred_at,
+                "simulated": True,
+            }
+            events.append(event)
+            created.append(copy.deepcopy(event))
+        return created
+
+    def _apply_network_action(self, device_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        supported_fields = {"action", "reason", "requested_by"}
+        unsupported_fields = sorted(str(key) for key in payload if key not in supported_fields)
+        if unsupported_fields:
+            raise ValueError(f"unsupported network-action field: {unsupported_fields[0]}")
+        action = payload.get("action")
+        if not isinstance(action, str) or action.strip().lower() not in NETWORK_ACTIONS:
+            raise ValueError("action must be quarantine or restore")
+        action = action.strip().lower()
+        reason = self._single_line_text(
+            payload,
+            "reason",
+            default=f"Simulated {action} through Cloud Control",
+        )
+        requested_by = self._single_line_text(
+            payload,
+            "requested_by",
+            default="cloud-control-demo",
+            maximum=128,
+        )
+
+        with self.fleet_state_lock:
+            if self.fleet_state is None:
+                self.__class__.fleet_state = _new_fleet_demo_state()
+            devices = self.fleet_state.get("devices") or []
+            device = next(
+                (
+                    row
+                    for row in devices
+                    if isinstance(row, dict) and str(row.get("device_id") or "") == device_id
+                ),
+                None,
+            )
+            if device is None:
+                raise KeyError(device_id)
+            is_quarantined = bool(device.get("quarantined"))
+            changed = (action == "quarantine" and not is_quarantined) or (
+                action == "restore" and is_quarantined
+            )
+            created_events: list[dict[str, Any]] = []
+            if changed and action == "quarantine":
+                self.fleet_restore_state[device_id] = {
+                    key: copy.deepcopy(device.get(key))
+                    for key in ("status", "risk", "model_route", "ise_policy", "network_access")
+                }
+                device["quarantined"] = True
+                device["status"] = "quarantined"
+                device["risk"] = "quarantined"
+                device["model_route"] = "Blocked"
+                policy = self.fleet_state.get("security_policy") or {}
+                device["ise_policy"] = str(policy.get("policy_name") or "AMD-DESKSIDE-QUARANTINE")
+                device["network_access"] = "Remediation only"
+                created_events = self._network_action_events(
+                    device=device,
+                    action=action,
+                    reason=reason,
+                    requested_by=requested_by,
+                )
+            elif changed:
+                baseline = self.fleet_restore_state.pop(device_id, None) or {}
+                device["quarantined"] = False
+                device["status"] = baseline.get("status") or "online"
+                device["risk"] = baseline.get("risk") or "review"
+                device["model_route"] = baseline.get("model_route") or "AMD local"
+                device["ise_policy"] = baseline.get("ise_policy") or "AMD-DESKSIDE-STANDARD"
+                device["network_access"] = baseline.get("network_access") or "Full access"
+                created_events = self._network_action_events(
+                    device=device,
+                    action=action,
+                    reason=reason,
+                    requested_by=requested_by,
+                )
+            self._update_fleet_counts()
+            fleet = self.fleet_state.setdefault("fleet", {})
+            if changed:
+                fleet["network_action_count"] = int(fleet.get("network_action_count") or 0) + 1
+                fleet["last_network_action_at"] = _utc_now()
+                self.fleet_state["generated_at"] = fleet["last_network_action_at"]
+            return {
+                "action": action,
+                "changed": changed,
+                "device": copy.deepcopy(device),
+                "events": created_events,
+                "fleet": copy.deepcopy(fleet),
+                "network_actions_are_simulated": True,
+                "timeline_count": len(self.fleet_state.get("enforcement_events") or []),
+            }
 
     def _gateway_alert_evidence(self, alerts: list[dict[str, Any]]) -> list[dict[str, Any]]:
         evidence: list[dict[str, Any]] = []
@@ -379,7 +936,9 @@ class C3TokenomicsHandler(BaseHTTPRequestHandler):
                     {
                         "title": "Live budget breach requires operator action",
                         "why": "DefenseClaw detected an over-budget agent or session in the current cluster.",
-                        "action": "Use the Tokenomics Control Plane to deny, steer, or release the affected agent policy.",
+                        "action": (
+                            "Use the Tokenomics Control Plane to deny, steer, or release the affected agent policy."
+                        ),
                     },
                 )
             payload["executive_banner"] = (
@@ -409,6 +968,11 @@ class C3TokenomicsHandler(BaseHTTPRequestHandler):
                     "integrations": {
                         "galileo": galileo_config_from_env().public_status(),
                         "gateway": self._gateway_status(),
+                        "policy_studio": (
+                            self.policy_studio_service.public_status()
+                            if self.policy_studio_service
+                            else {"enabled": False}
+                        ),
                     },
                 },
             )
@@ -448,9 +1012,28 @@ class C3TokenomicsHandler(BaseHTTPRequestHandler):
                 else:
                     self._send_json(503, {"status": "not_ready", "error": exc.detail})
             return
+        if path == FLEET_OVERVIEW_PATH:
+            self._send_json(200, self._fleet_overview())
+            return
+        if path == FLEET_ANALYTICS_PATH:
+            self._send_json(200, self._fleet_analytics_response())
+            return
+        if path == FLEET_INFRASTRUCTURE_PATH:
+            try:
+                infrastructure_query = parse_qs(parsed.query, keep_blank_values=True)
+                self._send_json(200, self._fleet_infrastructure_response(infrastructure_query))
+            except KeyError as exc:
+                self._send_json(404, {"error": "infrastructure device not found", "device_id": str(exc.args[0])})
+            except ValueError as exc:
+                self._send_json(400, {"error": str(exc)})
+            return
         if path == "/v1/c3/agent-tokenomics/policies/effective":
             try:
-                rows = self.gateway_client.list_effective_policies(agent_id=_first(query, "agent_id")) if self.gateway_client else []
+                rows = (
+                    self.gateway_client.list_effective_policies(agent_id=_first(query, "agent_id"))
+                    if self.gateway_client
+                    else []
+                )
                 self._send_json(200, _gateway_object_list(rows, "effective policies"))
             except GatewayAPIError as exc:
                 self._send_json(exc.status, exc.detail)
@@ -462,6 +1045,12 @@ class C3TokenomicsHandler(BaseHTTPRequestHandler):
                 self._send_json(200, _gateway_object_list(rows, "budget alerts"))
             except ValueError as exc:
                 self._send_json(400, {"error": str(exc)})
+            except GatewayAPIError as exc:
+                self._send_json(exc.status, exc.detail)
+            return
+        if path == "/v1/c3/agent-tokenomics/agent-controls/allowed":
+            try:
+                self._send_json(200, self._gateway_allowed_controls())
             except GatewayAPIError as exc:
                 self._send_json(exc.status, exc.detail)
             return
@@ -489,14 +1078,26 @@ class C3TokenomicsHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         path = parsed.path
-        if path not in {
+        policy_studio_apply_match = POLICY_STUDIO_APPLY_PATH_RE.fullmatch(path)
+        try:
+            deskside_id = self._deskside_id_from_action_path(path)
+        except ValueError as exc:
+            self._send_json(400, {"error": str(exc)})
+            return
+        gateway_paths = {
             "/v1/c3/agent-tokenomics/controls/apply",
             "/v1/c3/agent-tokenomics/controls/release",
-        }:
+            "/v1/c3/agent-tokenomics/agent-controls/allow",
+            "/v1/c3/agent-tokenomics/agent-controls/remove",
+        }
+        if (
+            path not in gateway_paths
+            and path not in {SECURITY_POLICY_PATH, FLEET_DEMO_RESET_PATH}
+            and path != POLICY_STUDIO_DRAFT_PATH
+            and policy_studio_apply_match is None
+            and deskside_id is None
+        ):
             self._send_json(404, {"error": "not found"})
-            return
-        if self.gateway_client is None:
-            self._send_json(503, {"error": "defenseclaw gateway is not configured"})
             return
         try:
             payload = self._read_json_body()
@@ -506,12 +1107,61 @@ class C3TokenomicsHandler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             self._send_json(400, {"error": "invalid JSON body"})
             return
+
+        if path == POLICY_STUDIO_DRAFT_PATH or policy_studio_apply_match is not None:
+            if self.policy_studio_service is None:
+                self._send_json(503, {"error": "Policy Studio is not configured"})
+                return
+            try:
+                if path == POLICY_STUDIO_DRAFT_PATH:
+                    self._send_json(201, self.policy_studio_service.create_draft(payload))
+                else:
+                    self._send_json(
+                        200,
+                        self.policy_studio_service.stage_draft(policy_studio_apply_match.group(1), payload),
+                    )
+            except PolicyStudioAPIError as exc:
+                self._send_json(exc.status, {"error": str(exc)})
+            return
+
+        if path == FLEET_DEMO_RESET_PATH:
+            try:
+                self._send_json(200, self._reset_fleet_demo(payload))
+            except ValueError as exc:
+                self._send_json(400, {"error": str(exc)})
+            return
+        if path == SECURITY_POLICY_PATH:
+            try:
+                self._send_json(200, self._update_security_policy(payload))
+            except FleetStateConflictError as exc:
+                self._send_json(409, {"error": str(exc)})
+            except ValueError as exc:
+                self._send_json(400, {"error": str(exc)})
+            return
+        if deskside_id is not None:
+            try:
+                self._send_json(200, self._apply_network_action(deskside_id, payload))
+            except KeyError:
+                self._send_json(404, {"error": "deskside not found", "device_id": deskside_id})
+            except ValueError as exc:
+                self._send_json(400, {"error": str(exc)})
+            return
+
+        if self.gateway_client is None:
+            self._send_json(503, {"error": "defenseclaw gateway is not configured"})
+            return
         try:
-            if path.endswith("/apply"):
+            if path.endswith("/agent-controls/allow"):
+                response = self.gateway_client.allow_runtime_control(self._runtime_control_payload(payload))
+            elif path.endswith("/agent-controls/remove"):
+                response = self.gateway_client.remove_runtime_control(self._runtime_control_payload(payload))
+            elif path.endswith("/apply"):
                 response = self.gateway_client.apply_control(payload)
             else:
                 response = self.gateway_client.release_control(payload)
             self._send_json(200, response)
+        except ValueError as exc:
+            self._send_json(400, {"error": str(exc)})
         except GatewayAPIError as exc:
             self._send_json(exc.status, exc.detail)
 
@@ -523,17 +1173,28 @@ def configure_handler(
     realm: str | None = None,
     allow_fixture_fallback: bool | None = None,
 ) -> type[C3TokenomicsHandler]:
-    C3TokenomicsHandler.o11y_fixture_path = o11y_fixture_path or os.environ.get("TOKENOMICS_DEMO_FIXTURE_PATH")
-    C3TokenomicsHandler.galileo_fixture_path = galileo_fixture_path or os.environ.get(
+    # Each ThreadingHTTPServer receives a dedicated handler subclass. Besides
+    # avoiding cross-test configuration leakage, this gives every demo server
+    # a fresh in-memory fleet/security state without changing the immutable
+    # fixture on disk.
+    handler = type("ConfiguredC3TokenomicsHandler", (C3TokenomicsHandler,), {})
+    handler.o11y_fixture_path = o11y_fixture_path or os.environ.get("TOKENOMICS_DEMO_FIXTURE_PATH")
+    handler.galileo_fixture_path = galileo_fixture_path or os.environ.get(
         "GALILEO_RUNTIME_CONTROLS_FIXTURE_PATH"
     )
-    C3TokenomicsHandler.summary_fixture_path = summary_fixture_path or os.environ.get("TOKENOMICS_SUMMARY_FIXTURE_PATH")
-    C3TokenomicsHandler.realm = realm or os.environ.get("O11Y_REALM")
-    C3TokenomicsHandler.gateway_client = GatewayClient(gateway_client_config_from_env())
+    handler.summary_fixture_path = summary_fixture_path or os.environ.get("TOKENOMICS_SUMMARY_FIXTURE_PATH")
+    handler.realm = realm or os.environ.get("O11Y_REALM")
+    handler.gateway_client = GatewayClient(gateway_client_config_from_env())
     if allow_fixture_fallback is None:
         allow_fixture_fallback = os.environ.get("TOKENOMICS_DEMO_ALLOW_FIXTURE_FALLBACK", "true").lower() in TRUTHY
-    C3TokenomicsHandler.allow_fixture_fallback = allow_fixture_fallback
-    return C3TokenomicsHandler
+    handler.allow_fixture_fallback = allow_fixture_fallback
+    handler.fleet_state = _new_fleet_demo_state()
+    handler.fleet_analytics_payload = _load_fleet_analytics()
+    handler.fleet_infrastructure_payload = _load_fleet_infrastructure()
+    handler.policy_studio_service = PolicyStudioService()
+    handler.fleet_state_lock = threading.RLock()
+    handler.fleet_restore_state = {}
+    return handler
 
 
 def make_server(host: str, port: int, **kwargs: Any) -> ThreadingHTTPServer:
@@ -542,7 +1203,7 @@ def make_server(host: str, port: int, **kwargs: Any) -> ThreadingHTTPServer:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Serve the fixture-backed Cisco Cloud Control Agent Tokenomics API.")
+    parser = argparse.ArgumentParser(description="Serve the fixture-backed Deskside AI Resilience API.")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8787)
     parser.add_argument("--input", default=None, help="O11y token metric rows JSON fixture")

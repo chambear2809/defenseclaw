@@ -1,22 +1,18 @@
 (function () {
-  const apiOrigin = (() => {
-    const url = new URL(window.location.href);
-    url.port = "8787";
-    url.pathname = "";
-    url.search = "";
-    url.hash = "";
-    return url.origin;
-  })();
-
-  const summaryUrl = `${apiOrigin}/v1/c3/agent-tokenomics/summary?include_galileo=true&window=-24h`;
-  const rowsUrl = `${apiOrigin}/v1/c3/agent-tokenomics/usage/rows?window=-24h`;
+  const searchParams = new URLSearchParams(window.location.search);
+  const requestedWindow = searchParams.get("window");
+  const usageWindow = /^-[1-9]\d{0,2}(?:h|d)$/.test(requestedWindow || "") ? requestedWindow : "-7d";
+  const summaryUrl = `/v1/c3/agent-tokenomics/summary?include_galileo=true&window=${encodeURIComponent(usageWindow)}`;
+  const rowsUrl = `/v1/c3/agent-tokenomics/usage/rows?window=${encodeURIComponent(usageWindow)}`;
   const viewLabels = { cost: "Cost", budget: "Budget", controls: "Controls", settings: "Settings" };
   const dimensionLabels = { model: "Model", agent: "Agent", provider: "Provider", connector: "Connector" };
+  const requestedView = searchParams.get("view");
+  const initialView = Object.prototype.hasOwnProperty.call(viewLabels, requestedView) ? requestedView : "cost";
 
   const state = {
     summaryPayload: null,
     rowPayload: { rows: [] },
-    activeView: "cost",
+    activeView: initialView,
     activeDimension: "model",
     search: "",
   };
@@ -785,7 +781,11 @@
 
   viewButtons.forEach((button) => {
     button.addEventListener("click", function () {
-      activateView(button.dataset.view || "cost");
+      const nextView = button.dataset.view || "cost";
+      activateView(nextView);
+      const nextUrl = new URL(window.location.href);
+      nextUrl.searchParams.set("view", nextView);
+      window.history.replaceState({}, "", nextUrl);
     });
   });
 
@@ -795,7 +795,7 @@
     });
   });
 
-  activateView("cost");
+  activateView(initialView);
   activateDimension("model");
   refresh();
   window.setInterval(refresh, 30000);

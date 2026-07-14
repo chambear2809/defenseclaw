@@ -1,4 +1,4 @@
-# Agent Tokenomics MFE End-to-End Test Guide
+# Deskside AI Resilience MFE End-to-End Test Guide
 
 This guide covers the practical end-to-end checks for the DefenseClaw Agent
 Tokenomics MFE. It is meant for local demo validation, handoff zip validation,
@@ -64,7 +64,7 @@ http://127.0.0.1:3001/?view=tokenomics
 
 Validate the Summary view:
 
-- Header starts with `Agent Tokenomics`.
+- Header starts with `Deskside AI Resilience`.
 - KPI cards show total tokens, agent sessions, cost, and active agent count.
 - Token usage/cost charts render.
 - Quality and eval cards render.
@@ -113,7 +113,7 @@ the Tokenomics GUI. It:
 - waits for the completed turn to increase the live DefenseClaw ledger
 - applies a one-token deny policy through the Tokenomics form
 - verifies the next OpenClaw response is blocked by DefenseClaw
-- checks the embedded Cost, Budget, Controls, and Settings views
+- checks the Tokenomics ledger status, policy, and alert surfaces
 - releases the test policy through the GUI
 - restores any `main` policy that existed before the test in a `finally` block
 

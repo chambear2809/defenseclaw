@@ -28,6 +28,10 @@ metadata:
   {{- end }}
 spec:
   type: {{ .Values.uiService.type }}
+  {{- with .Values.uiService.loadBalancerSourceRanges }}
+  loadBalancerSourceRanges:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
   ports:
     - name: http
       port: {{ .Values.uiService.port }}

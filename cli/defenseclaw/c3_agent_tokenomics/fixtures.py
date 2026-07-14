@@ -18,7 +18,7 @@ from defenseclaw.paths import bundled_c3_agent_tokenomics_dir
 
 
 def package_data_text(*parts: str) -> str:
-    """Read text from the packaged Cisco Cloud Control tokenomics demo data directory."""
+    """Read text from the packaged Deskside AI Resilience demo data directory."""
     return (bundled_c3_agent_tokenomics_dir().joinpath(*parts)).read_text(encoding="utf-8")
 
 

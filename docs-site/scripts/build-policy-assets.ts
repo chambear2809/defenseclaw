@@ -388,7 +388,7 @@ function buildRecipes(strict: PresetBundle): Recipe[] {
   }
   // Tool suppression placeholder so the picker has a "starter" the
   // operator can clone. We do NOT lift any from the strict pack
-  // (it ships with [] today) — instead we emit a single illustrative
+  // (it ships with [] today) — instead we emit a single example
   // example matching the docstring in policies.mdx.
   recipes.push({
     id: 'RECIPE-SUPP-TOOL-COSMETIC-SHELL',
@@ -403,7 +403,7 @@ function buildRecipes(strict: PresetBundle): Recipe[] {
       'Tool suppressions let you silence findings on tools whose name matches a regex. Use this to drop noisy verdicts on read-only commands while keeping write/destructive commands surfaced.',
     examples: ['shell.execute', 'bash.execute'],
     counterexamples: ['shell.write', 'fs.unlink'],
-    source: 'docs-site/scripts/build-policy-assets.ts (illustrative)',
+    source: 'docs-site/scripts/build-policy-assets.ts (example)',
     tags: ['tool', 'shell', 'noise-reduction'],
     tool_capability_class: ['exec_shell'],
   });

@@ -26,7 +26,7 @@ from defenseclaw.c3_agent_tokenomics.mock_api import make_server
 
 @click.group(name="c3-tokenomics")
 def c3_tokenomics() -> None:
-    """Generate or serve the Cisco Cloud Control Agent Tokenomics demo response."""
+    """Generate or serve the Deskside AI Resilience demo response."""
 
 
 @c3_tokenomics.command("generate")

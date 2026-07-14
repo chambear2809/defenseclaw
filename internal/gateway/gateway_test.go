@@ -3218,6 +3218,70 @@ func TestAPIEnforceAllowList(t *testing.T) {
 	if allowed[0].TargetType != "mcp" {
 		t.Errorf("target_type = %q, want mcp", allowed[0].TargetType)
 	}
+
+	removeReq := httptest.NewRequest(http.MethodDelete, "/enforce/allow", bytes.NewReader([]byte(`{"target_type":"mcp","target_name":"trusted-mcp"}`)))
+	removeW := httptest.NewRecorder()
+	api.handleEnforceAllow(removeW, removeReq)
+	if removeW.Result().StatusCode != http.StatusOK {
+		t.Fatalf("remove status = %d, want %d", removeW.Result().StatusCode, http.StatusOK)
+	}
+
+	listW = httptest.NewRecorder()
+	api.handleEnforceAllowed(listW, listReq)
+	if err := json.NewDecoder(listW.Result().Body).Decode(&allowed); err != nil {
+		t.Fatalf("decode allowed after removal: %v", err)
+	}
+	if len(allowed) != 0 {
+		t.Fatalf("allowed len after removal = %d, want 0", len(allowed))
+	}
+}
+
+func TestAPIEnforceAllowDeleteDoesNotRemoveBlock(t *testing.T) {
+	store, logger := testStoreAndLogger(t)
+	pe := enforce.NewPolicyEngine(store)
+	if err := pe.Block("command", "git status", "blocked in agent controls"); err != nil {
+		t.Fatalf("block command: %v", err)
+	}
+
+	api := &APIServer{store: store, logger: logger}
+	removeReq := httptest.NewRequest(http.MethodDelete, "/enforce/allow", bytes.NewReader([]byte(`{"target_type":"command","target_name":"git status"}`)))
+	removeW := httptest.NewRecorder()
+	api.handleEnforceAllow(removeW, removeReq)
+	if removeW.Result().StatusCode != http.StatusOK {
+		t.Fatalf("remove status = %d, want %d", removeW.Result().StatusCode, http.StatusOK)
+	}
+
+	blocked, err := pe.IsBlocked("command", "git status")
+	if err != nil {
+		t.Fatalf("check block after allow removal: %v", err)
+	}
+	if !blocked {
+		t.Fatal("DELETE /enforce/allow removed the command block")
+	}
+}
+
+func TestAPIEnforceBlockDeleteDoesNotRemoveAllow(t *testing.T) {
+	store, logger := testStoreAndLogger(t)
+	pe := enforce.NewPolicyEngine(store)
+	if err := pe.Allow("command", "git status", "allowed in agent controls"); err != nil {
+		t.Fatalf("allow command: %v", err)
+	}
+
+	api := &APIServer{store: store, logger: logger}
+	removeReq := httptest.NewRequest(http.MethodDelete, "/enforce/block", bytes.NewReader([]byte(`{"target_type":"command","target_name":"git status"}`)))
+	removeW := httptest.NewRecorder()
+	api.handleEnforceBlock(removeW, removeReq)
+	if removeW.Result().StatusCode != http.StatusOK {
+		t.Fatalf("remove status = %d, want %d", removeW.Result().StatusCode, http.StatusOK)
+	}
+
+	allowed, err := pe.IsAllowed("command", "git status")
+	if err != nil {
+		t.Fatalf("check allow after block removal: %v", err)
+	}
+	if !allowed {
+		t.Fatal("DELETE /enforce/block removed the command allow")
+	}
 }
 
 func TestAPIEnforceAllowSkillReenablesRuntimeDisable(t *testing.T) {
